@@ -1,4 +1,4 @@
-# Crewlings
+# Talqava Agents
 
 A self-hosted AI agent you run yourself. You talk to it on a private web page. It can:
 
@@ -15,7 +15,7 @@ It runs on Claude through the Anthropic API. You need an API key from [console.a
 
 A map of how it is built is in [docs/architecture.html](docs/architecture.html) (open it in a browser), with the same content as data in [docs/architecture.json](docs/architecture.json).
 
-The plan for turning Crewlings into a hosted, multi-user product is in [docs/platform-architecture.md](docs/platform-architecture.md). It is a proposal; none of it is built yet.
+The plan for turning Talqava Agents into a hosted, multi-user product is in [docs/platform-architecture.md](docs/platform-architecture.md). It is a proposal; none of it is built yet.
 
 ## Run it on your computer
 
@@ -43,7 +43,7 @@ On any small Linux server with Docker:
 cp .env.example .env
 ```
 
-Edit `.env`: set `ANTHROPIC_API_KEY` and a long `CREWLINGS_PASSWORD`. Then:
+Edit `.env`: set `ANTHROPIC_API_KEY` and a long `TALQAVA_PASSWORD`. Then:
 
 ```bash
 docker compose up -d --build
@@ -77,9 +77,9 @@ This is a program that lets an AI run commands. The guards it has:
 | Model | Settings page | Claude Opus 5.5 by default |
 | Effort | Settings page | Higher thinks longer and costs more |
 | Approvals | Settings page | Ask (default) or run everything |
-| Password | `CREWLINGS_PASSWORD` in `.env` | Required off `localhost` |
+| Password | `TALQAVA_PASSWORD` in `.env` | Required off `localhost` |
 | Address | `HOST`, `PORT` in `.env` | Default `127.0.0.1:8787` |
-| Data folder | `CREWLINGS_DATA_DIR` in `.env` | Default `./data` |
+| Data folder | `TALQAVA_DATA_DIR` in `.env` | Default `./data` |
 
 ## The optional browser
 

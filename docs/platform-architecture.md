@@ -1,8 +1,8 @@
-# Crewlings platform architecture
+# Talqava Agents platform architecture
 
 **Status:** proposal for review. Nothing here is built yet.
 
-Crewlings today is a program one person runs on their own machine. This document describes how it becomes a public product: anyone can sign up, each person gets their own chats, bots, memory and schedules, and each person pays for their own AI use with their own Anthropic API key.
+Talqava Agents today is a program one person runs on their own machine. This document describes how it becomes a public product: anyone can sign up, each person gets their own chats, bots, memory and schedules, and each person pays for their own AI use with their own Anthropic API key.
 
 ## What changes, in one table
 
@@ -24,7 +24,7 @@ The riskiest line is "running code". On your own machine, the agent's shell can 
 flowchart LR
   user([User's browser])
 
-  subgraph platform [Crewlings platform]
+  subgraph platform [Talqava Agents platform]
     web[Web app<br/>chat, bots, settings]
     api[API service<br/>sign-in, data, live stream]
     queue[(Job queue)]
@@ -96,7 +96,7 @@ Regular chat is simply the default bot, with every tool switched on.
 Three kinds of bot, built in this order:
 
 1. **Starter bots.** A set that ships with the product, so a new user has something useful on day one.
-2. **Your own bots.** Users create and edit bots, by form or by asking Crewlings to make one.
+2. **Your own bots.** Users create and edit bots, by form or by asking Talqava Agents to make one.
 3. **Shared bots.** Users publish a bot for others to copy. This is the step that turns a tool into a platform, and it comes last because it needs review and moderation.
 
 Bringing a bot into a regular chat with `@` works by running that bot as a short side job and handing its answer back to the chat.
@@ -115,7 +115,7 @@ Bringing a bot into a regular chat with `@` works by running that bot as a short
 
 The host shell and the local file editor do not exist in the hosted product. They remain in the self-hosted edition only.
 
-Approvals stay: actions that change something outside Crewlings (an API write, sending a message) wait for the user's yes, shown in the chat and in an approvals inbox for scheduled runs.
+Approvals stay: actions that change something outside Talqava Agents (an API write, sending a message) wait for the user's yes, shown in the chat and in an approvals inbox for scheduled runs.
 
 ## What is stored
 
@@ -182,12 +182,12 @@ The code moves from plain JavaScript to TypeScript during the restructure, becau
 
 ## Open source, two editions
 
-Crewlings is open source under the MIT licence. Anyone can read the code, run it themselves, and build on it. The licence covers the code; the Crewlings name and characters are the brand.
+Talqava Agents is open source under the MIT licence. Anyone can read the code, run it themselves, and build on it. The licence covers the code; the Talqava Agents name and characters are the brand.
 
 The agent core is shared. Around it:
 
-- **Crewlings Local** is what exists today: one user, files on disk, host shell allowed. It stays, because an open-source project has to be runnable by anyone on their own machine.
-- **Crewlings Cloud** is the hosted platform: accounts, database, workers, hosted tools only. Its code is in the same public repo.
+- **Talqava Agents Local** is what exists today: one user, files on disk, host shell allowed. It stays, because an open-source project has to be runnable by anyone on their own machine.
+- **Talqava Agents Cloud** is the hosted platform: accounts, database, workers, hosted tools only. Its code is in the same public repo.
 
 ## Build order
 
@@ -211,5 +211,5 @@ The agent loop, tool input checks, approvals, schedule parsing, the Markdown ren
 
 1. **Engine.** This plan keeps our own agent loop, which is built and tested. The alternative is Anthropic's Managed Agents, where Anthropic runs the loop and a sandbox per session; it would remove the workers from our side, at the price of depending on a beta product and having less control. The plan keeps the engine behind one boundary so it can be swapped later. Recommendation: own loop now, revisit at stage 3.
 2. **Local edition.** Decided: it stays, as part of being open source.
-3. **How Crewlings earns money.** With users bringing their own key, AI use costs you nothing, but hosting does. Because the code is open source, the hosted service is what people would pay for; a platform subscription is the usual answer. It is not in the build order above; if you want it, it slots in at stage 5.
+3. **How Talqava Agents earns money.** With users bringing their own key, AI use costs you nothing, but hosting does. Because the code is open source, the hosted service is what people would pay for; a platform subscription is the usual answer. It is not in the build order above; if you want it, it slots in at stage 5.
 4. **Character and theme direction.** The game-style direction (bots as a crew that goes on quests) is the current front-runner over A to D from the earlier mockups. It only affects stage 2 onward.

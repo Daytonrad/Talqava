@@ -18,7 +18,7 @@ const context = { signal: new AbortController().signal, conversation: {} as Conv
 before(async () => {
   mock = await startMockApi(script);
   // Set before the local modules load, because they read these once at start-up.
-  process.env.CREWLINGS_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "crewlings-test-"));
+  process.env.TALQAVA_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "talqava-test-"));
   process.env.ANTHROPIC_BASE_URL = mock.url;
   process.env.ANTHROPIC_API_KEY = "test-key";
   store = await import("../../src/local/store.ts");
@@ -67,9 +67,11 @@ test("files cannot leave the workspace", async () => {
   assert.equal(fs.readFileSync(path.join(store.WORKSPACE, "a/b.txt"), "utf8"), "x\nz\n");
 });
 
-test("the shell does not see the agent's own API key", async () => {
-  const out = await tools.bashTool.run({ command: 'echo "key=[$ANTHROPIC_API_KEY]"' }, context);
-  assert.match(String(out), /key=\[\]/);
+test("the shell does not see the agent's own API key or password", async () => {
+  process.env.TALQAVA_PASSWORD = "hunter2";
+  const out = await tools.bashTool.run({ command: 'echo "key=[$ANTHROPIC_API_KEY] pw=[$TALQAVA_PASSWORD]"' }, context);
+  delete process.env.TALQAVA_PASSWORD;
+  assert.match(String(out), /key=\[\] pw=\[\]/);
 });
 
 test("memory, skills and jobs are kept in files", async () => {

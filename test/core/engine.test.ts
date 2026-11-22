@@ -170,13 +170,13 @@ test("a scheduled job runs in its own conversation and keeps its name", async ()
 
 test("memory and skills appear in the system prompt", () => {
   const prompt = systemPrompt({
-    agentName: "Crewlings",
+    agentName: "Talqava",
     setting: "in a test",
     environment: ["Your working folder is /work."],
     memory: [{ id: "m1", text: "The user writes mystery novels.", createdAt: "" }],
     skills: [{ name: "weekly-report", description: "How to build the weekly report", content: "", updatedAt: "" }],
   });
-  assert.match(prompt, /You are Crewlings, a personal AI agent in a test/);
+  assert.match(prompt, /You are Talqava, a personal AI agent in a test/);
   assert.match(prompt, /\[m1\] The user writes mystery novels/);
   assert.match(prompt, /weekly-report: How to build/);
   assert.match(prompt, /working folder is \/work/);

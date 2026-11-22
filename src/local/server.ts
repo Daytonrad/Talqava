@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { Engine, JobBook } from "../core/index.ts";
+import { Engine, JobBook, BRAND, setting } from "../core/index.ts";
 import type { Decision, Job, RunEvent } from "../core/index.ts";
 import {
   ROOT,
@@ -26,7 +26,8 @@ import { localRunSpec } from "./tools.ts";
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8787);
-const PASSWORD = process.env.CREWLINGS_PASSWORD || "";
+const PASSWORD = setting("PASSWORD") || "";
+const SESSION_COOKIE = `${BRAND.slug}_session`;
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const PUBLIC = path.join(ROOT, "public");
 const TYPES: Record<string, string> = {
@@ -41,7 +42,7 @@ export const jobs = new JobBook(jobStore);
 export const engine = new Engine({
   conversations,
   resolveRun: localRunSpec(jobs),
-  maxTurns: Number(process.env.CREWLINGS_MAX_TURNS || 80),
+  maxTurns: Number(setting("MAX_TURNS") || 80),
 });
 
 async function runJob(job: Job) {
@@ -64,7 +65,7 @@ const sessionToken = () => crypto.createHmac("sha256", getConfig().sessionSecret
 
 function signedIn(req: IncomingMessage): boolean {
   if (!PASSWORD) return true;
-  const cookie = /(?:^|;\s*)crewlings_session=([a-f0-9]+)/.exec(req.headers.cookie || "");
+  const cookie = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([a-f0-9]+)`).exec(req.headers.cookie || "");
   return Boolean(cookie) && crypto.timingSafeEqual(sha(cookie![1]), sha(sessionToken()));
 }
 
@@ -171,7 +172,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       throw new HttpError(401, "Wrong password.");
     }
     const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
-    return send(res, 200, { ok: true }, { "set-cookie": `crewlings_session=${sessionToken()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure}` });
+    return send(res, 200, { ok: true }, { "set-cookie": `${SESSION_COOKIE}=${sessionToken()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure}` });
   }
   if (!signedIn(req)) throw new HttpError(401, "Sign in first.");
 
@@ -273,8 +274,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
 export function start() {
   if (!LOCAL_HOSTS.has(HOST) && !PASSWORD) {
     console.error(
-      `Refusing to start: HOST is ${HOST}, which other machines can reach, but CREWLINGS_PASSWORD is not set.\n` +
-        "This agent can run commands, so it must not be open to a network without a password. Set CREWLINGS_PASSWORD in .env.",
+      `Refusing to start: HOST is ${HOST}, which other machines can reach, but ${BRAND.envPrefix}PASSWORD is not set.\n` +
+        `This agent can run commands, so it must not be open to a network without a password. Set ${BRAND.envPrefix}PASSWORD in .env.`,
     );
     process.exit(1);
   }
@@ -282,7 +283,7 @@ export function start() {
   getConfig();
   const server = http.createServer(handle);
   server.listen(PORT, HOST, () => {
-    console.log(`Crewlings is running at http://${LOCAL_HOSTS.has(HOST) ? "localhost" : HOST}:${PORT}`);
+    console.log(`${BRAND.name} is running at http://${LOCAL_HOSTS.has(HOST) ? "localhost" : HOST}:${PORT}`);
     console.log(`Data: ${DATA}\nWorkspace: ${WORKSPACE}`);
   });
   jobs.start(runJob);

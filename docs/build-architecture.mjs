@@ -13,7 +13,7 @@ const html = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Crewlings: architecture</title>
+<title>Talqava Agents: architecture</title>
 <style>
 :root {
   --bg: #f6f3ee; --panel: #fffdf9; --text: #24211d; --muted: #6f685e; --line: #d9d1c4;

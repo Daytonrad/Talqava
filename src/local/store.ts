@@ -20,10 +20,11 @@ import type {
   Skill,
   SkillStore,
 } from "../core/index.ts";
+import { BRAND, setting } from "../core/index.ts";
 
 export { ROOT };
-export const DATA = path.resolve(process.env.CREWLINGS_DATA_DIR || path.join(ROOT, "data"));
-export const WORKSPACE = path.resolve(process.env.CREWLINGS_WORKSPACE || path.join(DATA, "workspace"));
+export const DATA = path.resolve(setting("DATA_DIR") || path.join(ROOT, "data"));
+export const WORKSPACE = path.resolve(setting("WORKSPACE") || path.join(DATA, "workspace"));
 const CONV_DIR = path.join(DATA, "conversations");
 
 export const MODELS = [
@@ -71,7 +72,7 @@ export interface Config {
 
 const CONFIG_FILE = () => path.join(DATA, "config.json");
 const DEFAULTS: Config = {
-  agentName: "Crewling",
+  agentName: BRAND.agentName,
   model: "claude-opus-5-5",
   effort: "high",
   approvalMode: "ask",

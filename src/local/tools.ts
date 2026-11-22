@@ -12,12 +12,14 @@ import {
   scheduleTool,
   skillTool,
   systemPrompt,
+  BRAND,
+  setting,
 } from "../core/index.ts";
 import type { Conversation, JobBook, RunSpec, Tool } from "../core/index.ts";
 import { WORKSPACE, apiKey, conversations, getConfig, memory, skills } from "./store.ts";
 import { browserAvailable, browserTool } from "./browser.ts";
 
-const BASH_TIMEOUT_MS = Number(process.env.CREWLINGS_BASH_TIMEOUT_MS || 120_000);
+const BASH_TIMEOUT_MS = Number(setting("BASH_TIMEOUT_MS") || 120_000);
 
 // ---------- files, confined to the workspace ----------
 export function safePath(requested: string, root = WORKSPACE): string {
@@ -110,8 +112,9 @@ function runBash(input: BashInput, signal: AbortSignal): Promise<string> {
   if (input.restart) return Promise.resolve("Each command already starts in a fresh shell in the workspace folder.");
   // The shell does not inherit the agent's own keys or password.
   const env = { ...process.env };
+  const hidden = new RegExp(`^(ANTHROPIC_|${BRAND.envPrefix}PASSWORD)`);
   for (const key of Object.keys(env)) {
-    if (/^(ANTHROPIC_|CREWLINGS_PASSWORD)/.test(key)) delete env[key];
+    if (hidden.test(key)) delete env[key];
   }
   return new Promise((resolve) => {
     const child = spawn("bash", ["-c", input.command ?? ""], { cwd: WORKSPACE, env, detached: true });

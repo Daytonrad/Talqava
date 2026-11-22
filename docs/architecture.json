@@ -1,5 +1,5 @@
 {
-  "name": "Crewlings",
+  "name": "Talqava Agents",
   "version": "0.1.0",
   "summary": "A self-hosted AI agent. One Node.js process serves a private chat page, runs the agent loop against the Claude API, executes the tools Claude asks for on your machine, and keeps everything it knows in plain files. The agent loop and shared tools live in a core that a hosted edition will reuse.",
   "runtime": {
@@ -563,7 +563,7 @@
     },
     {
       "mode": "Always-on server",
-      "how": "docker compose up -d --build, with ANTHROPIC_API_KEY and CREWLINGS_PASSWORD in .env",
+      "how": "docker compose up -d --build, with ANTHROPIC_API_KEY and TALQAVA_PASSWORD in .env",
       "notes": "Reach it through an SSH tunnel, Tailscale or an HTTPS proxy. The container walls off the shell."
     }
   ],

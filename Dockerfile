@@ -13,6 +13,6 @@ COPY public ./public
 
 RUN mkdir -p /app/data && chown -R node:node /app
 USER node
-ENV HOST=0.0.0.0 PORT=8787 CREWLINGS_DATA_DIR=/app/data
+ENV HOST=0.0.0.0 PORT=8787 TALQAVA_DATA_DIR=/app/data
 EXPOSE 8787
 CMD ["node", "src/local/main.ts"]
