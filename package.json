@@ -1,5 +1,5 @@
 {
-  "name": "personal-agent",
+  "name": "deskhand",
   "version": "0.1.0",
   "description": "A self-hosted personal AI agent: tools, memory, web, code, APIs and schedules, with a web chat page.",
   "type": "module",

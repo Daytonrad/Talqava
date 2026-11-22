@@ -1,6 +1,6 @@
-# Personal Agent
+# Deskhand
 
-A self-hosted AI agent you run yourself, in the spirit of OpenClaw and Hermes Agent. You talk to it on a private web page. It can:
+A self-hosted AI agent you run yourself. You talk to it on a private web page. It can:
 
 - **Run code and commands** in its own working folder
 - **Read and write files** there
@@ -41,7 +41,7 @@ On any small Linux server with Docker:
 cp .env.example .env
 ```
 
-Edit `.env`: set `ANTHROPIC_API_KEY` and a long `AGENT_PASSWORD`. Then:
+Edit `.env`: set `ANTHROPIC_API_KEY` and a long `DESKHAND_PASSWORD`. Then:
 
 ```bash
 docker compose up -d --build
@@ -75,9 +75,9 @@ This is a program that lets an AI run commands. The guards it has:
 | Model | Settings page | Claude Opus 5.5 by default |
 | Effort | Settings page | Higher thinks longer and costs more |
 | Approvals | Settings page | Ask (default) or run everything |
-| Password | `AGENT_PASSWORD` in `.env` | Required off `localhost` |
+| Password | `DESKHAND_PASSWORD` in `.env` | Required off `localhost` |
 | Address | `HOST`, `PORT` in `.env` | Default `127.0.0.1:8787` |
-| Data folder | `AGENT_DATA_DIR` in `.env` | Default `./data` |
+| Data folder | `DESKHAND_DATA_DIR` in `.env` | Default `./data` |
 
 ## The optional browser
 

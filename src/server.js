@@ -29,7 +29,7 @@ import { createJob, updateJob, deleteJob, startScheduler } from "./scheduler.js"
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8787);
-const PASSWORD = process.env.AGENT_PASSWORD || "";
+const PASSWORD = process.env.DESKHAND_PASSWORD || "";
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const PUBLIC = path.join(ROOT, "public");
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml" };
@@ -47,7 +47,7 @@ const sessionToken = () => crypto.createHmac("sha256", getConfig().sessionSecret
 
 function signedIn(req) {
   if (!PASSWORD) return true;
-  const cookie = /(?:^|;\s*)agent_session=([a-f0-9]+)/.exec(req.headers.cookie || "");
+  const cookie = /(?:^|;\s*)deskhand_session=([a-f0-9]+)/.exec(req.headers.cookie || "");
   return Boolean(cookie) && crypto.timingSafeEqual(sha(cookie[1]), sha(sessionToken()));
 }
 
@@ -152,7 +152,7 @@ async function api(req, res, url) {
       throw new HttpError(401, "Wrong password.");
     }
     const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
-    return send(res, 200, { ok: true }, { "set-cookie": `agent_session=${sessionToken()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure}` });
+    return send(res, 200, { ok: true }, { "set-cookie": `deskhand_session=${sessionToken()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure}` });
   }
   if (!signedIn(req)) throw new HttpError(401, "Sign in first.");
 
@@ -254,8 +254,8 @@ async function handle(req, res) {
 export function start() {
   if (!LOCAL_HOSTS.has(HOST) && !PASSWORD) {
     console.error(
-      `Refusing to start: HOST is ${HOST}, which other machines can reach, but AGENT_PASSWORD is not set.\n` +
-        "This agent can run commands, so it must not be open to a network without a password. Set AGENT_PASSWORD in .env.",
+      `Refusing to start: HOST is ${HOST}, which other machines can reach, but DESKHAND_PASSWORD is not set.\n` +
+        "This agent can run commands, so it must not be open to a network without a password. Set DESKHAND_PASSWORD in .env.",
     );
     process.exit(1);
   }
@@ -263,7 +263,7 @@ export function start() {
   getConfig();
   const server = http.createServer(handle);
   server.listen(PORT, HOST, () => {
-    console.log(`Agent is running at http://${LOCAL_HOSTS.has(HOST) ? "localhost" : HOST}:${PORT}`);
+    console.log(`Deskhand is running at http://${LOCAL_HOSTS.has(HOST) ? "localhost" : HOST}:${PORT}`);
     console.log(`Data: ${DATA}\nWorkspace: ${WORKSPACE}`);
   });
   startScheduler((job) => {

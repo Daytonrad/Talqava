@@ -1,5 +1,5 @@
 {
-  "name": "Personal Agent",
+  "name": "Deskhand",
   "version": "0.1.0",
   "summary": "A self-hosted AI agent. One Node.js process serves a private chat page, runs the agent loop against the Claude API, executes the tools Claude asks for on your machine, and keeps everything it knows in plain files.",
   "runtime": { "language": "JavaScript (ES modules), no build step", "requires": "Node.js 22+", "dependencies": ["@anthropic-ai/sdk"], "optional": ["playwright (adds the browser tool)"], "defaultAddress": "http://localhost:8787" },
@@ -101,7 +101,7 @@
   ],
   "deployment": [
     { "mode": "Your computer", "how": "npm install, npm start, open http://localhost:8787", "notes": "Scheduled jobs run while the program is running." },
-    { "mode": "Always-on server", "how": "docker compose up -d --build, with ANTHROPIC_API_KEY and AGENT_PASSWORD in .env", "notes": "Reach it through an SSH tunnel, Tailscale or an HTTPS proxy. The container walls off the shell." }
+    { "mode": "Always-on server", "how": "docker compose up -d --build, with ANTHROPIC_API_KEY and DESKHAND_PASSWORD in .env", "notes": "Reach it through an SSH tunnel, Tailscale or an HTTPS proxy. The container walls off the shell." }
   ],
   "tests": { "command": "npm test", "count": 13, "covers": ["agent loop against a stand-in API", "approvals: deny, always allow, stop", "bad tool input", "workspace wall", "secret host binding", "schedules and due jobs"] }
 }

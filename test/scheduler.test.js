@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-process.env.AGENT_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "agent-sched-"));
+process.env.DESKHAND_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "agent-sched-"));
 const store = await import("../src/store.js");
 const { nextRun, parseSchedule, createJob, takeDueJobs } = await import("../src/scheduler.js");
 store.initStore();

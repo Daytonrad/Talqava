@@ -10,7 +10,7 @@ import {
 } from "./store.js";
 import { toolDefinitions, systemPrompt, executeTool, validateInput, needsApproval } from "./tools.js";
 
-const MAX_TURNS = Number(process.env.AGENT_MAX_TURNS || 80); // model calls per run
+const MAX_TURNS = Number(process.env.DESKHAND_MAX_TURNS || 80); // model calls per run
 const MAX_TOKENS = 64_000;
 // Models that can hand a declined request to another model on the server.
 const FALLBACK_MODELS = new Set([

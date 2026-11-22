@@ -6,8 +6,8 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const DATA = path.resolve(process.env.AGENT_DATA_DIR || path.join(ROOT, "data"));
-export const WORKSPACE = path.resolve(process.env.AGENT_WORKSPACE || path.join(DATA, "workspace"));
+export const DATA = path.resolve(process.env.DESKHAND_DATA_DIR || path.join(ROOT, "data"));
+export const WORKSPACE = path.resolve(process.env.DESKHAND_WORKSPACE || path.join(DATA, "workspace"));
 const CONV_DIR = path.join(DATA, "conversations");
 
 export const MODELS = [
@@ -43,7 +43,7 @@ export const newId = () => crypto.randomBytes(8).toString("hex");
 // ---------- settings ----------
 const CONFIG_FILE = () => path.join(DATA, "config.json");
 const DEFAULTS = {
-  agentName: "Agent",
+  agentName: "Deskhand",
   model: "claude-opus-5-5",
   effort: "high",
   approvalMode: "ask", // "ask": confirm risky actions. "auto": run everything.

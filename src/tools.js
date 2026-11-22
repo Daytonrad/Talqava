@@ -17,7 +17,7 @@ import { createJob, deleteJob } from "./scheduler.js";
 import { browserAvailable, browserAction } from "./browser.js";
 
 const MAX_OUTPUT = 30_000;
-const BASH_TIMEOUT_MS = Number(process.env.AGENT_BASH_TIMEOUT_MS || 120_000);
+const BASH_TIMEOUT_MS = Number(process.env.DESKHAND_BASH_TIMEOUT_MS || 120_000);
 
 export function clip(text, max = MAX_OUTPUT) {
   if (text.length <= max) return text;
@@ -211,7 +211,7 @@ function runBash(input, signal) {
   // The shell does not inherit the agent's own keys or password.
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (/^(ANTHROPIC_|AGENT_PASSWORD)/.test(key)) delete env[key];
+    if (/^(ANTHROPIC_|DESKHAND_PASSWORD)/.test(key)) delete env[key];
   }
   return new Promise((resolve) => {
     const child = spawn("bash", ["-c", input.command], { cwd: WORKSPACE, env, detached: true });

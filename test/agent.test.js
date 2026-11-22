@@ -10,7 +10,7 @@ let mock, store, agent, tools;
 
 before(async () => {
   mock = await startMockApi(script);
-  process.env.AGENT_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "agent-test-"));
+  process.env.DESKHAND_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "agent-test-"));
   process.env.ANTHROPIC_BASE_URL = mock.url;
   process.env.ANTHROPIC_API_KEY = "test-key";
   store = await import("../src/store.js");
