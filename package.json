@@ -1,0 +1,23 @@
+{
+  "name": "talqava",
+  "version": "0.1.0",
+  "description": "A self-hosted AI agent: tools, memory, web, code, APIs and schedules, with a web chat page.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/local/main.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.136.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

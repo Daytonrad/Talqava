@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talqava Agents: architecture</title>
+<style>
+:root {
+  --bg: #f6f3ee; --panel: #fffdf9; --text: #24211d; --muted: #6f685e; --line: #d9d1c4;
+  --core: #b4532a; --core-text: #fff; --app: #fffdf9; --data: #e6efe4; --data-line: #7fa27b;
+  --ext: #e7ecf5; --ext-line: #7d93bd; --person: #f3e3c8; --person-line: #c79a4b; --code: #efe9df;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1a18; --panel: #242321; --text: #ece7df; --muted: #a39b90; --line: #3a3731;
+    --core: #e0825a; --core-text: #1b1a18; --app: #2b2927; --data: #24322a; --data-line: #5f8a69;
+    --ext: #232b3a; --ext-line: #5f78a8; --person: #3a301d; --person-line: #a98345; --code: #2e2c29;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1120px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font: 600 30px/1.2 Georgia, "Iowan Old Style", serif; margin: 0 0 8px; }
+h2 { font: 600 20px/1.3 Georgia, serif; margin: 44px 0 6px; }
+p { margin: 0 0 12px; }
+.lede { font-size: 17px; max-width: 760px; }
+.muted { color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 0; padding: 0; list-style: none; }
+.chips li { border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; font-size: 13px; background: var(--panel); }
+code { background: var(--code); border-radius: 4px; padding: 1px 5px; font: 13px ui-monospace, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.diagram { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 12px; }
+.diagram svg { display: block; min-width: 980px; width: 100%; height: auto; }
+.node rect { stroke-width: 1.5; }
+.node .label { font: 600 15px system-ui, sans-serif; fill: var(--text); }
+.node .sub { font: 12px system-ui, sans-serif; fill: var(--muted); }
+.node.core rect { fill: var(--core); stroke: var(--core); }
+.node.core .label, .node.core .sub { fill: var(--core-text); }
+.node.app rect { fill: var(--app); stroke: var(--line); }
+.node.data rect { fill: var(--data); stroke: var(--data-line); }
+.node.external rect { fill: var(--ext); stroke: var(--ext-line); }
+.node.person rect { fill: var(--person); stroke: var(--person-line); }
+.edge line { stroke: var(--muted); stroke-width: 1.5; }
+.edge text { font: 11.5px system-ui, sans-serif; fill: var(--muted); paint-order: stroke; stroke: var(--panel); stroke-width: 4px; }
+.arrow { fill: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+.legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; border: 1.5px solid var(--sw-line); background: var(--sw); }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.card h3 { font: 600 15px/1.3 system-ui, sans-serif; margin: 0 0 2px; }
+.card .meta { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.card p { margin: 0 0 8px; font-size: 14px; }
+.steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.steps li { display: grid; grid-template-columns: 34px 1fr; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.steps .n { width: 30px; height: 30px; border-radius: 50%; background: var(--core); color: var(--core-text); display: grid; place-items: center; font-weight: 700; }
+.steps b { display: block; }
+.table { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { white-space: nowrap; }
+footer { margin-top: 44px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main id="root"></main>
+<script type="application/json" id="data">{"name":"Talqava Agents","version":"0.1.0","summary":"A self-hosted AI agent. One Node.js process serves a private chat page, runs the agent loop against the Claude API, executes the tools Claude asks for on your machine, and keeps everything it knows in plain files. The agent loop and shared tools live in a core that a hosted edition will reuse.","runtime":{"language":"TypeScript, run directly by Node (no build step)","requires":"Node.js 22.18+","dependencies":["@anthropic-ai/sdk"],"optional":["playwright (adds the browser tool)"],"defaultAddress":"http://localhost:8787"},"diagram":{"nodes":[{"id":"you","label":"You","sub":"any web browser","col":0,"row":0,"kind":"person"},{"id":"page","label":"Chat page","sub":"public/","col":1,"row":0,"kind":"app"},{"id":"server","label":"Web server","sub":"src/local/server.ts","col":2,"row":0,"kind":"app"},{"id":"agent","label":"Agent loop","sub":"src/core/engine.ts","col":3,"row":0,"kind":"core"},{"id":"claude","label":"Claude API","sub":"Anthropic","col":4,"row":0,"kind":"external"},{"id":"scheduler","label":"Scheduler","sub":"src/core/schedule.ts","col":2,"row":1,"kind":"app"},{"id":"tools","label":"Tools","sub":"src/core/tools + src/local/tools.ts","col":3,"row":1,"kind":"app"},{"id":"hosted","label":"Hosted tools","sub":"web search, web fetch, connectors","col":4,"row":1,"kind":"external"},{"id":"store","label":"Store","sub":"src/local/store.ts → data/","col":2,"row":2,"kind":"data"},{"id":"machine","label":"Your machine","sub":"shell, workspace files, browser","col":3,"row":2,"kind":"data"},{"id":"world","label":"Other services","sub":"HTTP APIs, websites","col":4,"row":2,"kind":"external"}],"edges":[{"from":"you","to":"page","label":"types, approves"},{"from":"page","to":"server","label":"JSON + live events"},{"from":"server","to":"agent","label":"start, stop, approve"},{"from":"agent","to":"claude","label":"messages, streamed"},{"from":"scheduler","to":"agent","label":"due jobs"},{"from":"agent","to":"tools","label":"tool calls"},{"from":"claude","to":"hosted","label":"runs for it"},{"from":"scheduler","to":"store","label":"jobs"},{"from":"tools","to":"store","label":"memory, skills"},{"from":"tools","to":"machine","label":"runs, edits"},{"from":"tools","to":"world","label":"API calls"}]},"components":[{"file":"src/core/engine.ts","lines":323,"role":"Agent loop (core)","does":"Sends the conversation to Claude, streams the reply, runs each tool Claude calls (asking for approval when needed), feeds results back, and repeats until Claude is done. Saves after every step. It is handed its storage and tools, so it works the same on files or a database.","uses":["@anthropic-ai/sdk","src/core/types.ts"]},{"file":"src/core/types.ts","lines":156,"role":"Shared shapes (core)","does":"Defines what a conversation, tool, job and run look like, and the storage interfaces each edition must provide.","uses":[]},{"file":"src/core/schedule.ts","lines":181,"role":"Scheduler (core)","does":"Reads schedules (intervals, one-time, cron lines), works out the next run, and every 20 seconds hands due jobs to the agent loop.","uses":["src/core/types.ts"]},{"file":"src/core/tools/shared.ts","lines":96,"role":"Shared tools (core)","does":"Memory, skills, schedules and chat search, each built from whatever store the edition supplies.","uses":["src/core/tooling.ts"]},{"file":"src/core/tools/http.ts","lines":69,"role":"API calls (core)","does":"Calls HTTP APIs and fills in stored keys by name, only for the host each key is tied to.","uses":["src/core/tooling.ts"]},{"file":"src/core/prompt.ts","lines":41,"role":"System prompt (core)","does":"Builds the agent's standing instructions, including memory and the skill list. Each edition adds its own lines.","uses":[]},{"file":"src/core/tooling.ts","lines":58,"role":"Tool helpers (core)","does":"Defines tools and checks the input Claude sends them before anything runs.","uses":[]},{"file":"src/local/server.ts","lines":290,"role":"Web server (local)","does":"Serves the chat page and a small JSON API. Handles sign-in, refuses cross-site requests, streams live events to the page, and wires the core to local storage and tools.","uses":["src/core","src/local/store.ts","src/local/tools.ts"]},{"file":"src/local/store.ts","lines":261,"role":"Store (local)","does":"Keeps settings, chats, memory, skills and jobs as JSON files, behind the core's storage interfaces.","uses":["src/local/env.ts"]},{"file":"src/local/tools.ts","lines":204,"role":"Local tools","does":"The shell and the file editor, confined to the workspace, plus the list of tools and the prompt for a local run.","uses":["src/core","src/local/browser.ts"]},{"file":"src/local/browser.ts","lines":98,"role":"Browser (local, optional)","does":"Drives a real Chromium browser through Playwright, if it is installed.","uses":["playwright"]},{"file":"src/cloud/","lines":0,"role":"Hosted edition","does":"Empty for now. Built from stage 1 of the platform plan, on the same core.","uses":["src/core"]},{"file":"public/app.js","lines":643,"role":"Chat page","does":"The whole page, without a framework: chats, approval prompts, Memory, Skills, Schedules and Settings.","uses":["public/markdown.js"]},{"file":"public/markdown.js","lines":110,"role":"Markdown","does":"Turns the agent's replies into formatted text by building page elements directly, so nothing it writes can run as HTML.","uses":[]}],"flow":[{"step":1,"where":"Chat page","what":"You send a message. The page posts it to the server and listens on a live event stream for that chat."},{"step":2,"where":"Web server","what":"The server hands the message to the agent loop and returns at once. The run continues even if you close the page."},{"step":3,"where":"Agent loop","what":"The loop sends the whole conversation, the system prompt (with memory and skills) and the tool list to Claude, and streams the reply to the page as it arrives."},{"step":4,"where":"Claude API","what":"Claude answers, or asks for tools. Web search, web fetch and connectors run on Anthropic's side and come back inside the reply."},{"step":5,"where":"Tools","what":"For each tool Claude calls, the input is checked. If the tool changes something and approvals are on, the page shows a prompt and the loop waits for your answer."},{"step":6,"where":"Your machine","what":"The tool runs: a shell command, a file edit, an API call, a memory entry. Its output goes back to Claude as a tool result."},{"step":7,"where":"Agent loop","what":"Steps 3 to 6 repeat until Claude replies without calling a tool. The conversation is saved to disk after every reply and every tool result."}],"tools":[{"name":"bash","label":"Shell","runsOn":"your machine","approval":"always","does":"Runs a command in the workspace folder, with a 2-minute limit."},{"name":"str_replace_based_edit_tool","label":"Files","runsOn":"your machine","approval":"for changes; viewing is free","does":"Views, creates and edits files, confined to the workspace folder."},{"name":"http_request","label":"API call","runsOn":"your machine","approval":"for anything but GET and HEAD","does":"Calls an HTTP API. Stored keys are filled in by name, only for their own host."},{"name":"browser","label":"Browser","runsOn":"your machine (optional)","approval":"for click and type","does":"Opens pages, clicks, types and takes screenshots in a real browser."},{"name":"memory","label":"Memory","runsOn":"your machine","approval":"never","does":"Adds or removes long-term facts shown to the agent in every chat."},{"name":"conversation_search","label":"Search chats","runsOn":"your machine","approval":"never","does":"Searches the text of past chats."},{"name":"skill","label":"Skill","runsOn":"your machine","approval":"never","does":"Saves and reads procedures the agent wrote for itself."},{"name":"schedule","label":"Schedule","runsOn":"your machine","approval":"never","does":"Creates, lists and deletes jobs the agent runs later on its own."},{"name":"web_search","label":"Web search","runsOn":"Anthropic","approval":"never","does":"Searches the web."},{"name":"web_fetch","label":"Read page","runsOn":"Anthropic","approval":"never","does":"Reads a web page."},{"name":"mcp_toolset","label":"Connectors","runsOn":"Anthropic","approval":"never","does":"Tools from remote MCP servers you add in Settings."}],"api":[{"method":"POST","path":"/api/login","does":"Sign in with the password (only when one is set)."},{"method":"GET","path":"/api/state","does":"Settings the page may see. Never keys or tokens."},{"method":"PUT","path":"/api/settings","does":"Change name, model, effort, approvals, API key, stored keys, connectors."},{"method":"GET, POST","path":"/api/conversations","does":"List chats; start a new one."},{"method":"GET, DELETE","path":"/api/conversations/:id","does":"Read or delete a chat."},{"method":"POST","path":"/api/conversations/:id/messages","does":"Send a message and start a run."},{"method":"POST","path":"/api/conversations/:id/stop","does":"Stop the run."},{"method":"POST","path":"/api/conversations/:id/approvals/:approvalId","does":"Answer an approval: allow, always, or deny."},{"method":"GET","path":"/api/conversations/:id/events","does":"Live event stream: a full snapshot first, then each change."},{"method":"GET, POST, DELETE","path":"/api/memory[/:id]","does":"List, add, remove memory entries."},{"method":"GET, DELETE","path":"/api/skills[/:name]","does":"List and remove skills."},{"method":"GET, POST, PATCH, DELETE","path":"/api/jobs[/:id]","does":"List, add, pause or resume, and remove scheduled jobs."},{"method":"POST","path":"/api/jobs/:id/run","does":"Run a job now."}],"events":["sync","user","delta","reset","assistant","tool_result","approval","approval_done","status","notice","error"],"data":[{"path":"data/config.json","holds":"Settings, the API key, stored keys, connectors. Readable only by your user account."},{"path":"data/conversations/\u003cid>.json","holds":"One file per chat: the exact messages exchanged with Claude, tools allowed for that chat, token counts."},{"path":"data/memory.json","holds":"Long-term memory entries (8,000 characters in total)."},{"path":"data/skills.json","holds":"Procedures the agent saved."},{"path":"data/jobs.json","holds":"Scheduled jobs and when each runs next."},{"path":"data/workspace/","holds":"The agent's working folder: the only place its file tool can reach."}],"model":{"default":"claude-opus-5-5","choices":["claude-opus-5-5","claude-fable-5-2","claude-sonnet-5-5","claude-haiku-5-5"],"features":["streaming","adaptive thinking with summaries","prompt caching","server-side compaction of long chats","server-side fallback when a request is declined","MCP connector"]},"safeguards":[{"name":"Approvals","what":"Shell commands, file changes, API writes and browser clicks wait for your yes unless you turn approvals off."},{"name":"Workspace wall","what":"File paths are resolved, symlinks included, and refused if they leave data/workspace/."},{"name":"Secrets","what":"Stored keys are tied to one host, filled in outside the model's view, and scrubbed from responses. The shell does not inherit the agent's own API key or password."},{"name":"Local only by default","what":"Listens on 127.0.0.1. Refuses to start on a network address without a password."},{"name":"No cross-site access","what":"Requests from other websites, to other host names, or without a JSON body are refused."},{"name":"Safe rendering","what":"Replies are rendered as text nodes, never as HTML, under a strict content security policy."},{"name":"Limits","what":"80 model calls per run, 2 minutes per shell command, tool output clipped at 30,000 characters."}],"deployment":[{"mode":"Your computer","how":"npm install, npm start, open http://localhost:8787","notes":"Scheduled jobs run while the program is running."},{"mode":"Always-on server","how":"docker compose up -d --build, with ANTHROPIC_API_KEY and TALQAVA_PASSWORD in .env","notes":"Reach it through an SSH tunnel, Tailscale or an HTTPS proxy. The container walls off the shell."}],"tests":{"command":"npm run check","count":20,"covers":["agent loop against a stand-in API and in-memory storage","approvals: deny, always allow, stop","bad and unknown tool input","schedules and due jobs","local edition: shell, file wall, file storage","secret host binding"]}}</script>
+<script>
+const d = JSON.parse(document.getElementById("data").textContent);
+const root = document.getElementById("root");
+const NS = "http://www.w3.org/2000/svg";
+
+function h(tag, attrs, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+  node.append(...kids.flat().filter((k) => k != null));
+  return node;
+}
+function s(tag, attrs, text) {
+  const node = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+  if (text != null) node.textContent = text;
+  return node;
+}
+const section = (title, intro, ...kids) => [h("h2", {}, title), ...(intro ? [h("p", { class: "muted" }, intro)] : []), ...kids];
+function table(heads, rows) {
+  return h("div", { class: "table" }, h("table", {},
+    h("thead", {}, h("tr", {}, heads.map((t) => h("th", {}, t)))),
+    h("tbody", {}, rows.map((cells) => h("tr", {}, cells.map((c) => h("td", {}, c)))))));
+}
+const code = (t) => h("code", {}, t);
+
+// ----- the diagram -----
+function diagram() {
+  const W = 190, H = 62, PX = 310, PY = 140, M = 12;
+  const cols = Math.max(...d.diagram.nodes.map((n) => n.col)) + 1;
+  const rows = Math.max(...d.diagram.nodes.map((n) => n.row)) + 1;
+  const svg = s("svg", { viewBox: "0 0 " + ((cols - 1) * PX + W + M * 2) + " " + ((rows - 1) * PY + H + M * 2), role: "img", "aria-label": "How the parts of the agent connect" });
+  const defs = s("defs");
+  const marker = s("marker", { id: "arrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
+  marker.append(s("path", { d: "M0 0 L10 5 L0 10 z", class: "arrow" }));
+  defs.append(marker);
+  svg.append(defs);
+  const at = Object.fromEntries(d.diagram.nodes.map((n) => [n.id, { x: M + n.col * PX, y: M + n.row * PY, ...n }]));
+
+  for (const e of d.diagram.edges) {
+    const a = at[e.from], b = at[e.to];
+    let x1, y1, x2, y2, lx, ly, anchor = "middle";
+    if (a.row === b.row) {
+      x1 = a.x + W; x2 = b.x; y1 = y2 = a.y + H / 2; lx = (x1 + x2) / 2; ly = y1 - 7;
+    } else if (a.col === b.col) {
+      x1 = x2 = a.x + W / 2; y1 = a.y + H; y2 = b.y; lx = x1 + 8; ly = (y1 + y2) / 2 + 4; anchor = "start";
+    } else {
+      // Diagonal: leave from the corner nearest the target.
+      const up = b.row < a.row, right = b.col > a.col;
+      x1 = right ? a.x + W - 30 : a.x + 30; y1 = up ? a.y : a.y + H;
+      x2 = right ? b.x + 30 : b.x + W - 30; y2 = up ? b.y + H : b.y;
+      lx = (x1 + x2) / 2; ly = (y1 + y2) / 2 + 4;
+    }
+    const g = s("g", { class: "edge" });
+    g.append(s("line", { x1, y1, x2, y2, "marker-end": "url(#arrow)" }), s("text", { x: lx, y: ly, "text-anchor": anchor }, e.label));
+    svg.append(g);
+  }
+  for (const n of Object.values(at)) {
+    const g = s("g", { class: "node " + n.kind });
+    g.append(s("rect", { x: n.x, y: n.y, width: W, height: H, rx: 10 }),
+      s("text", { class: "label", x: n.x + W / 2, y: n.y + 26, "text-anchor": "middle" }, n.label),
+      s("text", { class: "sub", x: n.x + W / 2, y: n.y + 45, "text-anchor": "middle" }, n.sub));
+    svg.append(g);
+  }
+  const legend = [["Core loop", "--core", "--core"], ["Part of the app", "--app", "--line"], ["On your machine", "--data", "--data-line"], ["Outside services", "--ext", "--ext-line"]];
+  return [h("div", { class: "diagram" }, svg), h("div", { class: "legend" }, legend.map(([t, bg, ln]) => h("span", { style: "--sw: var(" + bg + "); --sw-line: var(" + ln + ")" }, t)))];
+}
+
+root.append(
+  h("h1", {}, d.name + ": how it is built"),
+  h("p", { class: "lede" }, d.summary),
+  h("ul", { class: "chips" }, [d.runtime.requires, d.runtime.language, "One dependency: " + d.runtime.dependencies[0], "Default model: " + d.model.default, d.tests.count + " automated tests"].map((t) => h("li", {}, t))),
+
+  ...section("The map", "Arrows show who calls whom. The blue boxes are outside services; everything else is one program on your machine."),
+  ...diagram(),
+
+  ...section("What happens when you send a message"),
+  h("ol", { class: "steps" }, d.flow.map((f) => h("li", {}, h("span", { class: "n" }, String(f.step)), h("div", {}, h("b", {}, f.where), f.what)))),
+
+  ...section("The parts", "Each file, what it is responsible for, and what it relies on."),
+  h("div", { class: "grid" }, d.components.map((c) => h("div", { class: "card" },
+    h("h3", {}, c.role), h("div", { class: "meta" }, code(c.file), " · " + c.lines + " lines"),
+    h("p", {}, c.does),
+    c.uses.length ? h("p", { class: "muted" }, "Uses: ", c.uses.flatMap((u, i) => [i ? ", " : "", code(u)])) : null))),
+
+  ...section("The agent's tools", "What Claude can do, where each tool runs, and when it waits for your approval."),
+  table(["Tool", "Runs on", "Asks first", "What it does"], d.tools.map((t) => [h("span", {}, h("b", {}, t.label), h("br"), code(t.name)), t.runsOn, t.approval, t.does])),
+
+  ...section("What is stored, and where", "Plain JSON files. Back up the data folder and you have backed up the agent."),
+  table(["Path", "Holds"], d.data.map((x) => [code(x.path), x.holds])),
+
+  ...section("Safeguards"),
+  h("div", { class: "grid" }, d.safeguards.map((g) => h("div", { class: "card" }, h("h3", {}, g.name), h("p", {}, g.what)))),
+
+  ...section("How the page talks to the server", "Live event types on the stream: " + d.events.join(", ") + "."),
+  table(["Method", "Path", "What it does"], d.api.map((a) => [a.method, code(a.path), a.does])),
+
+  ...section("Where it runs"),
+  table(["Mode", "How", "Notes"], d.deployment.map((m) => [h("b", {}, m.mode), m.how, m.notes])),
+
+  ...section("Model"),
+  h("p", {}, "Default ", code(d.model.default), ". Selectable in Settings: ", d.model.choices.flatMap((m, i) => [i ? ", " : "", code(m)]), "."),
+  h("ul", { class: "chips" }, d.model.features.map((f) => h("li", {}, f))),
+
+  h("footer", {}, "Version " + d.version + ". This page is generated from architecture.json by docs/build-architecture.mjs."),
+);
+</script>
+</body>
+</html>
