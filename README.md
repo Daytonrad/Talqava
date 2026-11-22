@@ -15,6 +15,8 @@ It runs on Claude through the Anthropic API. You need an API key from [console.a
 
 A map of how it is built is in [docs/architecture.html](docs/architecture.html) (open it in a browser), with the same content as data in [docs/architecture.json](docs/architecture.json).
 
+The plan for turning Crewlings into a hosted, multi-user product is in [docs/platform-architecture.md](docs/platform-architecture.md). It is a proposal; none of it is built yet.
+
 ## Run it on your computer
 
 You need [Node.js](https://nodejs.org) 22.18 or newer.
