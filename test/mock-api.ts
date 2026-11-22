@@ -1,15 +1,27 @@
 // A stand-in for the Anthropic API that replays scripted replies as a stream.
 import http from "node:http";
+import type { AddressInfo } from "node:net";
 
-export function startMockApi(script) {
-  const requests = [];
+type Block = { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: unknown };
+export interface Reply {
+  content: Block[];
+  stop_reason: string;
+}
+export interface Recorded {
+  url: string;
+  headers: http.IncomingHttpHeaders;
+  body: any;
+}
+
+export function startMockApi(script: Reply[]): Promise<{ server: http.Server; requests: Recorded[]; url: string }> {
+  const requests: Recorded[] = [];
   const server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
-    requests.push({ url: req.url, headers: req.headers, body: JSON.parse(raw) });
+    requests.push({ url: req.url ?? "", headers: req.headers, body: JSON.parse(raw) });
     const reply = script.shift() ?? { content: [{ type: "text", text: "(script ended)" }], stop_reason: "end_turn" };
     res.writeHead(200, { "content-type": "text/event-stream" });
-    const send = (event) => res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    const send = (event: { type: string; [key: string]: unknown }) => res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     send({
       type: "message_start",
       message: { id: "msg_test", type: "message", role: "assistant", model: "mock", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } },
@@ -28,8 +40,13 @@ export function startMockApi(script) {
     send({ type: "message_stop" });
     res.end();
   });
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, requests, url: `http://127.0.0.1:${server.address().port}` })));
+  return new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve({ server, requests, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` })),
+  );
 }
 
-export const say = (text) => ({ content: [{ type: "text", text }], stop_reason: "end_turn" });
-export const call = (name, input, id = `toolu_${Math.random().toString(36).slice(2)}`) => ({ content: [{ type: "tool_use", id, name, input }], stop_reason: "tool_use" });
+export const say = (text: string): Reply => ({ content: [{ type: "text", text }], stop_reason: "end_turn" });
+export const call = (name: string, input: unknown, id = `toolu_${Math.random().toString(36).slice(2)}`): Reply => ({
+  content: [{ type: "tool_use", id, name, input }],
+  stop_reason: "tool_use",
+});

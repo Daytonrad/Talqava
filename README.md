@@ -1,4 +1,4 @@
-# Deskhand
+# Crewlings
 
 A self-hosted AI agent you run yourself. You talk to it on a private web page. It can:
 
@@ -17,7 +17,7 @@ A map of how it is built is in [docs/architecture.html](docs/architecture.html) 
 
 ## Run it on your computer
 
-You need [Node.js](https://nodejs.org) 22 or newer.
+You need [Node.js](https://nodejs.org) 22.18 or newer.
 
 ```bash
 npm install
@@ -41,7 +41,7 @@ On any small Linux server with Docker:
 cp .env.example .env
 ```
 
-Edit `.env`: set `ANTHROPIC_API_KEY` and a long `DESKHAND_PASSWORD`. Then:
+Edit `.env`: set `ANTHROPIC_API_KEY` and a long `CREWLINGS_PASSWORD`. Then:
 
 ```bash
 docker compose up -d --build
@@ -75,9 +75,9 @@ This is a program that lets an AI run commands. The guards it has:
 | Model | Settings page | Claude Opus 5.5 by default |
 | Effort | Settings page | Higher thinks longer and costs more |
 | Approvals | Settings page | Ask (default) or run everything |
-| Password | `DESKHAND_PASSWORD` in `.env` | Required off `localhost` |
+| Password | `CREWLINGS_PASSWORD` in `.env` | Required off `localhost` |
 | Address | `HOST`, `PORT` in `.env` | Default `127.0.0.1:8787` |
-| Data folder | `DESKHAND_DATA_DIR` in `.env` | Default `./data` |
+| Data folder | `CREWLINGS_DATA_DIR` in `.env` | Default `./data` |
 
 ## The optional browser
 
@@ -93,10 +93,22 @@ npx playwright install chromium
 
 Restart, and the agent gains a `browser` tool. Without it, it still searches and reads the web.
 
+## How the code is laid out
+
+| Folder | What it is |
+| --- | --- |
+| `src/core` | The shared core: the agent loop, scheduling, the system prompt, and the tools every edition has. It reaches storage only through interfaces, so it does not care whether data lives in files or a database. |
+| `src/local` | This edition: JSON file storage, the shell and file tools, and the web server. |
+| `src/cloud` | Empty for now. The hosted edition is built here, on the same core. |
+| `public` | The chat page. |
+| `test` | Tests for the core (against in-memory storage) and for the local edition. |
+
+The code is TypeScript. Node runs it directly, so there is no build step.
+
 ## Tests
 
 ```bash
-npm test
+npm run check
 ```
 
-The tests run the agent loop against a stand-in for the Anthropic API, so they need no key and cost nothing.
+This type-checks the code and runs the tests. The tests run the agent loop against a stand-in for the Anthropic API, so they need no key and cost nothing.
