@@ -1,0 +1,13 @@
+services:
+  agent:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+    ports:
+      # Only this machine can reach the page. Reach it from elsewhere through
+      # an SSH tunnel, Tailscale, or an HTTPS reverse proxy.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./data:/app/data
