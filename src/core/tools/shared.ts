@@ -10,18 +10,18 @@ export function memoryTool(memory: MemoryStore): Tool {
   return defineTool<{ action: "add" | "update" | "remove" | "search"; text?: string; id?: string; scope?: "space" | "general"; query?: string }>({
     name: "memory",
     description:
-      "Long-term memory that carries across conversations. Save durable facts about the user, their preferences, their projects and lessons learned, one fact per entry, in a sentence or two. When a fact changes, update its entry instead of adding another; remove entries that are no longer true. In a space (one client's or project's conversations), entries are kept to that space unless scope is \"general\". Search looks through everything saved, including entries not listed at the start of the conversation: the words can come in any order and in other forms.",
+      "Long-term memory that carries across conversations. Save durable facts about the user, their preferences, their projects and lessons learned, one fact per entry, in a sentence or two. When a fact changes, update its entry instead of adding another; remove entries that are no longer true. In a project (a set of conversations kept apart, such as one client's), entries are kept to that project unless scope is \"general\". Search looks through everything saved, including entries not listed at the start of the conversation: the words can come in any order and in other forms.",
     properties: {
       action: { type: "string", enum: ["add", "update", "remove", "search"] },
       text: { type: "string", description: "For add and update: the fact to remember, one or two sentences." },
       id: { type: "string", description: "For update and remove: the id of the entry." },
-      scope: { type: "string", enum: ["space", "general"], description: "For add, in a space: \"space\" (the default) keeps it to this space; \"general\" carries it into every conversation." },
+      scope: { type: "string", enum: ["space", "general"], description: "For add, in a project: \"space\" (the default) keeps it to this project; \"general\" carries it into every conversation." },
       query: { type: "string", description: "For search: a few words about what you are looking for." },
     },
     required: ["action"],
     async run(input, { conversation }) {
       const space = conversation?.space;
-      const named = async (id?: string) => (id ? ((await memory.spaceName?.(id)) ?? "this space") : "General");
+      const named = async (id?: string) => (id ? ((await memory.spaceName?.(id)) ?? "this project") : "General");
       if (input.action === "add") {
         const entry = await memory.add(input.text ?? "", input.scope === "general" ? undefined : space);
         return `Remembered (id ${entry.id}) in ${await named(entry.space)}.`;
@@ -44,7 +44,7 @@ export function conversationSearchTool(conversations: ConversationStore): Tool {
   return defineTool<{ query: string }>({
     name: "conversation_search",
     description:
-      "Search past conversations. Give a few words about what you are looking for: they can come in any order and in other forms (\"pricing\" also finds \"price\" and \"prices\"), and the best matches come first. If nothing comes back, try other words for the same thing. Use it when the user refers to something discussed before that is not in memory. In a space, only that space's conversations and General's are searched.",
+      "Search past conversations. Give a few words about what you are looking for: they can come in any order and in other forms (\"pricing\" also finds \"price\" and \"prices\"), and the best matches come first. If nothing comes back, try other words for the same thing. Use it when the user refers to something discussed before that is not in memory. In a project, only that project's conversations and General's are searched.",
     properties: { query: { type: "string" } },
     required: ["query"],
     async run(input, { conversation }) {

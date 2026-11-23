@@ -6,6 +6,8 @@ import path from "node:path";
 import type { Bot, Engine, RunEvent } from "../core/index.ts";
 import { DATA, WORKSPACE, conversations, readJson, writeJson } from "./store.ts";
 import { feedback, runChecks } from "./checks.ts";
+import { budgetBlock, recordSpend } from "./spend.ts";
+import { loadCrew } from "./crew.ts";
 import type { CheckResult } from "./checks.ts";
 import type { QuestCheck, QuestTemplate } from "./templates.ts";
 import { fill, resolveInputs } from "./templates.ts";
@@ -39,9 +41,19 @@ export interface Quest {
   modelOverride?: string;
   /** How many files a finished code quest changed, so a quest with none is not shown as waiting for review. */
   changedFiles?: number;
+  /** For a task handed down the org chart: the conversation (a manager's quest, or a chat) its report goes back to. */
+  parent?: { id: string; by: string; delivered: boolean };
+  /** How many hand-offs deep this quest is: 0 for one the person sent. */
+  depth?: number;
   createdAt: string;
   updatedAt: string;
 }
+
+/** How a report from a hand-off starts, so the window can show it as a report rather than something the person typed. */
+export const REPORT_MARK = "[Report from ";
+/** Hand-offs may go this many levels down the chart, and a conversation may have this many open at once. */
+export const MAX_DEPTH = 3;
+export const MAX_OPEN_HANDOFFS = 5;
 
 /** Quests that may run at the same time. */
 export const MAX_RUNNING = 6;
@@ -117,6 +129,9 @@ export const journal = {
 
 export const questStore = new QuestStore();
 
+/** The bot as its file says today (a quest keeps the bot as it was at the start), so a raised budget counts at once. */
+const asItIsNow = (bot: Bot): Bot => loadCrew().bots.find((b) => b.id === bot.id) ?? bot;
+
 export class QuestRunner {
   #engine!: Engine;
   /** Why each running quest will end, learned from its events. */
@@ -131,11 +146,18 @@ export class QuestRunner {
     return questStore.list().filter((q) => q.status === "running" || q.status === "waiting");
   }
 
-  async start({ bot, text, project, title, template }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"] }): Promise<Quest> {
+  async start({ bot, text, project, title, template, parent }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string } }): Promise<Quest> {
     if (this.running().length >= MAX_RUNNING) throw new Error(`${MAX_RUNNING} quests are already under way. Wait for one to finish, or stop one.`);
+    // A bot that has used its month's budget starts nothing new.
+    const blocked = budgetBlock(bot);
+    if (blocked) throw new Error(blocked);
     const conversation = await conversations.create({ title: (title ?? text).replace(/\s+/g, " ").slice(0, 80), source: "quest" });
     const now = new Date().toISOString();
     const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now, ...(template ? { template } : {}) };
+    if (parent) {
+      quest.parent = { ...parent, delivered: false };
+      quest.depth = (questStore.get(parent.id)?.depth ?? 0) + 1;
+    }
     if (project) {
       quest.project = project;
       // Only bots that can change files get a branch and working copy of their own.
@@ -235,10 +257,48 @@ export class QuestRunner {
   }
 
   /** Called by the engine for every event: keeps the journal and the quest's status. */
+  /**
+   * Sends the reports of finished hand-offs back to the conversation that
+   * assigned them, as one message, once all of its hand-offs have stopped and
+   * it is not busy itself. The manager (or the chat's agent) then carries on.
+   */
+  async deliverReports(parentId: string) {
+    if (this.#engine.isRunning(parentId)) return; // it gets them when its own turn ends
+    const children = questStore.list().filter((q) => q.parent?.id === parentId && !q.parent.delivered);
+    if (!children.length || children.some((q) => q.status === "running" || q.status === "waiting")) return;
+    for (const child of children) this.#set(child.id, { parent: { ...child.parent!, delivered: true } });
+    const reports = children.reverse().map((child) => {
+      const said = [...(conversations.get(child.id)?.messages ?? [])].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text.trim()));
+      const text = said && Array.isArray(said.content) ? said.content.map((b) => (b.type === "text" ? b.text : "")).join("\n").trim() : "";
+      const how = { done: "finished", stopped: "was stopped", failed: `failed${child.note ? `: ${child.note}` : ""}`, budget: "stopped at its budget" }[child.status as string] ?? child.status;
+      return `${REPORT_MARK}${child.bot.name} · ${child.title} · ${how}]\n${text || "(It left no report.)"}`;
+    });
+    const parentQuest = questStore.get(parentId);
+    const next = parentQuest
+      ? "Check these reports against what you asked for. Then assign follow-up work if something is missing, or put them together and give your own report."
+      : "Tell the user what came back, in your own words, and say plainly if a report failed or left something out.";
+    try {
+      await this.#engine.startRun(parentId, `${reports.join("\n\n")}\n\n[${next}]`, { keepTitle: true });
+    } catch (err) {
+      for (const child of children) this.#set(child.id, { note: `Its report could not be delivered: ${(err as Error).message}` });
+    }
+  }
+
   onEvent(id: string, event: RunEvent) {
+    // When any conversation stops, reports that were waiting for it can go in.
+    if (event.type === "status" && !event.running) setTimeout(() => this.deliverReports(id).catch(() => {}), 50);
     const quest = questStore.get(id);
     if (!quest) return;
     journal.append(id, event);
+    // What the quest has cost so far counts towards its bot's month. A bot that
+    // reaches its monthly budget part-way is stopped; its work so far is kept.
+    if (event.type === "assistant" || event.type === "status") {
+      recordSpend(id, quest.bot.id, conversations.get(id)?.usage.cost ?? 0);
+      if (event.type === "assistant" && budgetBlock(asItIsNow(quest.bot))) {
+        this.#ending.set(id, "budget");
+        this.#engine.stop(id);
+      }
+    }
     switch (event.type) {
       case "status":
         if (event.running) {
@@ -250,6 +310,8 @@ export class QuestRunner {
           this.#ending.delete(id);
           this.#stopping.delete(id);
           this.#set(id, { status });
+          // A task handed down the chart reports back to whoever assigned it.
+          if (quest.parent && !quest.parent.delivered) setTimeout(() => this.deliverReports(quest.parent!.id).catch(() => {}), 80);
           if (quest.copy && !quest.outcome) {
             changes(quest.copy)
               .then((c) => this.#set(id, { changedFiles: c.files.length }))

@@ -17,7 +17,9 @@ test("the six starter bots are valid bot files", () => {
   assert.equal(pip.name, "Pip");
   assert.equal(pip.approvals, "ask");
   assert.equal(pip.model, undefined);
-  assert.deepEqual(pip.character, { legend: "?", texture: "dots", color: "cyan" });
+  assert.deepEqual(pip.character, { legend: "?", texture: "dots", color: "cyan", shape: "round", eyes: "wide", top: "antenna" });
+  // No two starter bots look alike: each has its own mix of body, eyes and what it wears on top.
+  assert.equal(new Set(bots.map((b) => `${b.character.shape}/${b.character.eyes}/${b.character.top}`)).size, bots.length);
   assert.deepEqual(bots.map((b) => b.character.texture).sort(), ["dots", "grid", "hatch", "lines", "solid", "zigzag"]);
   // Every starter bot glows in a colour of its own.
   assert.equal(new Set(bots.map((b) => b.character.color)).size, bots.length);
@@ -37,7 +39,12 @@ test("a bad bot file is refused with a plain reason", () => {
   assert.equal(parseBot("bo", good, "personal").character.legend, "?");
   assert.equal(parseBot("bo", good.replace("type: scout", "type: gardener"), "personal").character.legend, "B");
   // Older files that name a hat or a colour code still load; both are ignored.
-  assert.deepEqual(parseBot("bo", `${good}character: { hat: hardhat, colour: "#ff9f45" }\n`, "personal").character, { legend: "?", texture: "dots", color: "cyan" });
+  const old = parseBot("bo", `${good}character: { hat: hardhat, colour: "#ff9f45" }\n`, "personal").character;
+  assert.deepEqual([old.legend, old.texture, old.color], ["?", "dots", "cyan"]);
+  // A bot that names no looks gets them from its file name: always the same, and a file can choose its own.
+  assert.deepEqual(parseBot("bo", good, "personal").character, old);
+  assert.equal(parseBot("bo", `${good}character: { shape: tall, eyes: visor, top: horns }\n`, "personal").character.shape, "tall");
+  assert.equal(parseBot("bo", `${good}character: { shape: blob }\n`, "personal").character.shape, old.shape);
   assert.equal(parseBot("bo", `${good}character: { color: "#ff9f45" }\n`, "personal").character.color, "cyan");
   // A neon colour by name is kept; a type of one's own gets the same colour every time.
   assert.equal(parseBot("bo", `${good}character: { color: pink }\n`, "personal").character.color, "pink");

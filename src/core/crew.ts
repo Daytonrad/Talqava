@@ -34,6 +34,28 @@ export function defaultColor(type: string, name: string): Color {
   return COLORS[sum % COLORS.length];
 }
 
+/**
+ * What makes one bot look unlike another, beyond its legend, texture and
+ * colour: the shape of its body, its eyes, and what it wears on top. A bot
+ * file can choose each; otherwise they are picked from its name, so every bot
+ * looks like itself and stays that way.
+ */
+export const SHAPES = ["key", "round", "tall", "wide", "soft"] as const;
+export const EYES = ["dots", "wide", "sleepy", "visor", "specs"] as const;
+export const TOPS = ["none", "antenna", "ears", "horns", "tuft", "halo"] as const;
+export type Shape = (typeof SHAPES)[number];
+export type Eyes = (typeof EYES)[number];
+export type Top = (typeof TOPS)[number];
+const hashOf = (text: string) => {
+  let sum = 7;
+  for (const ch of text) sum = (sum * 31 + ch.codePointAt(0)!) >>> 0;
+  return sum;
+};
+export const defaultLooks = (id: string): { shape: Shape; eyes: Eyes; top: Top } => {
+  const n = hashOf(id);
+  return { shape: SHAPES[n % SHAPES.length], eyes: EYES[(n >>> 4) % EYES.length], top: TOPS[(n >>> 9) % TOPS.length] };
+};
+
 /** One to three visible characters, no spaces. */
 export function isLegend(text: string): boolean {
   const chars = [...text];
@@ -49,15 +71,23 @@ export interface Bot {
   /** scout, scribe, maker, keeper, counter, spark, or a type of one's own. */
   type: string;
   /** How the bot looks: a keycap with this legend printed on it and this texture on its base. */
-  character: { legend: string; texture: Texture; color: Color };
+  character: { legend: string; texture: Texture; color: Color; shape: Shape; eyes: Eyes; top: Top };
   instructions: string;
   /** "provider/model", or undefined to use the default model in Settings. */
   model?: string;
   powers: Power[];
   approvals: ApprovalMode;
   budget?: Budget;
+  /** The most this bot may spend in a calendar month, in US dollars. None means no monthly limit of its own. */
+  monthly?: number;
+  /** The team group it is shown under, such as Research or Writing. */
+  group: string;
   source: BotSource;
 }
+
+/** The group a bot is shown under when its file names none. */
+const TYPE_GROUPS: Record<string, string> = { scout: "Research", scribe: "Writing", maker: "Engineering", keeper: "Operations", counter: "Money", spark: "Ideas" };
+export const defaultGroup = (type: string): string => TYPE_GROUPS[type] ?? "Other";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -89,6 +119,10 @@ export function parseBot(id: string, text: string, source: BotSource): Bot {
   if (!TEXTURES.includes(texture)) throw problem(`texture must be one of ${TEXTURES.join(", ")}.`);
   // A colour that is not one of the neon names (such as an old hex code) falls back to the default.
   const color = COLORS.includes(character.color as Color) ? (character.color as Color) : defaultColor(type, name);
+  const looks = defaultLooks(id);
+  const shape = SHAPES.includes(character.shape as Shape) ? (character.shape as Shape) : looks.shape;
+  const eyes = EYES.includes(character.eyes as Eyes) ? (character.eyes as Eyes) : looks.eyes;
+  const top = TOPS.includes(character.top as Top) ? (character.top as Top) : looks.top;
 
   const powers = Array.isArray(data.powers) ? data.powers : [];
   for (const power of powers) {
@@ -119,7 +153,14 @@ export function parseBot(id: string, text: string, source: BotSource): Bot {
     budget = { ...(steps !== undefined ? { steps: steps as number } : {}), ...(spend !== undefined ? { spend: spend as number } : {}) };
   }
 
-  return { id, name, type, character: { legend, texture, color }, instructions, model, powers: [...new Set(powers as Power[])], approvals, budget, source };
+  let monthly: number | undefined;
+  if (data.monthly_budget !== undefined && data.monthly_budget !== null) {
+    if (!(typeof data.monthly_budget === "number" && data.monthly_budget >= 0 && data.monthly_budget <= 10_000)) throw problem("monthly_budget is in dollars a month, from 0 to 10000.");
+    monthly = data.monthly_budget;
+  }
+  const group = typeof data.group === "string" && data.group.trim() ? data.group.replace(/\s+/g, " ").trim().slice(0, 30) : defaultGroup(type);
+
+  return { id, name, type, character: { legend, texture, color, shape, eyes, top }, instructions, model, powers: [...new Set(powers as Power[])], approvals, budget, ...(monthly !== undefined ? { monthly } : {}), group, source };
 }
 
 /**

@@ -1,6 +1,6 @@
 name: Ember
 type: spark
-character: { legend: "!", texture: zigzag }
+character: { legend: "!", texture: zigzag, shape: key, eyes: wide, top: horns }
 instructions: >
   Come up with ideas: names, angles, plans, alternatives and first drafts to
   react to. Give several clearly different options, each in a line or two,

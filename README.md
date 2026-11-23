@@ -48,7 +48,7 @@ Scheduled jobs run only while the agent is running. A job that came due while it
 ## Memory and long chats
 
 - **Memory carries across chats.** The agent saves lasting facts as it learns them, and says so in the chat: a "Remembered" note you can **Edit** or **Undo** on the spot. The **Memory** page lists everything, where you can add, edit, move and forget entries.
-- **Spaces keep clients and projects apart.** Pick a space above the chat list (or add one). A chat in a space uses that space's memory together with your General memory, saves what it learns to that space, and searches only that space's chats and General's. Nothing from one space reaches another. Deleting a space deletes its memory and moves its chats to General.
+- **Projects keep work apart.** Add a project with **＋ New project** above the chat list, for a client or a piece of work. A chat in a project uses that project's memory together with your General memory, saves what it learns to that project, and searches only that project's chats and General's. Nothing from one project reaches another. Deleting a project deletes its memory and moves its chats to General.
 - **No memory limit.** When there is more than fits in the model's view, each chat is given the entries that match what is being discussed, plus the newest, and the agent searches the rest when it needs to.
 - **Finding past chats.** The agent's search matches words in any order and form ("pricing" finds "price" and "prices") and puts the best matches first. It matches words, not meaning: "what we charge" will not find a chat that only says "pricing".
 - **Long chats.** When a chat outgrows the model, Claude summarises the older part itself. For local models the app asks the model for a running summary of the older part and keeps the latest messages whole; the summary is saved and extended as the chat grows.
@@ -101,6 +101,25 @@ Several quests run at once. A bot only gets the tools its powers grant: Pip cann
 **Nothing is lost.** Every step of a quest is written to a journal in `data/journals/` as it happens. If the app closes or crashes mid-quest, it picks the quest up when it starts again. A step that was cut off part-way is not repeated blindly; the bot is told it may have partly happened and checks first.
 
 **Caution after the web.** Once a quest has read a web page or an API reply, every change it wants to make asks first, whatever the bot's approval setting. That limits what a page written to trick bots can make them do.
+
+## Organizations, roles and the org chart
+
+- **An organization puts bots in roles.** Each member has a title, a department and a manager, with you at the top. Open it from the Bots page (**Organization →**): an org chart and a departments view. Click a bot to change its title, department or who it reports to, to chat with it, or to send it on a quest. You can have several organizations; a bot's own file says what it can do, the organization says where it sits.
+- **Work follows the chart.** A bot with reports gets an `assign_task` tool and may hand tasks only to its direct reports. Each task runs as a quest of its own; when all of a manager's hand-offs have stopped, their reports come back to it in one message and it carries on. The general chat agent, which speaks for you, can hand a job to any member; a job for a whole department goes to its lead. Hand-offs go at most three levels down, five open at a time per conversation, and every bot's budgets still apply.
+- **Chat with a bot in its role.** **Chat with …** opens a chat that answers as that bot, with its instructions, powers, model and limits. Reports from bots it assigned work to arrive in that chat.
+- **Every bot looks like itself.** Besides its legend, texture and colour, a bot has a body shape, eyes and something on top (`shape`, `eyes`, `top` under `character:`), chosen in the bot editor or picked from its file name. Each rests, blinks and moves in its own way.
+- **Teams in the marketplace.** A team is a lead and the bots that report to it (marketing, sales, engineering, research, finance, support, or a starter company under a chief of staff), added together with their reporting lines. Teams are listed in `marketplace/teams.yaml`; a bot's `listing` names its `title` and who it `reports_to`.
+
+## Inbox, team and monthly budgets
+
+- **Inbox** shows what needs you (approvals, work ready for review, failed checks, a bot at its budget), what is being worked on, and what got done today, across chats and bots. **Stop all bots** stops every running quest; their work so far is kept.
+- **Monthly budgets.** Set one for all bots on the organization page, and one per bot on the bot's page (`monthly_budget:` in its file). A bot is warned at 80%; at 100% it starts no new work, and a quest under way is stopped with its work kept, until the budget is raised or the month turns. Spend is estimated from list prices.
+
+## The marketplace
+
+The **Marketplace** tab lists free, ready-made bots, each built for one job (a proofreader, a fact checker, an invoice chaser and so on). A bot's page shows its instructions in full, what it can and cannot use, and what it will and will not do. **Add to my team** saves a copy as your own bot, which is yours to edit; your copy never changes unless you change it. Every marketplace bot asks before changing anything; none can call APIs, and only the engineering bots can run shell commands.
+
+The bots ship with the app, as files in [marketplace/](marketplace/): an ordinary bot file plus a `listing` block (category, summary, will, wont). To offer another, add a file there.
 
 ## Core quests, and checks
 

@@ -11,7 +11,7 @@ const out = path.join(here, "build", "server");
 
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
-for (const item of ["src", "public", "crew", "quests", "package.json", "package-lock.json", "LICENSE"]) {
+for (const item of ["src", "public", "crew", "quests", "marketplace", "package.json", "package-lock.json", "LICENSE"]) {
   fs.cpSync(path.join(root, item), path.join(out, item), { recursive: true });
 }
 execFileSync("npm", ["ci", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: out, stdio: "inherit" });

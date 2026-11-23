@@ -19,8 +19,12 @@ export interface Conversation {
   updatedAt: string;
   source: "chat" | "schedule" | "quest";
   jobId?: string;
-  /** The space (a client or project) this conversation belongs to. None means General. */
+  /** The space (shown to people as a project) this conversation belongs to. None means General. */
   space?: string;
+  /** Pinned chats stay at the top of the list. */
+  pinned?: boolean;
+  /** For a chat with one bot in its role: that bot's id. None means the general agent. */
+  bot?: string;
   messages: Message[];
   /** Tools the user chose "always allow" for in this conversation. */
   allowed: string[];

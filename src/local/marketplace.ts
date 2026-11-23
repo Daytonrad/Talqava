@@ -1,0 +1,139 @@
+// The bot marketplace: ready-made bots, each built for one job, that anyone can
+// add to their team for free. For now the bots ship with the app, in the
+// marketplace/ folder; each file is an ordinary bot file plus a "listing" block
+// that says how it is shown. Adding one saves a copy as the person's own bot,
+// which is theirs to edit.
+import fs from "node:fs";
+import path from "node:path";
+import { parse } from "yaml";
+import { parseBot } from "../core/index.ts";
+import type { Bot } from "../core/index.ts";
+import { ROOT } from "./store.ts";
+import { loadCrew, saveBot } from "./crew.ts";
+import { orgs } from "./orgs.ts";
+
+export const MARKET_DIR = path.join(ROOT, "marketplace");
+const TEAMS_FILE = "teams.yaml";
+
+export interface Listing {
+  category: string;
+  by: string;
+  summary: string;
+  featured: boolean;
+  will: string[];
+  wont: string[];
+  /** Where the bot sits when it joins an organization: its title, and the marketplace bot it reports to, if that one is a member. */
+  title: string;
+  reportsTo: string | null;
+}
+
+/** A ready-made team: a lead and the bots that report to it, added together. */
+export interface Team {
+  id: string;
+  name: string;
+  summary: string;
+  department: string;
+  bots: string[];
+}
+
+export interface MarketBot {
+  bot: Bot;
+  listing: Listing;
+}
+
+const lines = (value: unknown) => (Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean).slice(0, 6) : []);
+
+/** Every bot in the marketplace, in name order. A file that cannot be read is left out and reported. */
+export function loadMarketplace(): { bots: MarketBot[]; problems: string[] } {
+  const bots: MarketBot[] = [];
+  const problems: string[] = [];
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(MARKET_DIR).filter((name) => /\.ya?ml$/.test(name) && name !== TEAMS_FILE).sort();
+  } catch {}
+  for (const name of names) {
+    try {
+      const text = fs.readFileSync(path.join(MARKET_DIR, name), "utf8");
+      const bot = parseBot(name.replace(/\.ya?ml$/, ""), text, "starter");
+      const raw = (parse(text) as { listing?: Record<string, unknown> }).listing ?? {};
+      const summary = String(raw.summary ?? "").trim();
+      if (!summary) throw new Error(`${name}: the listing needs a summary.`);
+      bots.push({
+        bot,
+        listing: {
+          category: String(raw.category ?? "Other").trim() || "Other",
+          by: String(raw.by ?? "Talqava").trim() || "Talqava",
+          summary,
+          featured: raw.featured === true,
+          will: lines(raw.will),
+          wont: lines(raw.wont),
+          title: String(raw.title ?? bot.name).trim().slice(0, 50) || bot.name,
+          reportsTo: typeof raw.reports_to === "string" && raw.reports_to.trim() ? raw.reports_to.trim() : null,
+        },
+      });
+    } catch (err) {
+      problems.push((err as Error).message);
+    }
+  }
+  bots.sort((a, b) => a.bot.name.localeCompare(b.bot.name));
+  return { bots, problems };
+}
+
+export function findMarketBot(id: string): MarketBot {
+  const found = loadMarketplace().bots.find((m) => m.bot.id === id);
+  if (!found) throw new Error(`The marketplace has no bot called "${id}".`);
+  return found;
+}
+
+/** Whether the person already has a bot of this name on their team. */
+export const onTeam = (id: string) => loadCrew().bots.some((b) => b.id === id);
+
+/**
+ * Adds a marketplace bot to the person's team: a copy saved as their own bot.
+ * A bot they already have is left as it is, so their edits are never replaced.
+ */
+export function addMarketBot(id: string): Bot {
+  const { bot, listing } = findMarketBot(id);
+  const mine = loadCrew().bots.find((b) => b.id === id);
+  if (mine) return mine;
+  // It joins the team group named after its marketplace category, and takes its place on the org chart.
+  orgs.active(); // the organization exists before the bot does, so the bot arrives with its marketplace title
+  const saved = saveBot(id, { name: bot.name, type: bot.type, character: bot.character, instructions: bot.instructions, model: bot.model, powers: bot.powers, approvals: bot.approvals, budget: bot.budget, group: listing.category });
+  orgs.welcome(saved, { title: listing.title, department: listing.category, manager: listing.reportsTo });
+  return saved;
+}
+
+/** The ready-made teams. A team that names a bot the marketplace does not have is left out. */
+export function loadTeams(): Team[] {
+  let raw: unknown;
+  try {
+    raw = parse(fs.readFileSync(path.join(MARKET_DIR, TEAMS_FILE), "utf8"));
+  } catch {
+    return [];
+  }
+  const known = new Set(loadMarketplace().bots.map((m) => m.bot.id));
+  return (Array.isArray(raw) ? raw : [])
+    .map((t) => ({ id: String(t?.id ?? ""), name: String(t?.name ?? "").trim(), summary: String(t?.summary ?? "").trim(), department: String(t?.department ?? "").trim(), bots: Array.isArray(t?.bots) ? t.bots.map(String) : [] }))
+    .filter((t) => /^[a-z0-9-]{1,40}$/.test(t.id) && t.name && t.bots.length && t.bots.every((b: string) => known.has(b)));
+}
+
+/**
+ * Adds a whole team: every bot in it, lead first, so each one finds its
+ * manager already on the chart. Bots the person already has keep their role.
+ */
+export function addTeam(id: string): Bot[] {
+  const team = loadTeams().find((t) => t.id === id);
+  if (!team) throw new Error(`The marketplace has no team called "${id}".`);
+  const market = new Map(loadMarketplace().bots.map((m) => [m.bot.id, m]));
+  // A bot is added after the one it reports to.
+  const order = [...team.bots].sort((a, b) => Number(Boolean(market.get(a)!.listing.reportsTo)) - Number(Boolean(market.get(b)!.listing.reportsTo)));
+  const added = order.map((botId) => addMarketBot(botId));
+  // A bot that was already here, reporting to the person, now reports to the team's lead.
+  const org = orgs.active();
+  for (const botId of order) {
+    const { listing } = market.get(botId)!;
+    const member = org.members.find((m) => m.bot === botId);
+    if (member && !member.manager && listing.reportsTo && team.bots.includes(listing.reportsTo)) orgs.setMember(org.id, { bot: botId, manager: listing.reportsTo });
+  }
+  return added;
+}

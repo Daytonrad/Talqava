@@ -96,6 +96,8 @@ export interface Config {
   providers: ProviderConfig[];
   /** Limits on each run: model calls, and estimated US dollars. */
   budget: Budget;
+  /** The most all bots together may spend in a calendar month, in US dollars. None means no limit. */
+  monthlyBudget?: number;
   /** The last model check of each model, by ref. */
   modelChecks: Record<string, CheckResult>;
   /** Repositories bots may work on, by their top folder. */
@@ -160,6 +162,7 @@ export function publicConfig() {
       hasKey: p.kind === "anthropic" ? Boolean(apiKey(cfg)) : Boolean(p.apiKey),
     })),
     budget: cfg.budget,
+    monthlyBudget: cfg.monthlyBudget ?? null,
     modelChecks: cfg.modelChecks,
     projects: cfg.projects,
     apiKeyFromEnv: !cfg.apiKey && Boolean(process.env.ANTHROPIC_API_KEY),
@@ -221,7 +224,7 @@ class FileConversations implements ConversationStore {
       .filter((f) => f.endsWith(".json"))
       .map((f) => readJson<Conversation | null>(path.join(CONV_DIR, f), null))
       .filter((c): c is Conversation => Boolean(c))
-      .map(({ id, title, createdAt, updatedAt, source, space }) => ({ id, title, createdAt, updatedAt, source, space }))
+      .map(({ id, title, createdAt, updatedAt, source, space, pinned, bot }) => ({ id, title, createdAt, updatedAt, source, space, pinned: Boolean(pinned), bot }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -295,9 +298,9 @@ class FileSpaces {
 
   #checked(name: unknown, except?: string): string {
     const clean = String(name ?? "").replace(/\s+/g, " ").trim();
-    if (!clean || clean.length > 40) throw new Error("A space needs a name of up to 40 characters.");
-    if (clean.toLowerCase() === "general") throw new Error("General is already there: it is where everything outside a space lives.");
-    if (this.list().some((s) => s.id !== except && s.name.toLowerCase() === clean.toLowerCase())) throw new Error(`There is already a space called "${clean}".`);
+    if (!clean || clean.length > 40) throw new Error("A project needs a name of up to 40 characters.");
+    if (clean.toLowerCase() === "general") throw new Error("General is already there: it is where everything outside a project lives.");
+    if (this.list().some((s) => s.id !== except && s.name.toLowerCase() === clean.toLowerCase())) throw new Error(`There is already a project called "${clean}".`);
     return clean;
   }
 
@@ -310,7 +313,7 @@ class FileSpaces {
   rename(id: string, name: unknown): Space {
     const spaces = this.list();
     const space = spaces.find((s) => s.id === id);
-    if (!space) throw new Error("No such space.");
+    if (!space) throw new Error("No such project.");
     space.name = this.#checked(name, id);
     writeJson(this.#file(), spaces);
     return space;
@@ -319,7 +322,7 @@ class FileSpaces {
   /** Removes a space. Its memories are deleted; its conversations move to General. */
   remove(id: string) {
     const spaces = this.list();
-    if (!spaces.some((s) => s.id === id)) throw new Error("No such space.");
+    if (!spaces.some((s) => s.id === id)) throw new Error("No such project.");
     writeJson(this.#file(), spaces.filter((s) => s.id !== id));
     memory.dropSpace(id);
     for (const meta of conversations.list()) {
@@ -349,7 +352,7 @@ class FileMemory implements MemoryStore {
 
   #space(space?: string | null): string | undefined {
     if (!space) return undefined;
-    if (!spaces.get(space)) throw new Error("No such space.");
+    if (!spaces.get(space)) throw new Error("No such project.");
     return space;
   }
 

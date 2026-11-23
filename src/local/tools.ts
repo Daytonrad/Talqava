@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import {
   clip,
+  defineTool,
   MAX_OUTPUT,
   conversationSearchTool,
   httpTool,
@@ -20,7 +21,9 @@ import {
   setting,
 } from "../core/index.ts";
 import type { Bot, Conversation, JobBook, Power, RunSpec, Tool } from "../core/index.ts";
-import { questStore } from "./quests.ts";
+import { MAX_DEPTH, MAX_OPEN_HANDOFFS, questStore, quests } from "./quests.ts";
+import { loadCrew } from "./crew.ts";
+import { memberOf, oneLine, orgs, reportsOf, rolePrompt } from "./orgs.ts";
 import { WORKSPACE, conversations, getConfig, memory, skills, spaces } from "./store.ts";
 import { resolveModel } from "./models.ts";
 import { connectorTools } from "./connectors.ts";
@@ -255,6 +258,68 @@ async function botTools(bot: Bot, root: string, jobs: JobBook, claude: boolean):
   return tools;
 }
 
+/**
+ * Hands a task to another bot. A bot may assign only to its direct reports on
+ * the org chart; the general chat agent, which speaks for the person, may
+ * assign to any member. The task runs as a quest of its own, and its report
+ * comes back to this conversation as a message.
+ */
+export const assignTool: Tool = defineTool<{ to: string; task: string }>({
+  name: "assign_task",
+  description:
+    "Hand a task to another bot in the organization. It works on its own and does not see this conversation, so put everything it needs in the task: the goal, the facts, and what a good result looks like. Its report arrives here later as a message. After assigning, do not wait or guess the result: finish anything that does not depend on it, then end your turn.",
+  properties: {
+    to: { type: "string", description: "The name of the bot to assign to." },
+    task: { type: "string", description: "The whole task, written so it can be done without any other context." },
+  },
+  required: ["to", "task"],
+  async run(input, { conversation }) {
+    const org = orgs.active();
+    const crew = loadCrew().bots;
+    const quest = questStore.get(conversation.id);
+    const callerId = quest?.bot.id ?? conversation.bot ?? null;
+    const caller = callerId ? crew.find((b) => b.id === callerId) : undefined;
+    const allowed = (callerId ? reportsOf(org, callerId) : org.members).map((m) => crew.find((b) => b.id === m.bot)).filter((b): b is Bot => Boolean(b));
+    if (!allowed.length) throw new Error(callerId ? "Nobody reports to you, so there is no one to assign to. Do the work yourself, or say in your report who it belongs to." : "The organization has no bots yet.");
+    const wanted = String(input.to ?? "").trim().toLowerCase();
+    const target = allowed.find((b) => b.id === wanted || b.name.toLowerCase() === wanted);
+    if (!target) throw new Error(`You can assign only to ${allowed.map((b) => b.name).join(", ")}.`);
+    const task = String(input.task ?? "").trim();
+    if (task.length < 10) throw new Error("Say what the task is, with everything the bot needs to know.");
+    if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error(`Tasks can be handed down ${MAX_DEPTH} levels at most. Do this one yourself.`);
+    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
+    if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks you assigned are still open. Wait for their reports before assigning more.`);
+    const by = caller?.name ?? getConfig().agentName;
+    const text = `${task}\n\n[Assigned by ${by}${caller ? `, the ${memberOf(org, caller.id)?.title ?? caller.type}` : ", on the user's behalf"}. You cannot see their conversation, so work from this task alone. End with a short report of what you did and what you found: it is sent back to ${by}.]`;
+    await quests.start({ bot: target, text, title: task, project: quest?.project, parent: { id: conversation.id, by } });
+    return `Assigned to ${target.name} (${memberOf(org, target.id)?.title ?? target.type}). Its report will arrive here as a message when it is done. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
+  },
+});
+
+/** What a bot is told when the person chats with it directly, in place of the line about being sent on a quest. */
+function botChatPrompt(bot: Bot): string {
+  return [
+    "# Your role",
+    `You are ${bot.name}. ${bot.instructions}`,
+    "The user is talking with you directly. Stay in your role: answer and act as this bot, with only the tools listed for you. If they ask for something outside your job, say so plainly and name who in the organization does it.",
+  ].join("\n\n");
+}
+
+/** A line for the general agent about the bots it can hand work to. */
+function orgOverview(): string[] {
+  const org = orgs.active();
+  const crew = new Map(loadCrew().bots.map((b) => [b.id, b]));
+  const members = org.members.filter((m) => crew.has(m.bot));
+  if (!members.length) return [];
+  const lines = members.map((m) => {
+    const leads = reportsOf(org, m.bot).length;
+    return `  - ${crew.get(m.bot)!.name} (${m.title}, ${m.department}${leads ? `, leads ${leads}` : ""}): ${oneLine(crew.get(m.bot)!)}`;
+  });
+  return [
+    `The user runs an organization of bots called ${org.name}${org.mission ? ` (mission: ${org.mission})` : ""}. When a job fits one of them better than doing it yourself, or the user asks for a bot, hand it over with assign_task; a job for a whole department goes to the bot that leads it, which hands the parts to its own reports. Their reports come back here as messages. The bots:\n${lines.join("\n")}`,
+  ];
+}
+
 /** Connector tools for a run, and a line for the prompt about any connector that did not answer. */
 async function connectors(enabled: boolean) {
   const cfg = getConfig();
@@ -278,10 +343,13 @@ export function localRunSpec(jobs: JobBook) {
       const where = quest.copy
         ? [`You are working in your own copy of the repository ${quest.project}, on the branch ${quest.copy.branch}. The user reviews your changes before they keep them, so make the changes directly here; do not commit, push or switch branches.`]
         : [];
+      const role = rolePrompt(bot);
+      const leads = reportsOf(orgs.active(), bot.id).length > 0;
       return {
         model,
-        system: `${localPrompt(root, bot.name, [...where, ...linked.note], conversation)}\n\n${botPrompt(bot)}`,
-        tools: [...(await botTools(bot, root, jobs, claude)), ...linked.tools],
+        system: `${localPrompt(root, bot.name, [...where, ...linked.note], conversation)}\n\n${botPrompt(bot)}${role ? `\n\n${role}` : ""}`,
+        // A bot with reports on the org chart can hand tasks to them.
+        tools: [...(await botTools(bot, root, jobs, claude)), ...(leads ? [assignTool] : []), ...linked.tools],
         hostedTools: claude && bot.powers.includes("web") ? HOSTED_WEB : [],
         // Connectors are reached from this machine (see connectors.ts), so every model can use them.
         mcpServers: [],
@@ -292,13 +360,33 @@ export function localRunSpec(jobs: JobBook) {
       };
     }
 
+    // A chat with one bot in its role: that bot's instructions, powers, model and limits.
+    const chatBot = conversation.bot ? loadCrew().bots.find((b) => b.id === conversation.bot) : undefined;
+    if (chatBot) {
+      const model = resolveModel(cfg, chatBot.model ?? cfg.model);
+      const claude = model.kind === "anthropic";
+      const linked = await connectors(chatBot.powers.includes("connectors"));
+      const role = rolePrompt(chatBot);
+      const leads = reportsOf(orgs.active(), chatBot.id).length > 0;
+      return {
+        model,
+        system: `${localPrompt(WORKSPACE, chatBot.name, linked.note, conversation)}\n\n${botChatPrompt(chatBot)}${role ? `\n\n${role}` : ""}`,
+        tools: [...(await botTools(chatBot, WORKSPACE, jobs, claude)), ...(leads ? [assignTool] : []), ...linked.tools],
+        hostedTools: claude && chatBot.powers.includes("web") ? HOSTED_WEB : [],
+        mcpServers: [],
+        approvalMode: chatBot.approvals,
+        budget: { ...cfg.budget, ...chatBot.budget },
+        cautionAfter: [...CAUTION_TOOLS, ...linked.names],
+      };
+    }
+
     const model = resolveModel(cfg);
-    const tools = await localTools(jobs);
+    const tools = [...(await localTools(jobs)), ...(orgs.active().members.length ? [assignTool] : [])];
     const claude = model.kind === "anthropic";
     const linked = await connectors(true);
     return {
       model,
-      system: localPrompt(WORKSPACE, cfg.agentName, linked.note, conversation),
+      system: localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation),
       // Other models read the web with our own page reader; Claude uses Anthropic's.
       tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],

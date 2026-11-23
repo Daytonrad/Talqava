@@ -129,7 +129,7 @@ async function boot() {
   document.title = "Talqava Agents";
   if (!state.config.projects.includes(state.project)) state.project = "";
   if (needsKey(state.config)) state.view = "settings";
-  await Promise.all([loadCrew(), loadQuests(), refreshList(), loadTemplates(), loadSpaces()]);
+  await Promise.all([loadCrew(), loadQuests(), refreshList(), loadTemplates(), loadSpaces(), loadOrgs()]);
   render();
   clearInterval(boot.timer);
   // One heartbeat keeps every part of the window current.
@@ -157,6 +157,17 @@ function setSpace(id) {
   state.space = id || "";
   remember("talqava.space", state.space);
 }
+
+/** Organizations: the bots in roles, with titles, departments and managers. */
+async function loadOrgs() {
+  try {
+    state.orgs = await api("GET", "orgs");
+  } catch {
+    state.orgs ??= { active: "", orgs: [] };
+  }
+}
+const activeOrg = () => state.orgs?.orgs.find((o) => o.id === state.orgs.active) ?? state.orgs?.orgs[0] ?? { id: "", name: "", mission: "", members: [] };
+const roleOf = (botId) => activeOrg().members.find((m) => m.bot === botId);
 
 async function loadTemplates() {
   try {
@@ -186,9 +197,11 @@ async function tick() {
   await loadQuests();
   if (ticks % 3 === 0) await refreshList();
   renderSpent();
+  syncInboxCount();
   if (questSignature() !== before) {
     if (state.view === "home") renderHome();
     if (state.view === "quest") refreshQuest();
+    if (state.view === "inbox") renderInbox();
   }
   if (state.view === "chat" && ticks % 3 === 0) renderChatList();
 }
@@ -202,32 +215,74 @@ function renderSide() {
 }
 
 // ---------- the window frame ----------
+// One layout for every page: a navigation rail on the left, and beside it a
+// top bar (search and page tools) over the page itself.
 function render() {
+  ui.rail = h("nav", { class: "rail", "aria-label": "Main" });
   ui.top = h("header", { class: "top" });
   ui.body = h("div", { class: "body" });
-  fill(app, ui.top, ui.body);
+  fill(app, ui.rail, h("div", { class: "main" }, ui.top, ui.body));
   renderTop();
   renderBody();
+}
+
+// Line icons for the rail, drawn on a 20 px grid.
+const ICONS = {
+  chat: "M4 5.5A2.5 2.5 0 0 1 6.5 3h7A2.5 2.5 0 0 1 16 5.5v5a2.5 2.5 0 0 1-2.5 2.5H9l-3.5 3v-3A2.5 2.5 0 0 1 4 10.5z",
+  inbox: "M3.5 11.5l2-7h9l2 7M3.5 11.5v3a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5v-3M3.5 11.5h4l1 2h3l1-2h4",
+  team: "M10 3.5v3M10 6.5H5v3M10 6.5h5v3M3 9.5h4v3H3zM13 9.5h4v3h-4zM8 13.5h4v3H8zM10 6.5v7",
+  home: "M5 7.5h10a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 14V9A1.5 1.5 0 0 1 5 7.5zM10 7.5V4.5M7.5 11.5v.01M12.5 11.5v.01",
+  market: "M4 8l1-4h10l1 4M4 8v7.5h12V8M4 8h12M8 15.5v-4h4v4",
+  memory: "M6 3.5h8A1.5 1.5 0 0 1 15.5 5v11.5L10 13.5l-5.5 3V5A1.5 1.5 0 0 1 6 3.5z",
+  skills: "M4.5 5h11M4.5 10h11M4.5 15h7",
+  jobs: "M10 5.5V10l3 2M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0z",
+  settings: "M4 6h7M15 6h1M4 14h1M9 14h7M13 4v4M7 12v4",
+};
+const icon = (name) => {
+  const node = h("span", { class: "ico", "aria-hidden": "true" });
+  node.innerHTML = `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="${ICONS[name]}"/></svg>`;
+  return node;
+};
+
+function renderRail() {
+  if (!ui.rail) return;
+  const v = state.view;
+  const item = (view, label, on, title) => h("button", { class: `railitem ${on ? "on" : ""}`, onclick: () => go(view), title: title || label, "aria-current": on ? "page" : null }, icon(view), h("span", { class: "grow" }, label));
+  const inbox = item("inbox", "Inbox", v === "inbox", "What needs you, what is being worked on, and what got done");
+  ui.inboxCount = h("span", { class: "count", hidden: true });
+  inbox.append(ui.inboxCount);
+  fill(
+    ui.rail,
+    h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava Agents, chat" }, "TALQAVA", h("span", { class: "cursor", "aria-hidden": "true" })),
+    h("div", { class: "railgroup" }, item("chat", "Chat", v === "chat"), inbox),
+    h("div", { class: "raillabel" }, "Team"),
+    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("home", "Bots at work", ["home", "quest", "bot"].includes(v), "Send bots on jobs and follow their work"), item("market", "Marketplace", v === "market" || v === "marketbot", "Free ready-made bots and teams")),
+    h("div", { class: "raillabel" }, "Knowledge"),
+    h("div", { class: "railgroup" }, item("memory", "Memory", v === "memory"), item("skills", "Skills", v === "skills"), item("jobs", "Schedules", v === "jobs")),
+    h("div", { class: "railgroup railend" }, item("settings", "Settings", v === "settings")),
+  );
+  syncInboxCount();
 }
 
 function go(view, id = null) {
   state.view = view;
   state.convId = view === "chat" || view === "quest" ? id : null;
   state.botId = view === "bot" ? id : null;
+  state.marketId = view === "marketbot" ? id : null;
   closePalette();
   renderTop();
   renderBody();
 }
 
 // The repository picker and quest spending only matter on the bot pages.
-const onBotPages = () => ["home", "quest", "bot"].includes(state.view);
+const onBotPages = () => ["home", "quest", "bot", "team"].includes(state.view);
 
 function renderBody() {
   state.source?.close();
   state.source = null;
   ui.log = null;
   ui.body.className = "body";
-  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView };
+  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView };
   (views[state.view] || homeView)();
 }
 
@@ -250,33 +305,28 @@ function renderTop() {
     c.projects.map((p) => h("option", { value: p, selected: p === state.project }, basename(p))),
   );
   ui.spent = h("div", { class: "spent" });
-  const bots = onBotPages();
+  const bots = ["home", "quest"].includes(state.view); // the repository and quest spending belong to the bots' work pages
+  renderRail();
   fill(ui.top,
-    h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava Agents, chat" }, "TALQAVA", h("span", { class: "cursor", "aria-hidden": "true" })),
-    h(
-      "nav",
-      { class: "topnav" },
-      h("button", { class: `navlink ${state.view === "chat" ? "on" : ""}`, onclick: () => go("chat") }, "Chat"),
-      h("button", { class: `navlink ${bots ? "on" : ""}`, onclick: () => go("home"), title: "Optional: bots that take on tasks for you" }, "Bots"),
-    ),
-    bots
-      ? h(
-          "div",
-          { class: "repo", title: state.project || "Quests work in the workspace folder. Add repositories under Settings." },
-          "[",
-          repo,
-          "]",
-          state.project && state.crew?.branch ? [h("span", { class: "on" }, "on"), state.crew.branch] : null,
-        )
-      : null,
-    paletteBox(),
-    bots ? ui.spent : null,
-    h("button", { onclick: () => go("settings") }, "Settings"),
+    ...[
+      bots
+        ? h(
+            "div",
+            { class: "repo", title: state.project || "Quests work in the workspace folder. Add repositories under Settings." },
+            h("span", { class: "repolabel" }, "Repository"),
+            repo,
+            state.project && state.crew?.branch ? [h("span", { class: "on" }, "on"), state.crew.branch] : null,
+          )
+        : null,
+      paletteBox(),
+      bots ? ui.spent : null,
+    ].filter(Boolean),
   );
   renderSpent();
 }
 
 function renderSpent() {
+  syncInboxCount();
   if (!ui.spent) return;
   const today = new Date().toDateString();
   const spent = state.quests.filter((q) => new Date(q.createdAt).toDateString() === today).reduce((sum, q) => sum + (q.cost || 0), 0);
@@ -286,7 +336,10 @@ function renderSpent() {
 // ---------- the command box ----------
 const COMMANDS = [
   ["New chat", () => go("chat")],
+  ["Inbox", () => go("inbox")],
   ["Bots", () => go("home")],
+  ["Organization", () => go("team")],
+  ["Marketplace", () => go("market")],
   ["Hatch a bot", () => go("bot", "new")],
   ["Memory", () => go("memory")],
   ["Skills", () => go("skills")],
@@ -464,6 +517,22 @@ function renderConversation(conv, live) {
     else if (typeof message.content === "string") addUser(message.content);
     else for (const block of message.content) if (block.type === "tool_result") fillResult(block);
   }
+  // A new chat with one bot starts by saying who it is and where it sits.
+  const withBot = state.view === "chat" ? chatBotOf(conv.id) : undefined;
+  if (withBot && !conv.messages.length) {
+    const role = roleOf(withBot.id);
+    const reports = activeOrg().members.filter((m) => m.manager === withBot.id).map((m) => (state.crew?.bots ?? []).find((b) => b.id === m.bot)?.name).filter(Boolean);
+    ui.log.append(
+      h(
+        "div",
+        { class: "empty", style: botStyle(withBot) },
+        keycap(withBot.character, 88, "", withBot.type),
+        h("h2", {}, `You're chatting with ${withBot.name}.`),
+        h("p", {}, `${role ? `${role.title}, ${role.department}. ` : ""}${withBot.instructions.split(/(?<=[.!?])\s/)[0]}`),
+        reports.length ? h("p", { class: "note" }, `${withBot.name} leads ${reports.join(", ")} and can hand them tasks. Their reports come back into this chat.`) : null,
+      ),
+    );
+  }
   setRunning(live.running);
   for (const delta of live.partial) streamDelta(delta);
   for (const approval of live.approvals) addApproval(approval);
@@ -491,8 +560,26 @@ function add(node) {
   return node;
 }
 
+/** How a report from a hand-off begins (REPORT_MARK in src/local/quests.ts). */
+const REPORT_MARK = "[Report from ";
+
 function addUser(text) {
-  add(h("div", { class: "msg user" }, text));
+  if (!text.startsWith(REPORT_MARK)) return add(h("div", { class: "msg user" }, text));
+  // Reports that came back from bots a task was handed to: shown as theirs, not as something the person typed.
+  const body = text.replace(/\n\n\[[^\]]*\]\s*$/, "");
+  for (const part of body.split(/\n\n(?=\[Report from )/)) {
+    const head = /^\[Report from ([^·\]]+) · ([\s\S]*?) · ([^·\]]*)\]\n?/.exec(part);
+    const who = head?.[1].trim() ?? "A bot";
+    const bot = (state.crew?.bots ?? []).find((b) => b.name === who);
+    add(
+      h(
+        "div",
+        { class: "report", style: bot ? botStyle(bot) : "" },
+        h("div", { class: "rhead" }, bot ? keycap(bot.character, 28, "", bot.type) : null, h("b", {}, `${who} reported back`), h("span", { class: "mono small muted" }, head ? `${head[2].trim().slice(0, 70)} · ${head[3].trim()}` : "")),
+        h("div", { class: "md" }, renderMarkdown(head ? part.slice(head[0].length) : part)),
+      ),
+    );
+  }
 }
 
 function summarize(name, input = {}) {
@@ -504,12 +591,13 @@ function summarize(name, input = {}) {
   if (name === "memory") return input.text || `${input.action || ""} ${input.id || ""}`;
   if (name === "skill" || name === "schedule") return `${input.action || ""} ${input.name || ""}`;
   if (name === "conversation_search") return input.query || "";
+  if (name === "assign_task") return `to ${input.to || "a bot"}: ${input.task || ""}`;
   if (name === "browser") return `${input.action || ""} ${input.url || input.target || ""}`;
   const text = JSON.stringify(input);
   return text === "{}" ? "" : text;
 }
 
-const NAMES = { bash: "Shell", str_replace_based_edit_tool: "Files", web_search: "Web search", web_fetch: "Read page", http_request: "API call", memory: "Memory", skill: "Skill", schedule: "Schedule", browser: "Browser", conversation_search: "Search chats", code_execution: "Code" };
+const NAMES = { bash: "Shell", str_replace_based_edit_tool: "Files", web_search: "Web search", web_fetch: "Read page", http_request: "API call", memory: "Memory", skill: "Skill", schedule: "Schedule", browser: "Browser", conversation_search: "Search chats", code_execution: "Code", assign_task: "Handed off" };
 
 function toolCard(id, name, input, done) {
   const stateEl = h("span", { class: `state ${done ? "ok" : ""}` }, done ? "done" : "running…");
@@ -756,27 +844,64 @@ function texturePattern(kind, id, ink = WHITE) {
   return body ? `<pattern id="${id}" width="3" height="3" patternUnits="userSpaceOnUse">${body}</pattern>` : null;
 }
 
-/** The face, set by the mood. */
-function keyFace(mood, ink = WHITE) {
+/** The eyes of a bot at rest. Each kind is drawn its own way, and blinks or looks about (see style.css). */
+function restingEyes(kind, ink) {
+  const stroke = `fill="${BLACK}" stroke="${ink}" stroke-width="1.1"`;
+  if (kind === "wide") return [19, 29].map((x) => `<g class="k-eye"><circle cx="${x}" cy="24.3" r="2.6" ${stroke}/><circle class="k-pupil" cx="${x}" cy="24.3" r="1.05" fill="${ink}"/></g>`).join("");
+  if (kind === "sleepy") return `<path class="k-eye" d="M16.8 24.2q2.2 2 4.4 0M26.8 24.2q2.2 2 4.4 0" fill="none" stroke="${ink}" stroke-width="1.4" stroke-linecap="round"/>`;
+  if (kind === "visor") return `<rect x="15.2" y="21.6" width="17.6" height="5.6" rx="2.8" ${stroke}/><g class="k-scanner"><circle cx="20.4" cy="24.4" r="1.05" fill="${ink}"/><circle cx="27.6" cy="24.4" r="1.05" fill="${ink}"/></g>`;
+  if (kind === "specs")
+    return (
+      `<path d="M21.7 24.3h4.6" stroke="${ink}" stroke-width="1"/>` +
+      [19, 29].map((x) => `<circle cx="${x}" cy="24.3" r="2.7" ${stroke}/><circle class="k-eye" cx="${x}" cy="24.3" r="0.95" fill="${ink}"/>`).join("")
+    );
+  return `<circle class="k-eye" cx="19" cy="24.5" r="1.7" fill="${ink}"/><circle class="k-eye" cx="29" cy="24.5" r="1.7" fill="${ink}"/>`;
+}
+
+/** The face, set by the mood. At rest, the bot's own kind of eyes show. */
+function keyFace(mood, ink = WHITE, eyes = "dots") {
   const line = (d, w = 1.3) => `<path d="${d}" fill="none" stroke="${ink}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
   if (mood === "working") return line("M16.8 24.5h4.4M26.8 24.5h4.4", 1.5) + line("M22 29.6h4", 1.2);
   if (mood === "waiting") return `<circle cx="19" cy="24.5" r="2.3" fill="${ink}"/><circle cx="29" cy="24.5" r="2.3" fill="${ink}"/><circle cx="24" cy="30.2" r="1.3" fill="${ink}"/>`;
   if (mood === "done") return line("M16.8 25.2q2.2-2.6 4.4 0M26.8 25.2q2.2-2.6 4.4 0", 1.4) + line("M21 28.8q3 3.4 6 0");
   if (mood === "stuck") return line("M17.4 23l3.2 3.2M20.6 23l-3.2 3.2M27.4 23l3.2 3.2M30.6 23l-3.2 3.2") + line("M21 30.4l1.5-1 1.5 1 1.5-1 1.5 1", 1.1);
   if (mood === "asleep") return line("M17 24.8h4M27 24.8h4") + line("M22.6 29.8h2.8", 1.1);
-  return `<circle cx="19" cy="24.5" r="1.7" fill="${ink}"/><circle cx="29" cy="24.5" r="1.7" fill="${ink}"/>` + line("M21.8 29.4q2.2 2.4 4.4 0", 1.15);
+  return restingEyes(eyes, ink) + line("M21.8 29.6q2.2 2.2 4.4 0", 1.15);
+}
+
+// What makes each bot look like itself. The names match SHAPES, EYES and TOPS in src/core/crew.ts.
+const SHAPES = { key: "Key", round: "Round", tall: "Tall", wide: "Wide", soft: "Soft" };
+const EYES = { dots: "Dots", wide: "Wide", sleepy: "Sleepy", visor: "Visor", specs: "Specs" };
+const TOPS = { none: "Nothing", antenna: "Antenna", ears: "Ears", horns: "Horns", tuft: "Tuft", halo: "Halo" };
+// Corner radii of the base and the cap, and how the body is stretched.
+const SHAPE_FORM = { key: [8, 6, 1, 1], round: [15, 12.5, 1, 1], tall: [8, 6, 0.84, 1.08], wide: [9, 7, 1.1, 0.88], soft: [12, 9.5, 1, 0.95] };
+const looksOf = (character) => ({ shape: SHAPE_FORM[character?.shape] ? character.shape : "key", eyes: EYES[character?.eyes] ? character.eyes : "dots", top: TOPS[character?.top] ? character.top : "none" });
+
+/** What a bot wears on top, drawn from the top edge of its body. */
+function topFeature(kind, ink, topY, left, right) {
+  const p = (d, extra = "") => `<path d="${d}" fill="none" stroke="${ink}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" ${extra}/>`;
+  const y = topY.toFixed(1);
+  if (kind === "antenna") return `<g class="k-antenna">${p(`M24 ${y}v-4.4`)}<circle cx="24" cy="${(topY - 5.6).toFixed(1)}" r="1.55" fill="${ink}"/></g>`;
+  if (kind === "ears") return `<path class="k-ear" d="M${(left + 3.5).toFixed(1)} ${(topY + 1).toFixed(1)}l1.6-5 4.2 3.2z" fill="${BLACK}" stroke="${ink}" stroke-width="1.2" stroke-linejoin="round"/><path class="k-ear k-ear-r" d="M${(right - 3.5).toFixed(1)} ${(topY + 1).toFixed(1)}l-1.6-5-4.2 3.2z" fill="${BLACK}" stroke="${ink}" stroke-width="1.2" stroke-linejoin="round"/>`;
+  if (kind === "horns") return p(`M${(left + 6).toFixed(1)} ${y}q-3-2-1.6-5.4`) + p(`M${(right - 6).toFixed(1)} ${y}q3-2 1.6-5.4`);
+  if (kind === "tuft") return `<g class="k-tuft">${p(`M24 ${y}v-4M21.2 ${y}l-1.8-3.2M26.8 ${y}l1.8-3.2`)}</g>`;
+  if (kind === "halo") return `<ellipse class="k-halo" cx="24" cy="${(topY - 3.6).toFixed(1)}" rx="7.5" ry="2" fill="none" stroke="${ink}" stroke-width="1.2"/>`;
+  return "";
 }
 
 /**
- * An agent, drawn as a keycap. Moods: "" (idle), working, waiting, done,
- * stuck, asleep; each moves in one way (see style.css), and idle is still.
- * Below 24 px only the cap and a bigger legend are drawn.
+ * An agent, drawn as a keycap character. Each has its own body shape, eyes and
+ * top feature, in its own colour. Moods: "" (at rest), working, waiting, done,
+ * stuck, asleep; each moves in its own way (see style.css). Below 24 px only
+ * the body and a bigger legend are drawn.
  */
 function keycap(character, size = 40, mood = "", type = "") {
   const legend = legendOf(character, type);
   const text = escapeXml(legend);
   const texture = textureOf(character, type);
   const ink = colorOf(character, type);
+  const looks = looksOf(character);
+  const [rx, irx, sx, sy] = SHAPE_FORM[looks.shape];
   const id = `tx${++patternIds}`;
   const pattern = texturePattern(texture, id, ink);
   const baseFill = texture === "solid" ? ink : pattern ? `url(#${id})` : BLACK;
@@ -784,11 +909,15 @@ function keycap(character, size = 40, mood = "", type = "") {
   if (size < 24) {
     const n = [...legend].length;
     const fs = n === 1 ? 14 : n === 2 ? 10.5 : 8;
+    const w = 21 * Math.min(sx, 1.04);
+    const hgt = 20.5 * Math.min(sy, 1.04);
+    const x = 12 - w / 2;
+    const y = 22.5 - hgt;
     svg =
       `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24"><defs>${pattern ?? ""}</defs>` +
-      `<rect x="1.5" y="2" width="21" height="20.5" rx="4.5" fill="${baseFill}" stroke="${ink}" stroke-width="1"/>` +
-      `<rect x="3.2" y="2.4" width="17.6" height="15.6" rx="3.5" fill="${BLACK}" stroke="${ink}" stroke-width="1"/>` +
-      `<text x="12" y="${(10.2 + fs * 0.36).toFixed(1)}" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="${fs}" font-weight="700" fill="${ink}">${text}</text></svg>`;
+      `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${hgt.toFixed(1)}" rx="${(rx * 0.56).toFixed(1)}" fill="${baseFill}" stroke="${ink}" stroke-width="1"/>` +
+      `<rect x="${(x + 1.7).toFixed(1)}" y="${(y + 0.4).toFixed(1)}" width="${(w - 3.4).toFixed(1)}" height="${(hgt - 4.9).toFixed(1)}" rx="${(irx * 0.56).toFixed(1)}" fill="${BLACK}" stroke="${ink}" stroke-width="1"/>` +
+      `<text x="12" y="${(y + (hgt - 4.9) / 2 + fs * 0.36 + 0.4).toFixed(1)}" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="${fs}" font-weight="700" fill="${ink}">${text}</text></svg>`;
   } else {
     const big = size >= 64;
     const legendText = big
@@ -800,14 +929,20 @@ function keycap(character, size = 40, mood = "", type = "") {
       (mood === "waiting" ? `<rect class="k-march" x="2.5" y="5.5" width="43" height="38" rx="10.5" fill="none" stroke="${ink}" stroke-width="1.1" stroke-dasharray="3 3"/>` : "") +
       (mood === "done" ? `<circle cx="42" cy="8" r="5.2" fill="${ink}"/><path class="k-tick" d="M39.6 8.2l1.7 1.7 3.2-3.4" fill="none" stroke="${BLACK}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8" stroke-dashoffset="8"/>` : "") +
       (mood === "asleep" ? `<text class="k-z" x="39" y="9" font-family="ui-monospace, monospace" font-size="7" fill="#b8b8b8">z</text>` : "");
+    // The body is stretched from the middle of its bottom edge, so it always stands on its legs.
+    const topY = 41 - 33 * sy;
+    const stretch = sx === 1 && sy === 1 ? "" : ` transform="translate(24 41) scale(${sx} ${sy}) translate(-24 -41)"`;
     svg =
       `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 48 48"><defs>${pattern ?? ""}</defs>` +
-      `<path d="M17.5 41v5M30.5 41v5" stroke="${ink}" stroke-width="1.6" stroke-linecap="round"/>` +
-      `<g class="cap"><rect x="5" y="8" width="38" height="33" rx="8" fill="${baseFill}" stroke="${ink}" stroke-width="1.2"/>` +
-      `<rect x="8.5" y="8.5" width="31" height="26" rx="6" fill="${BLACK}" stroke="${ink}" stroke-width="1.2"/>` +
-      `${legendText}${cursor}${keyFace(mood, ink)}</g>${extras}</svg>`;
+      `<path class="k-legs" d="M${(24 - 6.5 * sx).toFixed(1)} 41v5M${(24 + 6.5 * sx).toFixed(1)} 41v5" stroke="${ink}" stroke-width="1.6" stroke-linecap="round"/>` +
+      `<g class="cap">${topFeature(looks.top, ink, topY, 24 - 19 * sx, 24 + 19 * sx)}<g${stretch}><rect x="5" y="8" width="38" height="33" rx="${rx}" fill="${baseFill}" stroke="${ink}" stroke-width="1.2"/>` +
+      `<rect x="8.5" y="8.5" width="31" height="26" rx="${irx}" fill="${BLACK}" stroke="${ink}" stroke-width="1.2"/>` +
+      `${legendText}${cursor}${keyFace(mood, ink, looks.eyes)}</g></g>${extras}</svg>`;
   }
-  const node = h("span", { class: `keychar ${mood ? `k-${mood}` : ""}`, style: `--bot: ${ink}` });
+  // Each bot starts its movement at a different moment and rests in its own way, so a row of them does not move in step.
+  const delay = -((patternIds * 0.83) % 5).toFixed(2);
+  const way = ([...legend].reduce((n, ch) => n + ch.codePointAt(0), 0) + looks.shape.length + looks.top.length) % 3;
+  const node = h("span", { class: `keychar ${mood ? `k-${mood}` : `k-idle k-rest-${way}`}`, style: `--bot: ${ink}; --k-delay: ${delay}s` });
   node.innerHTML = svg;
   return node;
 }
@@ -868,37 +1003,48 @@ function renderHome() {
   renderLog();
 }
 
+/** Bots by team group, groups in name order. */
+function byGroup(bots) {
+  const groups = new Map();
+  for (const bot of bots) groups.set(bot.group || "Other", [...(groups.get(bot.group || "Other") ?? []), bot]);
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
 function renderCrewColumn() {
   const bots = state.crew?.bots ?? [];
   const live = new Map(state.quests.filter(isLive).map((q) => [q.bot.id, q]));
   const fromRepo = bots.some((b) => b.source === "project");
-  fill(ui.crewCol, 
-    h("div", { class: "side-head" }, h("h2", { class: "label" }, `Crew · ${bots.length}`), h("span", { class: "note small" }, fromRepo ? ".crew/ in this repo" : "")),
-    ...bots.map((bot) => {
-      const q = live.get(bot.id);
-      const status = q ? (q.status === "waiting" ? "◌ waiting on you" : `● step ${q.steps || 1}`) : "idle";
-      return h(
-        "button",
-        {
-          class: `member ${bot.id === state.selectedBot ? "on" : ""}`,
-          style: botStyle(bot),
-          title: bot.instructions,
-          onclick: () => {
-            state.selectedBot = bot.id;
-            remember("talqava.bot", bot.id);
-            if (ui.palette) ui.palette.placeholder = paletteHint();
-            if (q) go("quest", q.id);
-            else renderCrewColumn();
-          },
-          ondblclick: () => go("bot", bot.id),
+  const member = (bot) => {
+    const q = live.get(bot.id);
+    const status = q ? (q.status === "waiting" ? "◌ waiting on you" : `● step ${q.steps || 1}`) : bot.month?.state === "stopped" ? "■ at its monthly budget" : "idle";
+    return h(
+      "button",
+      {
+        class: `member ${bot.id === state.selectedBot ? "on" : ""}`,
+        style: botStyle(bot),
+        title: bot.instructions,
+        onclick: () => {
+          state.selectedBot = bot.id;
+          remember("talqava.bot", bot.id);
+          if (ui.palette) ui.palette.placeholder = paletteHint();
+          if (q) go("quest", q.id);
+          else renderCrewColumn();
         },
-        keycap(bot.character, 40, mood(q), bot.type),
-        h("span", { class: "who" }, h("b", {}, bot.name), " ", h("span", { class: "type" }, bot.type), h("span", { class: `status ${q?.status === "waiting" ? "wait" : ""}` }, status)),
-        modelChip(bot.modelInfo),
-        h("span", { class: "plain edit", role: "button", onclick: (e) => (e.stopPropagation(), go("bot", bot.id)) }, "Edit"),
-      );
-    }),
+        ondblclick: () => go("bot", bot.id),
+      },
+      keycap(bot.character, 36, mood(q), bot.type),
+      h("span", { class: "who" }, h("b", {}, bot.name), h("span", { class: "type" }, roleOf(bot.id)?.title ?? cap(bot.type)), h("span", { class: `status ${q?.status === "waiting" ? "wait" : ""}` }, status)),
+      // The model is only worth a mention here when the bot has none it can use.
+      bot.modelInfo?.kind ? null : modelChip(bot.modelInfo),
+      h("span", { class: "plain edit", role: "button", onclick: (e) => (e.stopPropagation(), go("bot", bot.id)) }, "Edit"),
+    );
+  };
+  fill(ui.crewCol, 
+    h("div", { class: "side-head" }, h("h2", { class: "label" }, `Crew · ${bots.length}`), h("button", { class: "plain small", onclick: () => go("team"), title: "The org chart, departments and budgets" }, "Organization →")),
+    fromRepo ? h("div", { class: "note small", style: "padding: 0 8px" }, ".crew/ in this repo") : null,
+    ...byGroup(bots).flatMap(([group, members]) => [h("div", { class: "grouplabel" }, group), ...members.map(member)]),
     state.crew?.problems?.length ? h("div", { class: "banner error small" }, state.crew.problems.map((p) => h("div", {}, p.problem))) : null,
+    h("button", { class: "hatch", onclick: () => go("market") }, "+ Add from the marketplace"),
     h("button", { class: "hatch", onclick: () => go("bot", "new") }, "+ Hatch a bot"),
     navFooter(),
   );
@@ -906,15 +1052,9 @@ function renderCrewColumn() {
 
 const cap = (text) => String(text).charAt(0).toUpperCase() + String(text).slice(1);
 
-function navFooter(current) {
-  const links = [
-    ["chat", "Chat"],
-    ["home", "Bots"],
-    ["memory", "Memory"],
-    ["skills", "Skills"],
-    ["jobs", "Schedules"],
-  ];
-  return h("nav", { class: "side-foot" }, links.map(([view, label]) => h("button", { class: `navlink ${current === view ? "on" : ""}`, onclick: () => go(view) }, label)));
+/** Pages are reached from the rail on the left, so the side columns carry no links of their own. */
+function navFooter() {
+  return null;
 }
 
 function renderBoard() {
@@ -1074,6 +1214,465 @@ function renderLog() {
   );
 }
 
+// ---------- the inbox ----------
+// One place for what needs the person, what is being worked on and what got
+// done, across chats and bots.
+const RECENT = 3 * 24 * 3600 * 1000;
+function inboxItems() {
+  const quests = state.quests ?? [];
+  const needs = [];
+  for (const q of quests) {
+    const recent = Date.now() - new Date(q.updatedAt).getTime() < RECENT;
+    if (q.approvals?.length) needs.push({ kind: "approval", q, approval: q.approvals[0] });
+    else if (q.branch && !q.outcome && !isLive(q) && q.status !== "failed" && q.changedFiles !== 0) needs.push({ kind: "review", q });
+    else if (q.check && !q.check.passed && q.status === "done" && recent) needs.push({ kind: "check", q });
+    else if (q.status === "failed" && recent) needs.push({ kind: "failed", q });
+    else if (q.status === "budget" && recent) needs.push({ kind: "budget", q });
+  }
+  for (const c of state.convs ?? []) if (c.needsApproval) needs.push({ kind: "chat", c });
+  for (const bot of state.crew?.bots ?? []) if (bot.month?.state === "stopped") needs.push({ kind: "monthly", bot });
+  if (state.crew?.budgets?.total.state === "stopped") needs.push({ kind: "total" });
+  const working = [...quests.filter((q) => isLive(q) && !q.approvals?.length).map((q) => ({ q })), ...(state.convs ?? []).filter((c) => c.running && !c.needsApproval).map((c) => ({ c }))];
+  const today = new Date().toDateString();
+  const done = quests.filter((q) => !isLive(q) && new Date(q.updatedAt).toDateString() === today && !needs.some((n) => n.q === q));
+  return { needs, working, done };
+}
+
+function syncInboxCount() {
+  if (!ui.inboxCount) return;
+  const n = inboxItems().needs.length;
+  ui.inboxCount.hidden = !n;
+  ui.inboxCount.textContent = String(n);
+}
+
+function inboxView() {
+  ui.body.className = "body";
+  ui.log = null;
+  ui.inbox = h("div", { class: "inbox" });
+  fill(ui.body, h("main", { class: "center" }, ui.inbox));
+  renderInbox();
+  loadCrew().then(() => state.view === "inbox" && renderInbox());
+}
+
+function renderInbox() {
+  if (state.view !== "inbox" || !ui.inbox) return;
+  const { needs, working, done } = inboxItems();
+  const act = (fn) => attempt(async () => (await fn(), await Promise.all([loadQuests(), refreshList(), loadCrew()]), renderInbox(), syncInboxCount()), ui.inbox);
+  const row = (bot, title, sub, extra, buttons, tone = "") =>
+    h("div", { class: `irow ${tone}`, style: bot ? botStyle(bot) : "" }, bot ? keycap(bot.character, 40, "", bot.type) : h("span", { class: "ichat", "aria-hidden": "true" }, "…"), h("div", { class: "grow" }, h("b", {}, title), h("div", { class: "note small" }, sub), extra), h("div", { class: "row" }, buttons));
+  const need = (n) => {
+    const { q } = n;
+    if (n.kind === "approval") {
+      const a = n.approval;
+      const decide = (decision) => act(() => api("POST", `conversations/${q.id}/approvals/${a.id}`, { decision }));
+      return row(q.bot, `${q.bot.name} wants to use ${NAMES[a.name] || a.name}`, `${q.title} · step ${q.steps || 1}`, h("pre", {}, a.name === "bash" ? a.input.command : JSON.stringify(a.input, null, 2)), [
+        h("button", { class: "primary", onclick: () => decide("allow") }, "Allow once"),
+        h("button", { class: "danger", onclick: () => decide("deny") }, "Don't allow"),
+        h("button", { class: "plain", onclick: () => go("quest", q.id) }, "Open"),
+      ]);
+    }
+    if (n.kind === "review") return row(q.bot, `${q.title} is ready for your review`, `${q.bot.name}${q.check?.passed ? " · passed its check" : ""} · ${q.changedFiles ?? "some"} file${q.changedFiles === 1 ? "" : "s"} changed on ${q.branch}`, null, [h("button", { class: "primary", onclick: () => go("quest", q.id) }, "Review")]);
+    if (n.kind === "check") return row(q.bot, `${q.title} did not pass its check`, `${q.bot.name} · ${shortWhen(q.updatedAt)}`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
+    if (n.kind === "failed") return row(q.bot, `${q.title} failed`, `${q.bot.name} · ${q.note || shortWhen(q.updatedAt)}`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
+    if (n.kind === "budget") return row(q.bot, `${q.title} stopped at its budget`, `${q.bot.name} · say “continue” in the quest to keep going`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
+    if (n.kind === "chat") return row(null, "A chat is waiting for your approval", n.c.title, null, [h("button", { class: "primary", onclick: () => go("chat", n.c.id) }, "Open chat")]);
+    if (n.kind === "monthly") return row(n.bot, `${n.bot.name} has reached its monthly budget`, `${money(n.bot.month.spent)} of ${money(n.bot.month.limit)} · it starts no new work until you raise it`, null, [h("button", { class: "primary", onclick: () => go("bot", n.bot.id) }, "Raise budget")]);
+    return row(null, "Your bots have reached the monthly budget for all bots", "No bot starts new work until you raise it or the month turns.", null, [h("button", { class: "primary", onclick: () => go("team") }, "Change budget")]);
+  };
+  const live = working.filter((w) => w.q).length;
+  fill(
+    ui.inbox,
+    h(
+      "div",
+      { class: "row" },
+      h("div", { class: "grow" }, h("h1", {}, "Inbox"), h("p", { class: "lead" }, "What needs you, what is being worked on, and what got done today, across chats and bots.")),
+      live ? h("button", { class: "danger", onclick: () => confirm(`Stop the ${live} bot${live === 1 ? "" : "s"} working now? Their work so far is kept, and you can say “continue” later.`) && act(() => Promise.all(working.filter((w) => w.q).map((w) => api("POST", `quests/${w.q.id}/stop`)))) }, "Stop all bots") : null,
+    ),
+    h("section", {}, h("h2", { class: `label ${needs.length ? "loud" : ""}` }, `◌ Needs you · ${needs.length}`), needs.length ? needs.map(need) : h("p", { class: "note" }, "Nothing needs you right now.")),
+    h(
+      "section",
+      {},
+      h("h2", { class: "label" }, `● Working now · ${working.length}`),
+      working.length
+        ? working.map((w) =>
+            w.q
+              ? row(w.q.bot, `${w.q.bot.name} · ${w.q.title}`, `step ${w.q.steps || 1}${w.q.activity ? ` · ${NAMES[w.q.activity.name] || w.q.activity.name}` : ""}${w.q.cost >= 0.001 ? ` · ${money(w.q.cost)} so far` : ""}`, null, [h("button", { onclick: () => go("quest", w.q.id) }, "Open"), h("button", { class: "plain", onclick: () => act(() => api("POST", `quests/${w.q.id}/stop`)) }, "Stop")])
+              : row(null, w.c.title, "A chat is being answered", null, [h("button", { onclick: () => go("chat", w.c.id) }, "Open chat")]),
+          )
+        : h("p", { class: "note" }, "Nothing is running."),
+    ),
+    h(
+      "section",
+      {},
+      h("h2", { class: "label" }, `✓ Done today · ${done.length}`),
+      done.length
+        ? done.map((q) => h("button", { class: "idone", onclick: () => go("quest", q.id) }, h("span", { class: "grow" }, q.title), h("span", { class: "mono small muted" }, `${q.bot.name} · ${shortWhen(q.updatedAt)} · ${standing(q)[0]}${q.cost >= 0.001 ? ` · ${money(q.cost)}` : ""}`)))
+        : h("p", { class: "note" }, "Finished work from today appears here."),
+    ),
+  );
+}
+
+// ---------- the organization ----------
+// The bots in roles: an org chart with the person at the top, departments, and
+// what each bot may spend this month. Work follows the chart: a bot with
+// reports hands tasks to them and gets their reports back.
+async function teamView() {
+  ui.body.className = "body";
+  ui.log = null;
+  const col = h("div", { class: "team" });
+  fill(ui.body, h("main", { class: "center" }, col));
+  await Promise.all([loadCrew(), loadOrgs()]);
+  if (state.view !== "team") return;
+  const again = () => teamView();
+  const org = activeOrg();
+  const bots = state.crew?.bots ?? [];
+  const byId = new Map(bots.map((b) => [b.id, b]));
+  const members = org.members.filter((m) => byId.has(m.bot));
+  const outside = bots.filter((b) => !members.some((m) => m.bot === b.id));
+  const budgets = state.crew?.budgets;
+  const live = new Map(state.quests.filter(isLive).map((q) => [q.bot.id, q]));
+  const total = budgets?.total ?? { spent: 0, limit: null, state: "ok" };
+  const needs = inboxItems().needs.length;
+  const save = (fn) => attempt(async () => (await fn(), await loadOrgs(), again()), col);
+  const bar = (line, color) => {
+    if (line?.limit == null) return null;
+    const pct = line.limit > 0 ? Math.min(100, Math.round((line.spent / line.limit) * 100)) : 100;
+    return h("div", { class: `track ${line.state}`, role: "img", "aria-label": `${pct} percent of the budget used` }, h("span", { style: `width: ${pct}%; background: ${line.state === "stopped" ? "var(--text)" : line.state === "warned" ? "#ffb020" : color || "var(--accent)"}` }));
+  };
+  const statusOf = (bot) => {
+    const q = live.get(bot.id);
+    return q ? (q.status === "waiting" ? ["◌ needs you", true] : ["● working", true]) : bot.month?.state === "stopped" ? ["■ at budget", true] : ["idle", false];
+  };
+
+  // ----- which organization -----
+  const newName = h("input", { placeholder: "Name, e.g. your company", maxlength: 50, "aria-label": "Name of the new organization" });
+  const newMission = h("input", { placeholder: "What it is for, in a sentence (optional)", maxlength: 300, "aria-label": "Mission" });
+  const newForm = h("form", { class: "card orgform", hidden: true, onsubmit: (e) => (e.preventDefault(), save(() => api("POST", "orgs", { name: newName.value, mission: newMission.value }))) }, h("b", {}, "New organization"), h("p", { class: "note small" }, "It starts empty. Add bots to it from below or from the marketplace; a bot can be in more than one organization."), newName, newMission, h("div", { class: "row" }, h("button", { class: "primary" }, "Create organization"), h("button", { type: "button", onclick: () => (newForm.hidden = true) }, "Cancel")));
+  const rename = h("input", { value: org.name, maxlength: 50, "aria-label": "Organization name" });
+  const mission = h("input", { value: org.mission, maxlength: 300, placeholder: "What the organization is for, in a sentence. Every bot is told it.", "aria-label": "Mission" });
+  const editForm = h(
+    "form",
+    { class: "card orgform", hidden: true, onsubmit: (e) => (e.preventDefault(), save(() => api("PATCH", `orgs/${org.id}`, { name: rename.value, mission: mission.value }))) },
+    h("b", {}, "Name and mission"),
+    rename,
+    mission,
+    h(
+      "div",
+      { class: "row" },
+      h("button", { class: "primary" }, "Save"),
+      h("button", { type: "button", onclick: () => (editForm.hidden = true) }, "Cancel"),
+      state.orgs.orgs.length > 1 ? h("button", { type: "button", class: "plain danger", onclick: () => confirm(`Delete the organization “${org.name}”? Its chart is deleted. The bots themselves are kept.`) && save(() => api("DELETE", `orgs/${org.id}`)) }, "Delete organization") : null,
+    ),
+  );
+  const pick = h("select", { "aria-label": "Organization", class: "orgpick" }, state.orgs.orgs.map((o) => h("option", { value: o.id, selected: o.id === org.id }, o.name)));
+  pick.addEventListener("change", () => save(() => api("PATCH", `orgs/${pick.value}`, { active: true })));
+
+  // ----- one member, on the chart or in a department -----
+  const pickMember = (id) => ((ui.orgSel = ui.orgSel === id ? null : id), again());
+  const node = (m) => {
+    const bot = byId.get(m.bot);
+    const [status, loud] = statusOf(bot);
+    const reports = members.filter((x) => x.manager === m.bot).length;
+    return h(
+      "button",
+      { class: `onode ${ui.orgSel === m.bot ? "on" : ""} ${bot.month?.state === "stopped" ? "stopped" : ""}`, style: botStyle(bot), onclick: () => pickMember(m.bot), title: `${bot.name}: ${m.title}` },
+      keycap(bot.character, 44, mood(live.get(bot.id)), bot.type),
+      h("b", {}, bot.name),
+      m.title.toLowerCase() === bot.name.toLowerCase() ? null : h("span", { class: "otitle" }, m.title),
+      h("span", { class: `mono small ${loud ? "" : "muted"}` }, reports ? `${status} · leads ${reports}` : status),
+    );
+  };
+  const branch = (managerId) => {
+    const kids = members.filter((m) => m.manager === managerId).sort((a, b) => a.department.localeCompare(b.department) || a.title.localeCompare(b.title));
+    return kids.length ? h("ul", {}, kids.map((m) => h("li", {}, node(m), branch(m.bot)))) : null;
+  };
+
+  // ----- the selected member's role -----
+  const detail = () => {
+    const m = members.find((x) => x.bot === ui.orgSel);
+    if (!m) return null;
+    const bot = byId.get(m.bot);
+    const title = h("input", { value: m.title, maxlength: 50 });
+    const dept = h("input", { value: m.department, maxlength: 30, list: "org-depts" });
+    // Nobody below this bot can become its manager.
+    const below = new Set([m.bot]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const x of members) if (x.manager && below.has(x.manager) && !below.has(x.bot)) (below.add(x.bot), (grew = true));
+    }
+    const boss = h("select", {}, h("option", { value: "", selected: !m.manager }, "You"), members.filter((x) => !below.has(x.bot)).map((x) => h("option", { value: x.bot, selected: x.bot === m.manager }, `${byId.get(x.bot).name} · ${x.title}`)));
+    const reports = members.filter((x) => x.manager === m.bot);
+    const month = bot.month ?? { spent: 0, limit: null, state: "ok" };
+    return h(
+      "section",
+      { class: "card memberbox", style: botStyle(bot) },
+      h("div", { class: "row" }, keycap(bot.character, 64, mood(live.get(bot.id)), bot.type), h("div", { class: "grow" }, h("h2", {}, bot.name), h("div", { class: "note" }, bot.instructions.split(/(?<=[.!?])\s/)[0])), h("button", { class: "plain", onclick: () => pickMember(m.bot), "aria-label": "Close" }, "✕")),
+      h(
+        "form",
+        { class: "rolegrid", onsubmit: (e) => (e.preventDefault(), save(() => api("PUT", `orgs/${org.id}/members`, { bot: m.bot, title: title.value, department: dept.value, manager: boss.value || null }))) },
+        h("label", { class: "field" }, "Title", title),
+        h("label", { class: "field" }, "Department", dept),
+        h("label", { class: "field" }, "Reports to", boss),
+        h("button", { class: "primary" }, "Save role"),
+      ),
+      h("p", { class: "note small" }, reports.length ? `${bot.name} can hand tasks to ${reports.map((r) => byId.get(r.bot).name).join(", ")}, and gets their reports back.` : `Nobody reports to ${bot.name}, so it does its work itself. Give it reports by setting another bot's “Reports to”.`),
+      month.limit != null || month.spent >= 0.001 ? h("div", { class: "mono small muted" }, month.limit != null ? `${money(month.spent)} of ${money(month.limit)} this month` : `${money(month.spent)} this month · no limit`) : null,
+      bar(month, colorOf(bot.character, bot.type)),
+      h(
+        "div",
+        { class: "row" },
+        h("button", { class: "primary", onclick: () => chatWith(bot, col) }, `Chat with ${bot.name}`),
+        h("button", { onclick: () => ((state.selectedBot = bot.id), remember("talqava.bot", bot.id), go("home")) }, "Send on a quest"),
+        h("button", { onclick: () => go("bot", bot.id) }, month.state === "stopped" ? "Raise budget" : "Edit bot"),
+        h("button", { class: "plain danger", onclick: () => confirm(`Take ${bot.name} off the chart of ${org.name}? Its reports move up to its manager. The bot itself is kept.`) && ((ui.orgSel = null), save(() => api("DELETE", `orgs/${org.id}/members/${m.bot}`))) }, "Remove from organization"),
+      ),
+    );
+  };
+
+  const limit = h("input", { type: "number", min: 0, step: 1, value: total.limit ?? "", placeholder: "No limit", "aria-label": "Monthly budget for all bots, in dollars" });
+  const stat = (label, value, loud) => h("div", { class: "stat" }, h("span", { class: "label" }, label), h("b", { class: loud ? "loud" : "" }, value));
+  const chartView = (ui.orgView ?? "chart") === "chart";
+  const depts = [...new Set(members.map((m) => m.department))].sort();
+  col.append(
+    ...[
+      h(
+        "div",
+        { class: "row" },
+        h("div", { class: "grow" }, h("div", { class: "row" }, h("h1", {}, org.name || "Organization"), state.orgs.orgs.length > 1 ? pick : null), h("p", { class: "lead" }, org.mission || "Your bots in roles. Work follows the chart: a bot with reports hands tasks down and brings the results back up.")),
+        h("button", { onclick: () => ((editForm.hidden = !editForm.hidden), (newForm.hidden = true)) }, "Name and mission"),
+        h("button", { onclick: () => ((newForm.hidden = !newForm.hidden), (editForm.hidden = true), newName.focus()) }, "＋ New organization"),
+        h("button", { class: "primary", onclick: () => go("market") }, "＋ Add bots or a team"),
+      ),
+      editForm,
+      newForm,
+      h("section", { class: "stats" }, stat("Members", String(members.length)), stat("Departments", String(depts.length)), stat("Working now", String(members.filter((m) => live.has(m.bot)).length)), stat("Need you", String(needs), needs > 0), stat("Spent this month", total.limit != null ? `${money(total.spent)} of ${money(total.limit)}` : money(total.spent))),
+      h(
+        "div",
+        { class: "row" },
+        h("div", { class: "tabs flat", role: "tablist" }, h("button", { role: "tab", class: chartView ? "on" : "", onclick: () => ((ui.orgView = "chart"), again()) }, "Org chart"), h("button", { role: "tab", class: chartView ? "" : "on", onclick: () => ((ui.orgView = "depts"), again()) }, "Departments")),
+        h("span", { class: "note grow" }, "Click a bot to set its title, department and who it reports to, or to chat with it."),
+      ),
+      members.length
+        ? chartView
+          ? h("div", { class: "chartwrap" }, h("div", { class: "tree" }, h("ul", {}, h("li", {}, h("div", { class: "onode you" }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("b", {}, "You"), h("span", { class: "otitle" }, "Owner")), branch(null)))))
+          : h(
+              "section",
+              { class: "depts" },
+              depts.map((d) => {
+                const list = members.filter((m) => m.department === d).sort((a, b) => Number(Boolean(a.manager && members.find((x) => x.bot === a.manager)?.department === d)) - Number(Boolean(b.manager && members.find((x) => x.bot === b.manager)?.department === d)));
+                return h("div", { class: "dept" }, h("div", { class: "row" }, h("h2", { class: "grow" }, d), h("span", { class: "mono small muted" }, `${list.length} bot${list.length === 1 ? "" : "s"}`)), h("div", { class: "deptnodes" }, list.map(node)));
+              }),
+            )
+        : h("div", { class: "card" }, h("b", {}, `${org.name} has no bots yet.`), h("p", { class: "note" }, "Add a ready-made team from the marketplace, or add your existing bots below.")),
+      detail(),
+      h("datalist", { id: "org-depts" }, depts.map((d) => h("option", { value: d }))),
+      outside.length
+        ? h(
+            "section",
+            { class: "card" },
+            h("h2", { class: "label" }, `Not in ${org.name} · ${outside.length}`),
+            h("div", { class: "outside" }, outside.map((bot) => h("div", { class: "outbot", style: botStyle(bot) }, keycap(bot.character, 28, "", bot.type), h("span", { class: "grow" }, bot.name), h("button", { onclick: () => ((ui.orgSel = bot.id), save(() => api("PUT", `orgs/${org.id}/members`, { bot: bot.id }))) }, "Add")))),
+          )
+        : null,
+      h(
+        "section",
+        { class: `card allbudget ${total.state}` },
+        h("div", { class: "row" }, h("h2", { class: "label grow" }, `Budget for all bots · resets ${budgets?.resets ?? ""}`), total.state === "stopped" ? h("span", { class: "pill loud" }, "■ Stopped: no bot starts new work") : total.state === "warned" ? h("span", { class: "pill loud" }, "Past 80%") : null),
+        bar(total),
+        h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), attempt(async () => ((state.config = await api("PUT", "settings", { monthlyBudget: limit.value === "" ? null : Number(limit.value) })), again()), col)) }, h("span", { class: "note" }, "Per month ($)"), limit, h("button", {}, "Save")),
+        h("p", { class: "note small" }, "Bots are warned at 80% and start no new work at 100%, until you raise the budget or the month turns. Each bot can have its own monthly budget too. Spend is estimated from list prices."),
+      ),
+    ].filter(Boolean),
+  );
+}
+
+// ---------- the marketplace ----------
+// Free, ready-made bots, each built for one job. A bot's instructions are shown
+// in full before it is added; adding saves a copy as the person's own bot.
+async function loadMarket() {
+  const market = await api("GET", "marketplace");
+  state.market = market.bots;
+  return market;
+}
+
+async function addFromMarket(bot, where) {
+  await attempt(async () => {
+    await api("POST", `marketplace/${bot.id}/add`);
+    await Promise.all([loadMarket(), loadCrew(), loadOrgs()]);
+    state.selectedBot = bot.id;
+    remember("talqava.bot", bot.id);
+    renderBody();
+  }, where);
+}
+
+/** What a bot may use, and the risky things it cannot, in plain words. */
+function powerWords(bot) {
+  const can = bot.powers.map((p) => POWER_NAMES[p] || p);
+  const risky = { web: "The web", files: "Your files", shell: "Shell commands", api: "API calls", browser: "A browser", schedule: "Schedules" };
+  const cannot = Object.entries(risky).filter(([p]) => !bot.powers.includes(p)).map(([, label]) => label);
+  return { can, cannot };
+}
+
+function marketCard(bot) {
+  const add = bot.added
+    ? h("button", { class: "madd", onclick: (e) => (e.stopPropagation(), go("bot", bot.id)) }, "Edit")
+    : h("button", { class: "madd primary", onclick: (e) => (e.stopPropagation(), addFromMarket(bot, ui.body)) }, "Add");
+  return h(
+    "article",
+    { class: "mcard", style: botStyle(bot), tabindex: "0", onclick: () => go("marketbot", bot.id), onkeydown: (e) => e.key === "Enter" && e.target === e.currentTarget && go("marketbot", bot.id) },
+    h("div", { class: "mhead" }, keycap(bot.character, 40, "", bot.type), h("div", {}, h("b", {}, bot.name), h("div", { class: "by" }, bot.listing.title.toLowerCase() === bot.name.toLowerCase() ? `by ${bot.listing.by}` : `${bot.listing.title} · by ${bot.listing.by}`))),
+    h("p", { class: "mdesc" }, bot.listing.summary),
+    h("div", { class: "mfoot" }, h("span", { class: "mono small muted" }, bot.added ? "✓ On your team" : `Free · ${bot.approvals === "ask" ? "asks before changes" : "runs everything"}`), add),
+  );
+}
+
+async function marketView() {
+  ui.body.className = "body";
+  ui.log = null;
+  const col = h("div", { class: "market" });
+  fill(ui.body, h("main", { class: "center" }, col));
+  const market = await attempt(loadMarket, col);
+  if (!market || state.view !== "market") return;
+  const bots = market.bots;
+  const categories = [...new Set(bots.map((b) => b.listing.category))].sort();
+  const search = h("input", { type: "search", placeholder: "Search by bot name or what you need done", "aria-label": "Search bots", value: ui.marketSearch || "" });
+  const pills = h("div", { class: "pills", role: "group", "aria-label": "Categories" });
+  const results = h("div", { class: "msections" });
+  const draw = () => {
+    const cat = ui.marketCat || "";
+    const needle = search.value.trim().toLowerCase();
+    fill(
+      pills,
+      [["", "All"], ...categories.map((c) => [c, c]), ["+mine", "On my team"]].map(([id, label]) =>
+        h("button", { class: `mpill ${cat === id ? "on" : ""}`, "aria-pressed": String(cat === id), onclick: () => ((ui.marketCat = id), draw()) }, label),
+      ),
+    );
+    const match = (b) =>
+      (!needle || `${b.name} ${b.listing.summary} ${b.listing.category} ${b.listing.will.join(" ")}`.toLowerCase().includes(needle)) &&
+      (!cat || (cat === "+mine" ? b.added : b.listing.category === cat));
+    const shown = bots.filter(match);
+    const section = (title, list) => (list.length ? h("section", {}, h("h2", {}, title), h("div", { class: "mgrid" }, list.map(marketCard))) : null);
+    const featured = !cat && !needle ? bots.filter((b) => b.listing.featured) : [];
+    const byBot = new Map(bots.map((b) => [b.id, b]));
+    const teams = (market.teams ?? []).filter((t) => (!cat || t.department === cat) && (!needle || `${t.name} ${t.summary}`.toLowerCase().includes(needle)) && cat !== "+mine");
+    const teamCard = (t) => {
+      const list = t.bots.map((id) => byBot.get(id)).filter(Boolean);
+      const have = list.filter((b) => b.added).length;
+      const add = h("button", { class: have === list.length ? "madd" : "madd primary", disabled: have === list.length }, have === list.length ? "✓ On your chart" : have ? `Add the other ${list.length - have}` : `Add all ${list.length}`);
+      add.addEventListener("click", () =>
+        attempt(async () => {
+          add.disabled = true;
+          await api("POST", `marketplace/teams/${t.id}/add`);
+          await Promise.all([loadCrew(), loadOrgs()]);
+          go("team");
+        }, ui.body),
+      );
+      return h(
+        "article",
+        { class: "mcard tcard" },
+        h("div", { class: "mhead" }, h("div", {}, h("b", {}, t.name), h("div", { class: "by" }, `${list.length} bots · lead: ${list[0]?.listing.title ?? ""}`))),
+        h("div", { class: "tbots" }, list.map((b) => h("button", { class: "plain", title: `${b.name}: ${b.listing.title}`, "aria-label": b.name, style: botStyle(b), onclick: () => go("marketbot", b.id) }, keycap(b.character, 36, "", b.type)))),
+        h("p", { class: "mdesc" }, t.summary),
+        h("div", { class: "mfoot" }, h("span", { class: "mono small muted" }, "Free · added with their reporting lines"), add),
+      );
+    };
+    fill(
+      results,
+      featured.length
+        ? h(
+            "section",
+            {},
+            h("h2", {}, "Featured"),
+            h(
+              "div",
+              { class: "mfeatured" },
+              featured.map((b) =>
+                h("button", { class: "mfeat", style: botStyle(b), onclick: () => go("marketbot", b.id) }, keycap(b.character, 64, "", b.type), h("b", {}, b.name), h("span", { class: "by" }, `by ${b.listing.by}`)),
+              ),
+            ),
+          )
+        : null,
+      teams.length ? h("section", {}, h("h2", {}, "Teams"), h("p", { class: "note", style: "margin: -6px 0 12px" }, "A lead and the bots that report to it, added to your organization together."), h("div", { class: "mgrid wide" }, teams.map(teamCard))) : null,
+      cat || needle ? section(cat === "+mine" ? "On my team" : cat || "Results", shown) : categories.map((c) => section(c, shown.filter((b) => b.listing.category === c))),
+      shown.length ? null : h("p", { class: "note" }, cat === "+mine" ? "You have not added a marketplace bot yet." : "No bot matches that. Try other words, or hatch your own bot from the Bots page."),
+    );
+  };
+  search.addEventListener("input", () => ((ui.marketSearch = search.value), draw()));
+  col.append(
+    h("h1", {}, "Marketplace"),
+    h("p", { class: "lead" }, "Free bots, each built for one job. Read exactly what a bot is told to do before you add it to your team."),
+    pills,
+    search,
+    ...(market.problems?.length ? [h("div", { class: "banner error small" }, market.problems.map((p) => h("div", {}, p)))] : []),
+    results,
+  );
+  draw();
+}
+
+async function marketBotView() {
+  ui.body.className = "body";
+  ui.log = null;
+  const col = h("div", { class: "market" });
+  fill(ui.body, h("main", { class: "center" }, col));
+  const id = state.marketId;
+  const market = await attempt(loadMarket, col);
+  if (!market || state.view !== "marketbot" || state.marketId !== id) return;
+  const bot = market.bots.find((b) => b.id === id);
+  if (!bot) return go("market");
+  const { can, cannot } = powerWords(bot);
+  const budget = [bot.budget?.steps && `${bot.budget.steps} steps`, bot.budget?.spend != null && money(bot.budget.spend)].filter(Boolean).join(" or ");
+  const copy = h("button", {}, "Copy");
+  copy.addEventListener("click", () =>
+    attempt(async () => {
+      await navigator.clipboard.writeText(bot.instructions);
+      copy.textContent = "Copied";
+      setTimeout(() => (copy.textContent = "Copy"), 2000);
+    }, col),
+  );
+  const fact = (label, value) => h("div", { class: "fact" }, h("b", {}, label), h("span", {}, value));
+  const list = (title, items, cls) => (items.length ? h("div", { class: `willbox ${cls}` }, h("div", { class: "label" }, title), h("ul", {}, items.map((item) => h("li", {}, item)))) : null);
+  col.append(
+    h("button", { class: "plain back", onclick: () => go("market") }, "← Back to marketplace"),
+    h(
+      "section",
+      { class: "mtop", style: botStyle(bot) },
+      h(
+        "div",
+        { class: "grow" },
+        keycap(bot.character, 88, "", bot.type),
+        h("h1", {}, bot.name),
+        h("div", { class: "by" }, `${bot.listing.title} · ${bot.listing.category} · by ${bot.listing.by}${bot.listing.reportsTo && market.bots.find((b) => b.id === bot.listing.reportsTo) ? ` · reports to the ${market.bots.find((b) => b.id === bot.listing.reportsTo).listing.title}` : ""}`),
+        h("p", { class: "lead" }, bot.listing.summary),
+        h(
+          "div",
+          { class: "row" },
+          bot.added
+            ? [h("span", { class: "mpill on" }, "✓ On your team"), h("button", { class: "primary", onclick: () => chatWith(bot, col) }, `Chat with ${bot.name}`), h("button", { onclick: () => go("bot", bot.id) }, "Edit your copy"), h("button", { onclick: () => ((state.selectedBot = bot.id), remember("talqava.bot", bot.id), go("home")) }, `Send ${bot.name} on a quest`)]
+            : h("button", { class: "primary big", onclick: () => addFromMarket(bot, col) }, "Add to my team · Free"),
+        ),
+      ),
+      h(
+        "aside",
+        { class: "facts", "aria-label": "At a glance" },
+        fact("Price", "Free"),
+        fact("Can use", can.join(", ") || "Nothing but the conversation"),
+        fact("Cannot use", cannot.join(", ") || "—"),
+        fact("Asks first", bot.approvals === "ask" ? "Before any change, command or API write" : "No: runs everything"),
+        fact("Model", bot.model || "Your default model"),
+        fact("Limit per job", budget || "Your default limits"),
+      ),
+    ),
+    h(
+      "section",
+      { class: "minstr" },
+      h("div", { class: "row" }, h("h2", { class: "grow" }, "Instructions"), h("span", { class: "mono small muted" }, "shown in full · nothing hidden"), copy),
+      h("div", { class: "instructions" }, bot.instructions.split(/\n+/).filter((para) => para.trim()).map((para) => h("p", {}, para.trim()))),
+      h("div", { class: "willrow" }, list("✓ Will do", bot.listing.will, "will"), list("✕ Will not do", bot.listing.wont, "wont")),
+      h("p", { class: "note" }, bot.added ? "This bot is on your team. Your copy is yours to edit, and it never changes unless you change it." : "After you add a bot, these instructions are yours to edit. Your copy never changes unless you change it."),
+    ),
+  );
+}
+
 // ---------- one quest ----------
 function questView() {
   ui.body.className = "body questview";
@@ -1113,7 +1712,12 @@ async function refreshQuest(first = false) {
   fill(ui.qhead, 
     h("button", { onclick: () => go("home") }, "Back to bots"),
     keycap(q.bot.character, 40, mood(q), q.bot.type),
-    h("div", { class: "titles" }, h("h1", {}, q.title), h("div", { class: "sub" }, `${q.bot.name} the ${cap(q.bot.type)} · `, ...where)),
+    h(
+      "div",
+      { class: "titles" },
+      h("h1", {}, q.title),
+      h("div", { class: "sub" }, `${q.bot.name}${roleOf(q.bot.id) ? `, ${roleOf(q.bot.id).title}` : ` the ${cap(q.bot.type)}`} · `, ...where, q.parent ? [" · assigned by ", h("button", { class: "plain link", onclick: () => go(q.parent.isQuest ? "quest" : "chat", q.parent.id) }, q.parent.by)] : null),
+    ),
     ui.meta,
     h("span", { class: `pill solid ${tone}` }, label),
     h(
@@ -1421,6 +2025,24 @@ function botView() {
       h("div", { class: "type" }, cap(draft.type || "bot")),
       h("p", { class: "label", style: "margin-top: 22px" }, `Glow · ${NEON[draft.character.color][0]}`),
       swatches(draft.character.color, (name) => ((draft.character.color = name), drawPortrait()), "Glow colour"),
+      ...[
+        ["shape", "Body", SHAPES],
+        ["eyes", "Eyes", EYES],
+        ["top", "On top", TOPS],
+      ].flatMap(([key, label, options]) => [
+        h("p", { class: "label", style: "margin-top: 14px" }, `${label} · ${options[looksOf(draft.character)[key]]}`),
+        h(
+          "div",
+          { class: "lookrow", role: "group", "aria-label": label },
+          Object.entries(options).map(([value, name]) =>
+            h(
+              "button",
+              { class: `look ${looksOf(draft.character)[key] === value ? "on" : ""}`, title: name, "aria-label": name, "aria-pressed": String(looksOf(draft.character)[key] === value), onclick: () => ((draft.character[key] = value), drawPortrait()) },
+              keycap({ ...draft.character, [key]: value }, 30, "", draft.type),
+            ),
+          ),
+        ),
+      ]),
       h("label", { class: "label", for: "legend", style: "display: block; margin-top: 22px" }, "Key legend"),
       legendInput,
       h("p", { class: "note small" }, "One to three characters printed on the key, such as ? or </>."),
@@ -1518,9 +2140,14 @@ function botView() {
   const spend = h("input", { type: "number", min: 0, max: 100, step: 0.05, value: draft.budget?.spend ?? "" });
   const steps = h("input", { type: "number", min: 1, max: 500, step: 1, value: draft.budget?.steps ?? "" });
 
+  const group = h("input", { value: draft.group || "", placeholder: "e.g. Research", maxlength: 30, list: "team-groups", autocomplete: "off" });
+  const groupList = h("datalist", { id: "team-groups" }, [...new Set((state.crew?.bots ?? []).map((b) => b.group))].map((g) => h("option", { value: g })));
+  const monthly = h("input", { type: "number", min: 0, max: 10000, step: 0.5, value: draft.monthly ?? "", placeholder: "No limit" });
   save.addEventListener("click", () =>
     attempt(async () => {
       const body = {
+        group: group.value.trim(),
+        ...(monthly.value !== "" ? { monthly: Number(monthly.value) } : {}),
         name: name.value.trim(),
         type: type.value,
         character: draft.character,
@@ -1569,6 +2196,8 @@ function botView() {
           h("h3", {}, "Limits"),
           h("label", { class: "field" }, "Approvals", approvals),
           h("div", { class: "row" }, h("label", { class: "field grow" }, "Budget per quest ($)", spend), h("label", { class: "field grow" }, "Steps per quest", steps)),
+          h("div", { class: "row" }, h("label", { class: "field grow" }, "Budget per month ($)", monthly), h("label", { class: "field grow" }, "Team group", group, groupList)),
+          h("p", { class: "note small" }, existing?.month ? `Spent this month: ${money(existing.month.spent)}. At its monthly budget a bot starts no new work until you raise it or the month turns.` : "At its monthly budget a bot starts no new work until you raise it or the month turns."),
         ),
       ),
     ),
@@ -1603,6 +2232,7 @@ function conversationPane() {
 function chatView() {
   ui.body.className = "body two";
   ui.chatSide = h("aside", { class: "side" });
+  const withBot = chatBotOf();
   ui.title = h("h1", {}, "New chat");
   ui.meta = h("span", { class: "meta" });
   ui.remove = h("button", { class: "plain danger", title: "Delete this chat", onclick: deleteChat, hidden: !state.convId }, "Delete");
@@ -1610,8 +2240,10 @@ function chatView() {
   const open = state.convs.find((c) => c.id === state.convId);
   if (open && (open.space || "") !== state.space) setSpace(open.space);
   ui.move = moveChatPicker();
+  ui.pin = h("button", { class: "plain", hidden: true, onclick: () => pinChat({ id: state.convId }, !state.convs.find((c) => c.id === state.convId)?.pinned) }, "Pin");
+  syncPin();
   const pane = conversationPane();
-  fill(ui.body, ui.chatSide, h("main", { class: "center flush" }, h("div", { class: "chathead" }, ui.title, ui.meta, ui.move, modelPicker(), ui.remove), pane));
+  fill(ui.body, ui.chatSide, h("main", { class: "center flush" }, h("div", { class: "chathead", style: withBot ? botStyle(withBot) : "" }, withBot ? keycap(withBot.character, 28, "", withBot.type) : null, ui.title, withBot ? h("span", { class: "mono small muted", title: "This chat is with one bot, in its role. It uses that bot's instructions, powers, model and limits." }, roleOf(withBot.id)?.title ?? cap(withBot.type)) : null, ui.meta, ui.move, withBot ? null : modelPicker(), ui.pin, ui.remove), pane));
   renderChatList();
   setRunning(false);
   if (state.convId) connect(state.convId);
@@ -1681,7 +2313,7 @@ function modelPicker() {
 function moveChatPicker() {
   const pick = h(
     "select",
-    { class: "modelpick", "aria-label": "Space of this chat", title: "The space this chat belongs to. Choose another to move it.", hidden: !state.convId || !state.spaces.length },
+    { class: "modelpick", "aria-label": "Project of this chat", title: "The project this chat belongs to. Choose another to move it.", hidden: !state.convId || !state.spaces.length },
     h("option", { value: "", selected: !state.space }, "In General"),
     state.spaces.map((sp) => h("option", { value: sp.id, selected: sp.id === state.space }, `In ${sp.name}`)),
   );
@@ -1696,10 +2328,10 @@ function moveChatPicker() {
   return pick;
 }
 
-/** The space picker at the top of the chat list: chats and memory are shown per space. */
+/** The project picker at the top of the chat list, with a button to add one. Chats and memory are shown per project. */
 function spacePicker() {
   if (ui.addingSpace) {
-    const name = h("input", { placeholder: "Name, e.g. a client or project", maxlength: 40, "aria-label": "Name of the new space" });
+    const name = h("input", { placeholder: "Name, e.g. a client or a piece of work", maxlength: 40, "aria-label": "Name of the new project" });
     const cancel = () => ((ui.addingSpace = false), renderChatList(true));
     const form = h(
       "form",
@@ -1716,49 +2348,98 @@ function spacePicker() {
           }, form);
         },
       },
+      h("span", { class: "sidelabel" }, "New project"),
       name,
-      h("div", { class: "row" }, h("button", { class: "primary" }, "Add space"), h("button", { type: "button", onclick: cancel }, "Cancel")),
+      h("p", { class: "note small" }, "A project keeps its own chats and memory, apart from the rest."),
+      h("div", { class: "row" }, h("button", { class: "primary" }, "Create project"), h("button", { type: "button", onclick: cancel }, "Cancel")),
     );
     setTimeout(() => name.focus(), 0);
     return form;
   }
   const pick = h(
     "select",
-    { "aria-label": "Space", title: "A space keeps one client's or project's chats and memory apart from the rest." },
+    { "aria-label": "Project", title: "A project keeps its own chats and memory, apart from the rest." },
     h("option", { value: "", selected: !state.space }, "General"),
     state.spaces.map((sp) => h("option", { value: sp.id, selected: sp.id === state.space }, sp.name)),
-    h("option", { value: "+new" }, "＋ New space…"),
-    state.spaces.length ? h("option", { value: "+manage" }, "Manage spaces…") : null,
+    state.spaces.length ? h("option", { value: "+manage" }, "Manage projects…") : null,
   );
   pick.addEventListener("change", () => {
-    if (pick.value === "+new") return (ui.addingSpace = true), renderChatList(true);
     if (pick.value === "+manage") return go("memory");
     setSpace(pick.value);
     go("chat");
   });
-  return h("label", { class: "sidelabel" }, "Space", pick);
+  return h(
+    "div",
+    { class: "projects" },
+    h("label", { class: "sidelabel" }, "Project", pick),
+    h("button", { class: "newproject", onclick: () => ((ui.addingSpace = true), renderChatList(true)) }, "＋ New project"),
+  );
+}
+
+/** Pins or unpins a chat. Pinned chats stay at the top of their project's list. */
+async function pinChat(c, pinned) {
+  await attempt(async () => {
+    await api("PATCH", `conversations/${c.id}`, { pinned });
+    await refreshList();
+    renderChatList(true);
+    if (c.id === state.convId) syncPin();
+  }, ui.chatSide);
+}
+
+/** Deletes a chat from the list, whichever chat is open. */
+async function deleteChatFromList(c) {
+  if (!confirm(`Delete the chat “${c.title}”? This cannot be undone.`)) return;
+  await attempt(async () => {
+    await api("DELETE", `conversations/${c.id}`);
+    await refreshList();
+    if (c.id === state.convId) go("chat");
+    else renderChatList(true);
+  }, ui.chatSide);
+}
+
+/** The pin button in the open chat's header says what a click will do. */
+function syncPin() {
+  if (!ui.pin) return;
+  const open = state.convs.find((c) => c.id === state.convId);
+  ui.pin.hidden = !state.convId;
+  ui.pin.textContent = open?.pinned ? "Unpin" : "Pin";
+  ui.pin.title = open?.pinned ? "Stop keeping this chat at the top of the list" : "Keep this chat at the top of the list";
 }
 
 function renderChatList(force = false) {
   if (!ui.chatSide || state.view !== "chat") return;
   if (!force && ui.chatSide.contains(document.activeElement) && document.activeElement.matches("input, select")) return; // not while the person is choosing or typing
   const here = state.convs.filter((c) => (c.space || "") === state.space);
+  const row = (c) =>
+    h(
+      "div",
+      { class: `chatrow ${c.id === state.convId ? "on" : ""} ${c.pinned ? "pinned" : ""}` },
+      h(
+        "button",
+        { class: `navlink ${c.id === state.convId ? "on" : ""}`, title: c.title, onclick: () => go("chat", c.id) },
+        c.pinned ? h("span", { class: "pinmark", "aria-hidden": "true" }, "★") : null,
+        chatBotOf(c.id) ? keycap(chatBotOf(c.id).character, 18, "", chatBotOf(c.id).type) : null,
+        h("span", { class: "title" }, c.title),
+        c.needsApproval ? h("i", { class: "dot wait", title: "Waiting for your approval" }) : c.running ? h("i", { class: "dot", title: "Working" }) : null,
+      ),
+      h(
+        "span",
+        { class: "chatactions" },
+        h("button", { class: "plain", title: c.pinned ? "Unpin" : "Pin to the top", "aria-label": `${c.pinned ? "Unpin" : "Pin"} ${c.title}`, onclick: () => pinChat(c, !c.pinned) }, c.pinned ? "★" : "☆"),
+        h("button", { class: "plain", title: "Delete chat", "aria-label": `Delete ${c.title}`, onclick: () => deleteChatFromList(c) }, "✕"),
+      ),
+    );
+  const pinned = here.filter((c) => c.pinned);
+  const rest = here.filter((c) => !c.pinned);
   fill(ui.chatSide, 
     spacePicker(),
     h("button", { class: "primary", onclick: () => go("chat") }, "New chat"),
     h(
       "div",
       { class: "chatlist" },
-      here.length
-        ? here.map((c) =>
-            h(
-              "button",
-              { class: `navlink ${c.id === state.convId ? "on" : ""}`, title: c.title, onclick: () => go("chat", c.id) },
-              h("span", {}, c.title),
-              c.needsApproval ? h("i", { class: "dot wait", title: "Waiting for your approval" }) : c.running ? h("i", { class: "dot", title: "Working" }) : null,
-            ),
-          )
-        : h("p", { class: "note small", style: "padding: 0 8px" }, state.space ? `No chats in ${spaceName(state.space)} yet.` : "No chats yet."),
+      pinned.length ? [h("div", { class: "listlabel" }, "Pinned"), ...pinned.map(row), rest.length ? h("div", { class: "listlabel" }, "Chats") : null] : null,
+      rest.map(row),
+      here.length ? null : h("p", { class: "note small", style: "padding: 0 8px" }, state.space ? `No chats in ${spaceName(state.space)} yet.` : "No chats yet."),
     ),
     navFooter("chat"),
   );
@@ -1780,7 +2461,7 @@ async function submit() {
     await api("POST", `conversations/${state.convId}/messages`, { text });
     ui.input.value = "";
     ui.input.style.height = "auto";
-    refreshList().then(renderChatList);
+    refreshList().then(() => (renderChatList(), syncPin()));
   });
 }
 
@@ -1802,25 +2483,29 @@ function connect(id) {
 }
 
 /** Who is talking in the open conversation: the quest's bot, or the agent. */
-const speaker = () => (state.view === "quest" ? (state.quests.find((q) => q.id === state.convId)?.bot.name ?? "the bot") : state.config.agentName);
+/** The bot a chat is with, when it is a chat with one bot in its role. */
+const chatBotOf = (id = state.convId) => {
+  const botId = state.convs.find((c) => c.id === id)?.bot;
+  return botId ? (state.crew?.bots ?? []).find((b) => b.id === botId) : undefined;
+};
+const speaker = () => (state.view === "quest" ? (state.quests.find((q) => q.id === state.convId)?.bot.name ?? "the bot") : (chatBotOf()?.name ?? state.config.agentName));
+
+/** Opens a chat with one bot, in its role. */
+async function chatWith(bot, where) {
+  await attempt(async () => {
+    const conv = await api("POST", "conversations", { bot: bot.id, ...(state.space ? { space: state.space } : {}) });
+    await refreshList();
+    go("chat", conv.id);
+  }, where);
+}
 
 // ---------- pages ----------
 function page(title, intro, ...children) {
   ui.body.className = "body two";
   ui.log = null;
-  const views = [
-    ["chat", "Chat"],
-    ["home", "Bots"],
-    ["memory", "Memory"],
-    ["skills", "Skills"],
-    ["jobs", "Schedules"],
-    ["settings", "Settings"],
-  ];
-  const col = h("div", { class: "col page" }, h("h2", {}, title), h("p", { class: "note" }, intro), ...children);
-  fill(ui.body, 
-    h("aside", { class: "side" }, views.map(([view, label]) => h("button", { class: `navlink ${state.view === view ? "on" : ""}`, onclick: () => go(view) }, label))),
-    h("main", { class: "center" }, col),
-  );
+  const col = h("div", { class: "col page" }, h("h1", {}, title), h("p", { class: "lead" }, intro), ...children);
+  ui.body.className = "body";
+  fill(ui.body, h("main", { class: "center" }, col));
   return col;
 }
 
@@ -1833,14 +2518,14 @@ async function memoryView() {
   const again = () => memoryView();
   const col = page(
     "Memory",
-    `What ${state.config.agentName} remembers between chats. It adds to this on its own, and tells you in the chat when it does. General memory goes into every chat; a space's memory goes only into that space's chats.`,
+    `What ${state.config.agentName} remembers between chats. It adds to this on its own, and tells you in the chat when it does. General memory goes into every chat; a project's memory goes only into that project's chats.`,
   );
   const entries = await attempt(() => api("GET", "memory"), col);
   if (!entries || state.view !== "memory") return;
   const count = (id) => entries.filter((m) => (m.space || "") === id).length;
 
   // ----- which space -----
-  const newName = h("input", { placeholder: "Name, e.g. a client or project", maxlength: 40, "aria-label": "Name of the new space" });
+  const newName = h("input", { placeholder: "Name, e.g. a client or a piece of work", maxlength: 40, "aria-label": "Name of the new project" });
   const newForm = h(
     "form",
     {
@@ -1857,21 +2542,21 @@ async function memoryView() {
       },
     },
     newName,
-    h("button", { class: "primary" }, "Add space"),
+    h("button", { class: "primary" }, "Add project"),
   );
   col.append(
     h(
       "div",
-      { class: "spacetabs", role: "tablist", "aria-label": "Spaces" },
+      { class: "spacetabs", role: "tablist", "aria-label": "Projects" },
       [{ id: "", name: "General" }, ...state.spaces].map((sp) =>
         h("button", { role: "tab", class: sp.id === at ? "on" : "", "aria-selected": String(sp.id === at), onclick: () => ((ui.memSpace = sp.id), again()) }, sp.name, h("span", { class: "count" }, String(count(sp.id)))),
       ),
-      h("button", { class: "plain", onclick: () => ((newForm.hidden = !newForm.hidden), newName.focus()) }, "＋ New space"),
+      h("button", { class: "plain", onclick: () => ((newForm.hidden = !newForm.hidden), newName.focus()) }, "＋ New project"),
     ),
     newForm,
   );
   if (at) {
-    const rename = h("input", { value: name, maxlength: 40, "aria-label": "Space name" });
+    const rename = h("input", { value: name, maxlength: 40, "aria-label": "Project name" });
     const renameForm = h(
       "form",
       {
@@ -1900,7 +2585,7 @@ async function memoryView() {
           {
             class: "plain danger",
             onclick: () =>
-              confirm(`Delete the space “${name}”? Its ${count(at)} ${count(at) === 1 ? "memory is" : "memories are"} deleted for good, and its chats move to General.`) &&
+              confirm(`Delete the project “${name}”? Its ${count(at)} ${count(at) === 1 ? "memory is" : "memories are"} deleted for good, and its chats move to General.`) &&
               attempt(async () => {
                 await api("DELETE", `spaces/${at}`);
                 await Promise.all([loadSpaces(), refreshList()]);
@@ -1908,13 +2593,13 @@ async function memoryView() {
                 again();
               }, col),
           },
-          "Delete space",
+          "Delete project",
         ),
       ),
       renameForm,
     );
   } else {
-    col.append(h("p", { class: "note" }, state.spaces.length ? "Carried into every chat, in every space." : "Carried into every chat. Add a space to keep one client's or project's memory and chats apart."));
+    col.append(h("p", { class: "note" }, state.spaces.length ? "Carried into every chat, in every project." : "Carried into every chat. Add a project to keep one client's or piece of work's memory and chats apart."));
   }
 
   // ----- add -----
@@ -1950,7 +2635,7 @@ async function memoryView() {
     const text = h("div", { class: "grow" }, h("div", { class: "mtext" }, m.text), h("div", { class: "note" }, m.updatedAt ? `${when(m.createdAt)} · edited ${when(m.updatedAt)}` : when(m.createdAt)));
     const move = h(
       "select",
-      { class: "modelpick", "aria-label": "Move to another space", title: "Move to another space", hidden: !state.spaces.length },
+      { class: "modelpick", "aria-label": "Move to another project", title: "Move to another project", hidden: !state.spaces.length },
       h("option", { value: at, selected: true }, "Move to…"),
       [{ id: "", name: "General" }, ...state.spaces].filter((sp) => sp.id !== at).map((sp) => h("option", { value: sp.id }, sp.name)),
     );

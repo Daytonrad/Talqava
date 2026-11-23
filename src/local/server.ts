@@ -27,6 +27,9 @@ import { CAUTION_TOOLS, localRunSpec } from "./tools.ts";
 import { closeConnectors } from "./connectors.ts";
 import { resolveModel, splitRef } from "./models.ts";
 import { botId, loadCrew, removeBot, saveBot } from "./crew.ts";
+import { addMarketBot, addTeam, loadMarketplace, loadTeams, onTeam } from "./marketplace.ts";
+import { orgs } from "./orgs.ts";
+import { budgetBlock, monthlyBudgets } from "./spend.ts";
 import { findTemplate, loadTemplates } from "./templates.ts";
 import { journal, questStore, quests } from "./quests.ts";
 import type { Quest } from "./quests.ts";
@@ -157,6 +160,16 @@ async function updateSettings(body: any) {
       secrets[name] = { value: String(value), host: host.toLowerCase() };
     }
     patch.secrets = secrets;
+  }
+
+  if (body.monthlyBudget !== undefined) {
+    // The most all bots together may spend in a month; empty or null removes the limit.
+    if (body.monthlyBudget === null || body.monthlyBudget === "") patch.monthlyBudget = undefined;
+    else {
+      const amount = Number(body.monthlyBudget);
+      if (!Number.isFinite(amount) || amount < 0 || amount > 100_000) throw new HttpError(400, "The monthly budget is in dollars, from 0 to 100000.");
+      patch.monthlyBudget = amount;
+    }
   }
 
   if (body.budget) {
@@ -306,6 +319,8 @@ function questSummary(quest: Quest) {
     readOutside: readOutside(conversation),
     approvals: live.approvals,
     status: quest.status,
+    // For a task handed down the org chart: who assigned it, and from which conversation.
+    parent: quest.parent ? { id: quest.parent.id, by: quest.parent.by, isQuest: Boolean(questStore.get(quest.parent.id)) } : null,
     steps: quest.steps,
     budget: { ...getConfig().budget, ...bot.budget },
     cost: conversation?.usage.cost ?? 0,
@@ -365,20 +380,30 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       }
       if (req.method === "POST") {
         // A chat started in a space stays in it: its memory and searches are kept to that space.
-        if (body.space && !spaces.get(String(body.space))) throw new HttpError(400, "No such space.");
-        return send(res, 200, conversations.create(body.space ? { space: String(body.space) } : {}));
+        if (body.space && !spaces.get(String(body.space))) throw new HttpError(400, "No such project.");
+        // A chat with one bot in its role answers as that bot, with its powers and limits.
+        const withBot = body.bot ? loadCrew().bots.find((b) => b.id === body.bot) : undefined;
+        if (body.bot && !withBot) throw new HttpError(400, "There is no such bot.");
+        return send(res, 200, conversations.create({ ...(body.space ? { space: String(body.space) } : {}), ...(withBot ? { bot: withBot.id, title: `Chat with ${withBot.name}` } : {}) }));
       }
     }
     const conversation = conversationOr404(id);
     if (!action && req.method === "GET") return send(res, 200, { ...conversation, live: engine.liveState(id) });
     if (!action && req.method === "PATCH") {
-      // Moves a chat to another space (or to General with space: null).
-      if (engine.isRunning(id)) throw new HttpError(409, "Wait for the agent to finish, then move the chat.");
-      if (body.space && !spaces.get(String(body.space))) throw new HttpError(400, "No such space.");
-      if (body.space) conversation.space = String(body.space);
-      else delete conversation.space;
+      // Pins or unpins a chat, and moves it to another project (or to General with space: null).
+      // While the agent is working it saves the chat itself, so a change made now could be overwritten.
+      if (engine.isRunning(id)) throw new HttpError(409, "Wait for the agent to finish, then try again.");
+      if ("pinned" in body) {
+        if (body.pinned) conversation.pinned = true;
+        else delete conversation.pinned;
+      }
+      if ("space" in body) {
+        if (body.space && !spaces.get(String(body.space))) throw new HttpError(400, "No such project.");
+        if (body.space) conversation.space = String(body.space);
+        else delete conversation.space;
+      }
       conversations.save(conversation, { touch: false });
-      return send(res, 200, { ok: true, space: conversation.space ?? null });
+      return send(res, 200, { ok: true, space: conversation.space ?? null, pinned: Boolean(conversation.pinned) });
     }
     if (!action && req.method === "DELETE") {
       engine.stop(id);
@@ -390,6 +415,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       if (!text) throw new HttpError(400, "Type a message first.");
       if (engine.isRunning(id)) throw new HttpError(409, "The agent is still working. Stop it first.");
       if (questStore.get(id)?.outcome) throw new HttpError(409, "This quest is closed. Send a new quest instead.");
+      // Carrying on with a quest is new work for its bot, so its monthly budget applies.
+      const questBot = questStore.get(id)?.bot;
+      const blocked = questBot ? budgetBlock(loadCrew().bots.find((b) => b.id === questBot.id) ?? questBot) : null;
+      if (blocked) throw new HttpError(409, blocked);
       // Say plainly what is missing, instead of the model library's error about headers.
       if (!questStore.get(id) && getConfig().model.startsWith("anthropic/") && !publicConfig().hasApiKey) {
         throw new HttpError(400, "No AI model is set up yet. Open Settings and paste your Anthropic API key, or choose a free local model there.");
@@ -448,11 +477,36 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     }
   }
 
+  if (parts[0] === "marketplace") {
+    // Ready-made bots to add to the team. The instructions of each are shown in full before it is added.
+    if (req.method === "GET" && !parts[1]) {
+      const market = loadMarketplace();
+      return send(res, 200, { bots: market.bots.map(({ bot, listing }) => ({ ...bot, listing, added: onTeam(bot.id) })), teams: loadTeams(), problems: market.problems });
+    }
+    if (req.method === "POST" && parts[1] === "teams" && parts[3] === "add") {
+      try {
+        return send(res, 200, { added: addTeam(parts[2]).map((b) => b.id) });
+      } catch (err) {
+        throw new HttpError(404, (err as Error).message);
+      }
+    }
+    if (req.method === "POST" && parts[2] === "add") {
+      try {
+        const bot = addMarketBot(parts[1]);
+        return send(res, 200, { ...bot, modelInfo: botModel(bot) });
+      } catch (err) {
+        throw new HttpError(404, (err as Error).message);
+      }
+    }
+  }
+
   if (parts[0] === "crew" && req.method === "GET") {
     const project = projectOrNull(url.searchParams.get("project"));
     const crew = loadCrew(project ?? undefined);
-    const bots = crew.bots.map((bot) => ({ ...bot, modelInfo: botModel(bot) }));
-    return send(res, 200, { bots, problems: crew.problems, project, branch: project ? await currentBranch(project) : null });
+    // Each bot comes with what it has spent this month against its monthly budget.
+    const budgets = monthlyBudgets(crew.bots);
+    const bots = crew.bots.map((bot) => ({ ...bot, modelInfo: botModel(bot), month: budgets.bots[bot.id] }));
+    return send(res, 200, { bots, problems: crew.problems, project, branch: project ? await currentBranch(project) : null, budgets: { month: budgets.month, resets: budgets.resets, total: budgets.total } });
   }
   if (parts[0] === "crew" && req.method === "PUT") {
     // A new bot gets a file name from its name; an existing one keeps its own.
@@ -461,7 +515,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       throw new HttpError(409, `There is already a bot called ${id}. Choose another name, or edit that bot instead.`);
     }
     try {
-      return send(res, 200, saveBot(id, body));
+      const saved = saveBot(id, body);
+      // A new bot takes a place in the active organization, reporting to the person.
+      orgs.welcome(saved);
+      return send(res, 200, saved);
     } catch (err) {
       throw new HttpError(400, (err as Error).message);
     }
@@ -555,6 +612,22 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     return send(res, 200, await attempt(() => memory.update(parts[1], patch)));
   }
   if (route === "DELETE memory") return send(res, 200, await attempt(() => memory.remove(parts[1])));
+
+  // Organizations: bots in roles, with titles, departments and managers.
+  if (parts[0] === "orgs") {
+    const [, orgId, sub, memberId] = parts;
+    if (route === "GET orgs" && !orgId) return send(res, 200, orgs.list());
+    if (route === "POST orgs" && !orgId) return send(res, 200, await attempt(() => orgs.create(body.name, body.mission)));
+    if (route === "PATCH orgs" && orgId && !sub) {
+      return send(res, 200, await attempt(() => {
+        if (body.active) orgs.setActive(orgId);
+        return orgs.update(orgId, { name: body.name, mission: body.mission });
+      }));
+    }
+    if (route === "DELETE orgs" && orgId && !sub) return send(res, 200, await attempt(() => orgs.remove(orgId)));
+    if (route === "PUT orgs" && sub === "members") return send(res, 200, await attempt(() => orgs.setMember(orgId, body)));
+    if (route === "DELETE orgs" && sub === "members" && memberId) return send(res, 200, await attempt(() => orgs.removeMember(orgId, memberId)));
+  }
 
   if (route === "GET spaces") return send(res, 200, spaces.list());
   if (route === "POST spaces") return send(res, 200, await attempt(() => spaces.create(body.name)));

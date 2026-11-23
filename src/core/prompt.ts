@@ -20,7 +20,7 @@ export interface PromptInput {
 export function systemPrompt({ agentName, setting, environment, memory, hiddenMemory = 0, space, skills, today = new Date() }: PromptInput): string {
   const line = (m: MemoryEntry) => `- [${m.id}]${space ? (m.space ? ` (${space.name})` : " (general)") : ""} ${m.text}`;
   const where = space
-    ? `This conversation is in the space "${space.name}", which keeps one client's or project's work apart. Entries marked (${space.name}) belong to it and are seen only here; entries marked (general) go into every conversation. What you save here goes to this space unless it is about the user in general (then save it with scope "general"). Never carry details from one space into another.`
+    ? `This conversation is in the project "${space.name}", which keeps its work apart from the rest. Entries marked (${space.name}) belong to it and are seen only here; entries marked (general) go into every conversation. What you save here goes to this project unless it is about the user in general (then save it with scope "general"). Never carry details from one project into another.`
     : "This conversation is in General, so what you save is carried into every conversation.";
   const more = hiddenMemory
     ? `\n\n${hiddenMemory} more ${hiddenMemory === 1 ? "entry is" : "entries are"} saved but not listed, because only the ones that fit this conversation are shown. Use the memory tool with action "search" before saying you do not know something about the user or their work.`
