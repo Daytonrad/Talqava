@@ -1,0 +1,39 @@
+{
+  "name": "talqava-desktop",
+  "productName": "Talqava Agents",
+  "version": "0.1.0",
+  "description": "Talqava Agents as a Mac app: the same app, in its own window, with nothing else to install.",
+  "main": "main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "prepare-server": "node prepare-server.mjs",
+    "dist": "npm run prepare-server && electron-builder --mac",
+    "dist:test": "npm run prepare-server && electron-builder --mac dmg --arm64"
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.talqava.agents",
+    "productName": "Talqava Agents",
+    "copyright": "Copyright © Talqava",
+    "directories": { "output": "dist", "buildResources": "assets" },
+    "files": ["main.cjs", "assets/**"],
+    "extraResources": [{ "from": "build/server", "to": "server" }],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/icon.png",
+      "identity": "-",
+      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }]
+    },
+    "dmg": {
+      "title": "Talqava Agents",
+      "contents": [
+        { "x": 140, "y": 180 },
+        { "x": 400, "y": 180, "type": "link", "path": "/Applications" }
+      ]
+    }
+  }
+}
