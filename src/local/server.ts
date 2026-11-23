@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { Engine, JobBook, BRAND, checkModel, describeError, setting } from "../core/index.ts";
+import { Engine, JobBook, BRAND, checkModel, describeError, outsideContentRead, setting } from "../core/index.ts";
 import type { Bot, Conversation, Decision, Job, RunEvent } from "../core/index.ts";
 import {
   ROOT,
@@ -285,12 +285,8 @@ function lastActivity(conversation: Conversation | null) {
   return null;
 }
 
-const readOutside = (conversation: Conversation | null) =>
-  Boolean(
-    conversation?.messages.some(
-      (m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => (b.type === "tool_use" || b.type === "server_tool_use") && CAUTION_TOOLS.includes((b as { name: string }).name)),
-    ),
-  );
+const readOutside = (conversation: Conversation | null, extra: string[] = []) =>
+  Boolean(conversation && outsideContentRead(conversation.messages, [...CAUTION_TOOLS, ...extra]));
 
 function questSummary(quest: Quest) {
   const conversation = conversations.get(quest.id);
@@ -315,6 +311,7 @@ function questSummary(quest: Quest) {
     project: quest.project ?? null,
     branch: quest.copy?.branch ?? null,
     outcome: quest.outcome ?? null,
+    changedFiles: quest.changedFiles ?? null,
     note: quest.note ?? null,
     resumedAt: quest.resumedAt ?? null,
     createdAt: quest.createdAt,

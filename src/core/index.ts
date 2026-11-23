@@ -1,6 +1,6 @@
 // The shared core: everything an edition needs to run the agent.
 export * from "./types.ts";
-export { Engine, describeError } from "./engine.ts";
+export { Engine, describeError, outsideContentRead } from "./engine.ts";
 export type { EngineOptions } from "./engine.ts";
 export { JobBook, nextRun, parseSchedule } from "./schedule.ts";
 export { systemPrompt } from "./prompt.ts";

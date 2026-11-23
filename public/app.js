@@ -663,6 +663,7 @@ function standing(q) {
   if (q.status === "running") return q.template?.tries ? [`● Fixing · try ${q.template.tries} of ${q.template.maxTries}`, "loud"] : ["● Working", "loud"];
   if (q.checking) return ["◌ Checking the result", "loud"];
   if (q.check && !q.check.passed && q.status === "done") return ["✕ Check failed", "loud"];
+  if (q.branch && !q.outcome && q.changedFiles === 0 && q.status === "done") return ["✓ Done · no changes", ""];
   if (q.branch && !q.outcome && q.status !== "failed") return [q.check?.passed ? "✓ Checked · ready for review" : "→ Ready for review", "loud"];
   if (q.outcome === "accepted") return ["✓ Changes kept", ""];
   if (q.outcome === "undone") return ["↶ Undone", ""];

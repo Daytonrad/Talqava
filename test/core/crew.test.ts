@@ -184,3 +184,14 @@ test("a change does not count as outside content for itself, only for what comes
   assert.deepEqual(asked, ["second"]);
   assert.deepEqual(ran, ["first", "second"]);
 });
+
+test("only outside content that was really read counts: a denied or failed request read nothing", async () => {
+  const { outsideContentRead } = await import("../../src/core/index.ts");
+  const asked = { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "http_request", input: {} }] } as Conversation["messages"][number];
+  const denied = { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "The user declined this action." }] } as Conversation["messages"][number];
+  const answered = { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "HTTP 200" }] } as Conversation["messages"][number];
+  assert.equal(outsideContentRead([asked, denied], ["http_request"]), false);
+  assert.equal(outsideContentRead([asked, answered], ["http_request"]), true);
+  const searched = { role: "assistant", content: [{ type: "server_tool_use", id: "s1", name: "web_search", input: {} }] } as Conversation["messages"][number];
+  assert.equal(outsideContentRead([searched], ["web_search"]), true);
+});

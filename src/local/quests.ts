@@ -37,6 +37,8 @@ export interface Quest {
   checking?: boolean;
   /** A model chosen for this quest after it started, e.g. when handed to Claude. */
   modelOverride?: string;
+  /** How many files a finished code quest changed, so a quest with none is not shown as waiting for review. */
+  changedFiles?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -248,6 +250,11 @@ export class QuestRunner {
           this.#ending.delete(id);
           this.#stopping.delete(id);
           this.#set(id, { status });
+          if (quest.copy && !quest.outcome) {
+            changes(quest.copy)
+              .then((c) => this.#set(id, { changedFiles: c.files.length }))
+              .catch(() => {});
+          }
           // A core quest that finished is checked before it counts as done.
           if (status === "done" && quest.template) {
             this.#check(id).catch((err) => this.#set(id, { checking: false, note: `Could not check the result: ${(err as Error).message}` }));
