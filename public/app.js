@@ -9,7 +9,7 @@ const state = {
   convs: [],
   quests: [],
   crew: null,
-  view: "home",
+  view: "chat", // chat is the main screen; bots ("home") are an add-on
   convId: null,
   botId: null,
   quest: null,
@@ -17,12 +17,15 @@ const state = {
   source: null,
   selectedBot: null,
   project: "",
+  spaces: [],
+  space: "", // the space chats are shown and started in; "" is General
 };
 const ui = {}; // live nodes of the open view
 
 try {
   state.project = localStorage.getItem("talqava.project") || "";
   state.selectedBot = localStorage.getItem("talqava.bot");
+  state.space = localStorage.getItem("talqava.space") || "";
 } catch {}
 const remember = (key, value) => {
   try {
@@ -126,7 +129,7 @@ async function boot() {
   document.title = "Talqava Agents";
   if (!state.config.projects.includes(state.project)) state.project = "";
   if (needsKey(state.config)) state.view = "settings";
-  await Promise.all([loadCrew(), loadQuests(), refreshList(), loadTemplates()]);
+  await Promise.all([loadCrew(), loadQuests(), refreshList(), loadTemplates(), loadSpaces()]);
   render();
   clearInterval(boot.timer);
   // One heartbeat keeps every part of the window current.
@@ -140,6 +143,19 @@ async function loadCrew() {
     state.crew ??= { bots: [], problems: [], branch: null };
   }
   if (!state.crew.bots.some((b) => b.id === state.selectedBot)) state.selectedBot = state.crew.bots[0]?.id ?? null;
+}
+
+/** Spaces keep one client's or project's memory and chats apart; "" is General. */
+async function loadSpaces() {
+  try {
+    state.spaces = await api("GET", "spaces");
+  } catch {}
+  if (!state.spaces.some((s) => s.id === state.space)) state.space = "";
+}
+const spaceName = (id) => state.spaces.find((s) => s.id === id)?.name || "General";
+function setSpace(id) {
+  state.space = id || "";
+  remember("talqava.space", state.space);
 }
 
 async function loadTemplates() {
@@ -199,8 +215,12 @@ function go(view, id = null) {
   state.convId = view === "chat" || view === "quest" ? id : null;
   state.botId = view === "bot" ? id : null;
   closePalette();
+  renderTop();
   renderBody();
 }
+
+// The repository picker and quest spending only matter on the bot pages.
+const onBotPages = () => ["home", "quest", "bot"].includes(state.view);
 
 function renderBody() {
   state.source?.close();
@@ -230,18 +250,27 @@ function renderTop() {
     c.projects.map((p) => h("option", { value: p, selected: p === state.project }, basename(p))),
   );
   ui.spent = h("div", { class: "spent" });
-  fill(ui.top, 
-    h("button", { class: "plain brand", onclick: () => go("home"), title: "Home base", "aria-label": "Talqava Agents, home base" }, "TALQAVA", h("span", { class: "cursor", "aria-hidden": "true" })),
+  const bots = onBotPages();
+  fill(ui.top,
+    h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava Agents, chat" }, "TALQAVA", h("span", { class: "cursor", "aria-hidden": "true" })),
     h(
-      "div",
-      { class: "repo", title: state.project || "Quests work in the workspace folder. Add repositories under Settings." },
-      "[",
-      repo,
-      "]",
-      state.project && state.crew?.branch ? [h("span", { class: "on" }, "on"), state.crew.branch] : null,
+      "nav",
+      { class: "topnav" },
+      h("button", { class: `navlink ${state.view === "chat" ? "on" : ""}`, onclick: () => go("chat") }, "Chat"),
+      h("button", { class: `navlink ${bots ? "on" : ""}`, onclick: () => go("home"), title: "Optional: bots that take on tasks for you" }, "Bots"),
     ),
+    bots
+      ? h(
+          "div",
+          { class: "repo", title: state.project || "Quests work in the workspace folder. Add repositories under Settings." },
+          "[",
+          repo,
+          "]",
+          state.project && state.crew?.branch ? [h("span", { class: "on" }, "on"), state.crew.branch] : null,
+        )
+      : null,
     paletteBox(),
-    ui.spent,
+    bots ? ui.spent : null,
     h("button", { onclick: () => go("settings") }, "Settings"),
   );
   renderSpent();
@@ -251,13 +280,13 @@ function renderSpent() {
   if (!ui.spent) return;
   const today = new Date().toDateString();
   const spent = state.quests.filter((q) => new Date(q.createdAt).toDateString() === today).reduce((sum, q) => sum + (q.cost || 0), 0);
-  fill(ui.spent, "Spent today on quests", h("b", {}, money(spent)));
+  fill(ui.spent, "Spent today on bots", h("b", {}, money(spent)));
 }
 
 // ---------- the command box ----------
 const COMMANDS = [
-  ["Home base", () => go("home")],
   ["New chat", () => go("chat")],
+  ["Bots", () => go("home")],
   ["Hatch a bot", () => go("bot", "new")],
   ["Memory", () => go("memory")],
   ["Skills", () => go("skills")],
@@ -266,7 +295,7 @@ const COMMANDS = [
 ];
 
 function paletteBox() {
-  ui.palette = h("input", { type: "text", placeholder: paletteHint(), "aria-label": "Send a quest or run a command", autocomplete: "off" });
+  ui.palette = h("input", { type: "text", placeholder: paletteHint(), "aria-label": "Ask something, send a bot, or run a command", autocomplete: "off" });
   ui.paletteList = null;
   ui.paletteAt = 0;
   const box = h("div", { class: "palette" }, ui.palette, h("span", { class: "keys" }, navigator.platform.includes("Mac") ? "⌘K" : "Ctrl K"));
@@ -291,7 +320,8 @@ function paletteBox() {
 
 function paletteHint() {
   const bot = state.crew?.bots.find((b) => b.id === state.selectedBot);
-  return bot ? `Send ${bot.name} on a quest, or type @name, or a command` : "Send a quest or run a command";
+  if (state.view === "home" && bot) return `Send ${bot.name} on a quest, or type @name, or a command`;
+  return "Ask in a new chat, @bot to send a bot, or a command";
 }
 
 function paletteItems() {
@@ -299,10 +329,13 @@ function paletteItems() {
   const bots = state.crew?.bots ?? [];
   const items = [];
   const mention = /^@([\w-]+)\s*(.*)$/s.exec(text);
-  const target = mention ? bots.find((b) => b.id === mention[1].toLowerCase() || b.name.toLowerCase().startsWith(mention[1].toLowerCase())) : bots.find((b) => b.id === state.selectedBot);
+  // Plain text starts a chat; bots are sent only from the bots page or with @name.
+  const botFirst = state.view === "home";
+  if (text && !mention) items.push({ label: "Ask in a new chat", what: text, run: () => startChatWith(text) });
+  const target = mention ? bots.find((b) => b.id === mention[1].toLowerCase() || b.name.toLowerCase().startsWith(mention[1].toLowerCase())) : botFirst ? bots.find((b) => b.id === state.selectedBot) : null;
   const task = mention ? mention[2].trim() : text;
-  if (task && target) items.push({ label: `Send ${target.name} on a quest`, what: task, bot: target, run: () => sendQuest(target, task) });
-  if (task && !mention) {
+  if (task && target) items[botFirst && !mention ? "unshift" : "push"]({ label: `Send ${target.name} on a quest`, what: task, bot: target, run: () => sendQuest(target, task) });
+  if (task && !mention && botFirst) {
     for (const bot of bots.filter((b) => b !== target).slice(0, 5)) items.push({ label: `Send ${bot.name} instead`, what: bot.type, bot, run: () => sendQuest(bot, task) });
   }
   const needle = text.toLowerCase();
@@ -340,6 +373,15 @@ function closePalette() {
   ui.paletteList?.remove();
   ui.paletteList = null;
   ui.paletteAt = 0;
+}
+
+/** Opens a new chat and sends the text as its first message. */
+function startChatWith(text) {
+  ui.palette.value = "";
+  ui.palette.blur();
+  go("chat");
+  ui.input.value = text;
+  submit();
 }
 
 async function sendQuest(bot, text) {
@@ -477,6 +519,69 @@ function toolCard(id, name, input, done) {
   return card;
 }
 
+/**
+ * What the agent saved to memory, shown in the conversation as it happens,
+ * with Edit and Undo, so nothing is remembered behind the person's back.
+ */
+function memoryNote(id, input = {}) {
+  if (!["add", "update", "remove"].includes(input.action)) return toolCard(id, "memory", input, false);
+  const label = h("span", { class: "mlabel" }, { add: "Remembering…", update: "Updating memory…", remove: "Forgetting…" }[input.action]);
+  const text = h("span", { class: "mtext" }, input.text || "");
+  const actions = h("span", { class: "mactions" });
+  const node = h("div", { class: "memnote" }, h("span", { class: "mmark", "aria-hidden": "true" }, "◆"), h("div", { class: "grow" }, label, text), actions);
+  const edit = (entryId) => {
+    const box = h("textarea", { rows: 2 }, text.textContent);
+    const done = () => (box.replaceWith(text), fill(actions, buttons(entryId)));
+    box.value = text.textContent;
+    text.replaceWith(box);
+    box.focus();
+    fill(
+      actions,
+      h("button", {
+        class: "plain",
+        onclick: () =>
+          attempt(async () => {
+            const saved = await api("PATCH", `memory/${entryId}`, { text: box.value });
+            text.textContent = saved.text;
+            label.textContent = "Memory edited";
+            done();
+          }, node),
+      }, "Save"),
+      h("button", { class: "plain", onclick: done }, "Cancel"),
+    );
+  };
+  const buttons = (entryId) => [
+    h("button", { class: "plain", onclick: () => edit(entryId) }, "Edit"),
+    h("button", {
+      class: "plain",
+      title: "Remove this from memory",
+      onclick: () =>
+        attempt(async () => {
+          await api("DELETE", `memory/${entryId}`);
+          label.textContent = "Removed from memory";
+          node.classList.add("gone");
+          fill(actions);
+        }, node),
+    }, "Undo"),
+  ];
+  ui.cards.set(id, {
+    onResult(block) {
+      const out = resultText(block.content);
+      if (block.is_error) {
+        label.textContent = "Could not save to memory";
+        node.classList.add("gone");
+        node.append(h("div", { class: "note small" }, out));
+        return;
+      }
+      const saved = /\(id ([a-z0-9]+)\) in (.+)\.$/.exec(out);
+      if (input.action === "remove") label.textContent = "Removed from memory";
+      else label.textContent = `${input.action === "add" ? "Remembered" : "Memory updated"}${saved ? ` · ${saved[2]}` : ""}`;
+      if (saved && input.action !== "remove") fill(actions, buttons(saved[1]));
+    },
+  });
+  return node;
+}
+
 function resultText(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content ? JSON.stringify(content, null, 2) : "";
@@ -494,6 +599,7 @@ function resultText(content) {
 function fillResult(block) {
   const entry = ui.cards.get(block.tool_use_id);
   if (!entry) return;
+  if (entry.onResult) return entry.onResult(block);
   const failed = block.is_error || /error$/.test(block.content?.type || "");
   entry.stateEl.textContent = failed ? "failed" : "done";
   entry.stateEl.className = `state ${failed ? "bad" : "ok"}`;
@@ -508,6 +614,8 @@ function addAssistant(content) {
       box.append(h("div", { class: "md" }, renderMarkdown(block.text)));
     } else if (block.type === "thinking" && block.thinking?.trim()) {
       box.append(h("details", { class: "think" }, h("summary", {}, "Thinking"), h("div", { class: "body" }, block.thinking)));
+    } else if (block.type === "tool_use" && block.name === "memory") {
+      box.append(memoryNote(block.id, block.input));
     } else if (block.type === "tool_use" || block.type === "mcp_tool_use") {
       box.append(toolCard(block.id, block.name, block.input, false));
     } else if (block.type === "server_tool_use") {
@@ -580,32 +688,83 @@ const TEXTURES = { dots: "Dots", lines: "Ruled lines", hatch: "Diagonal hatch", 
 const TYPE_TEXTURES = { scout: "dots", scribe: "lines", maker: "hatch", keeper: "solid", counter: "grid", spark: "zigzag" };
 const WHITE = "#f2f2f2";
 const BLACK = "#0a0a0a";
+// Neon colours: each bot glows in one, and the app has an accent of its own.
+// The names match COLORS in src/core/crew.ts.
+const NEON = {
+  green: ["Green", "#00d26a"],
+  cyan: ["Cyan", "#2ef2ff"],
+  magenta: ["Magenta", "#ff3df5"],
+  lime: ["Lime", "#b4ff39"],
+  amber: ["Amber", "#ffb020"],
+  violet: ["Violet", "#a78bff"],
+  pink: ["Pink", "#ff4f9a"],
+  yellow: ["Yellow", "#f5ff3b"],
+  mint: ["Mint", "#3dffc0"],
+};
+const TYPE_COLORS = { scout: "cyan", scribe: "violet", maker: "lime", keeper: "mint", counter: "yellow", spark: "magenta" };
+const colorName = (character, type) => (NEON[character?.color] ? character.color : TYPE_COLORS[type] || "cyan");
+const colorOf = (character, type) => NEON[colorName(character, type)][1];
+/** Inline style that hands a bot's colour to its row or card (used as var(--bot) in style.css). */
+const botStyle = (bot) => `--bot: ${colorOf(bot?.character, bot?.type)}`;
+
+// The app's own accent, a per-viewer choice kept in this browser.
+// Dark neon green unless the person picks another.
+const DEFAULT_ACCENT = "green";
+let accent = DEFAULT_ACCENT;
+try {
+  accent = NEON[localStorage.getItem("talqava.accent")] ? localStorage.getItem("talqava.accent") : DEFAULT_ACCENT;
+} catch {}
+function applyAccent(name) {
+  accent = NEON[name] ? name : DEFAULT_ACCENT;
+  document.documentElement.style.setProperty("--accent", NEON[accent][1]);
+  remember("talqava.accent", accent);
+}
+applyAccent(accent);
+
+/** A row of neon swatches; `onpick` gets the colour's name. */
+function swatches(current, onpick, label) {
+  return h(
+    "div",
+    { class: "swatches", role: "group", "aria-label": label },
+    Object.entries(NEON).map(([name, [title, hex]]) =>
+      h("button", {
+        type: "button",
+        class: `swatch ${name === current ? "on" : ""}`,
+        style: `--swatch: ${hex}`,
+        title,
+        "aria-label": title,
+        "aria-pressed": String(name === current),
+        onclick: () => onpick(name),
+      }),
+    ),
+  );
+}
 const escapeXml = (text) => String(text).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 const legendOf = (character, type) => [...String(character?.legend || LEGENDS[type] || "?")].slice(0, 3).join("");
 const textureOf = (character, type) => (TEXTURES[character?.texture] ? character.texture : TYPE_TEXTURES[type] || "plain");
 let patternIds = 0;
 
-/** A white-on-black texture as an SVG pattern, or null for solid and plain. */
-function texturePattern(kind, id) {
+/** A neon-on-black texture as an SVG pattern, or null for solid and plain. */
+function texturePattern(kind, id, ink = WHITE) {
   const body = {
-    dots: `<circle cx="1.5" cy="1.5" r="0.75" fill="${WHITE}"/>`,
-    lines: `<path d="M0 1.5h3" stroke="${WHITE}" stroke-width="0.7"/>`,
-    hatch: `<path d="M-0.5 3.5l4-4M-0.5 0.5l1-1M2.5 3.5l1-1" stroke="${WHITE}" stroke-width="0.6"/>`,
-    grid: `<path d="M0 0.3h3M0.3 0v3" stroke="${WHITE}" stroke-width="0.55"/>`,
-    zigzag: `<path d="M0 2.2l0.75-1.4 0.75 1.4 0.75-1.4 0.75 1.4" fill="none" stroke="${WHITE}" stroke-width="0.6"/>`,
+    dots: `<circle cx="1.5" cy="1.5" r="0.75" fill="${ink}"/>`,
+    lines: `<path d="M0 1.5h3" stroke="${ink}" stroke-width="0.7"/>`,
+    hatch: `<path d="M-0.5 3.5l4-4M-0.5 0.5l1-1M2.5 3.5l1-1" stroke="${ink}" stroke-width="0.6"/>`,
+    grid: `<path d="M0 0.3h3M0.3 0v3" stroke="${ink}" stroke-width="0.55"/>`,
+    zigzag: `<path d="M0 2.2l0.75-1.4 0.75 1.4 0.75-1.4 0.75 1.4" fill="none" stroke="${ink}" stroke-width="0.6"/>`,
   }[kind];
   return body ? `<pattern id="${id}" width="3" height="3" patternUnits="userSpaceOnUse">${body}</pattern>` : null;
 }
 
 /** The face, set by the mood. */
-function keyFace(mood) {
-  const line = (d, w = 1.3) => `<path d="${d}" fill="none" stroke="${WHITE}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
+function keyFace(mood, ink = WHITE) {
+  const line = (d, w = 1.3) => `<path d="${d}" fill="none" stroke="${ink}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
   if (mood === "working") return line("M16.8 24.5h4.4M26.8 24.5h4.4", 1.5) + line("M22 29.6h4", 1.2);
-  if (mood === "waiting") return `<circle cx="19" cy="24.5" r="2.3" fill="${WHITE}"/><circle cx="29" cy="24.5" r="2.3" fill="${WHITE}"/><circle cx="24" cy="30.2" r="1.3" fill="${WHITE}"/>`;
+  if (mood === "waiting") return `<circle cx="19" cy="24.5" r="2.3" fill="${ink}"/><circle cx="29" cy="24.5" r="2.3" fill="${ink}"/><circle cx="24" cy="30.2" r="1.3" fill="${ink}"/>`;
   if (mood === "done") return line("M16.8 25.2q2.2-2.6 4.4 0M26.8 25.2q2.2-2.6 4.4 0", 1.4) + line("M21 28.8q3 3.4 6 0");
   if (mood === "stuck") return line("M17.4 23l3.2 3.2M20.6 23l-3.2 3.2M27.4 23l3.2 3.2M30.6 23l-3.2 3.2") + line("M21 30.4l1.5-1 1.5 1 1.5-1 1.5 1", 1.1);
   if (mood === "asleep") return line("M17 24.8h4M27 24.8h4") + line("M22.6 29.8h2.8", 1.1);
-  return `<circle cx="19" cy="24.5" r="1.7" fill="${WHITE}"/><circle cx="29" cy="24.5" r="1.7" fill="${WHITE}"/>` + line("M21.8 29.4q2.2 2.4 4.4 0", 1.15);
+  return `<circle cx="19" cy="24.5" r="1.7" fill="${ink}"/><circle cx="29" cy="24.5" r="1.7" fill="${ink}"/>` + line("M21.8 29.4q2.2 2.4 4.4 0", 1.15);
 }
 
 /**
@@ -617,37 +776,38 @@ function keycap(character, size = 40, mood = "", type = "") {
   const legend = legendOf(character, type);
   const text = escapeXml(legend);
   const texture = textureOf(character, type);
+  const ink = colorOf(character, type);
   const id = `tx${++patternIds}`;
-  const pattern = texturePattern(texture, id);
-  const baseFill = texture === "solid" ? WHITE : pattern ? `url(#${id})` : BLACK;
+  const pattern = texturePattern(texture, id, ink);
+  const baseFill = texture === "solid" ? ink : pattern ? `url(#${id})` : BLACK;
   let svg;
   if (size < 24) {
     const n = [...legend].length;
     const fs = n === 1 ? 14 : n === 2 ? 10.5 : 8;
     svg =
       `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24"><defs>${pattern ?? ""}</defs>` +
-      `<rect x="1.5" y="2" width="21" height="20.5" rx="4.5" fill="${baseFill}" stroke="${WHITE}" stroke-width="1"/>` +
-      `<rect x="3.2" y="2.4" width="17.6" height="15.6" rx="3.5" fill="${BLACK}" stroke="${WHITE}" stroke-width="1"/>` +
-      `<text x="12" y="${(10.2 + fs * 0.36).toFixed(1)}" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="${fs}" font-weight="700" fill="${WHITE}">${text}</text></svg>`;
+      `<rect x="1.5" y="2" width="21" height="20.5" rx="4.5" fill="${baseFill}" stroke="${ink}" stroke-width="1"/>` +
+      `<rect x="3.2" y="2.4" width="17.6" height="15.6" rx="3.5" fill="${BLACK}" stroke="${ink}" stroke-width="1"/>` +
+      `<text x="12" y="${(10.2 + fs * 0.36).toFixed(1)}" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="${fs}" font-weight="700" fill="${ink}">${text}</text></svg>`;
   } else {
     const big = size >= 64;
     const legendText = big
-      ? `<text x="12" y="18.4" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="7.2" font-weight="700" fill="${WHITE}">${text}</text>`
-      : `<text x="11" y="19.4" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9.6" font-weight="800" fill="${WHITE}">${text}</text>`;
+      ? `<text x="12" y="18.4" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="7.2" font-weight="700" fill="${ink}">${text}</text>`
+      : `<text x="11" y="19.4" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9.6" font-weight="800" fill="${ink}">${text}</text>`;
     const cursorX = (big ? 12 : 11) + (big ? 4.4 : 5.8) * [...legend].length + 0.6;
-    const cursor = mood === "working" ? `<rect class="k-blink" x="${cursorX.toFixed(1)}" y="${big ? 12.4 : 12}" width="${big ? 3.2 : 3.6}" height="${big ? 6.4 : 8}" fill="${WHITE}"/>` : "";
+    const cursor = mood === "working" ? `<rect class="k-blink" x="${cursorX.toFixed(1)}" y="${big ? 12.4 : 12}" width="${big ? 3.2 : 3.6}" height="${big ? 6.4 : 8}" fill="${ink}"/>` : "";
     const extras =
-      (mood === "waiting" ? `<rect class="k-march" x="2.5" y="5.5" width="43" height="38" rx="10.5" fill="none" stroke="${WHITE}" stroke-width="1.1" stroke-dasharray="3 3"/>` : "") +
-      (mood === "done" ? `<circle cx="42" cy="8" r="5.2" fill="${WHITE}"/><path class="k-tick" d="M39.6 8.2l1.7 1.7 3.2-3.4" fill="none" stroke="${BLACK}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8" stroke-dashoffset="8"/>` : "") +
+      (mood === "waiting" ? `<rect class="k-march" x="2.5" y="5.5" width="43" height="38" rx="10.5" fill="none" stroke="${ink}" stroke-width="1.1" stroke-dasharray="3 3"/>` : "") +
+      (mood === "done" ? `<circle cx="42" cy="8" r="5.2" fill="${ink}"/><path class="k-tick" d="M39.6 8.2l1.7 1.7 3.2-3.4" fill="none" stroke="${BLACK}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8" stroke-dashoffset="8"/>` : "") +
       (mood === "asleep" ? `<text class="k-z" x="39" y="9" font-family="ui-monospace, monospace" font-size="7" fill="#b8b8b8">z</text>` : "");
     svg =
       `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 48 48"><defs>${pattern ?? ""}</defs>` +
-      `<path d="M17.5 41v5M30.5 41v5" stroke="${WHITE}" stroke-width="1.6" stroke-linecap="round"/>` +
-      `<g class="cap"><rect x="5" y="8" width="38" height="33" rx="8" fill="${baseFill}" stroke="${WHITE}" stroke-width="1.2"/>` +
-      `<rect x="8.5" y="8.5" width="31" height="26" rx="6" fill="${BLACK}" stroke="${WHITE}" stroke-width="1.2"/>` +
-      `${legendText}${cursor}${keyFace(mood)}</g>${extras}</svg>`;
+      `<path d="M17.5 41v5M30.5 41v5" stroke="${ink}" stroke-width="1.6" stroke-linecap="round"/>` +
+      `<g class="cap"><rect x="5" y="8" width="38" height="33" rx="8" fill="${baseFill}" stroke="${ink}" stroke-width="1.2"/>` +
+      `<rect x="8.5" y="8.5" width="31" height="26" rx="6" fill="${BLACK}" stroke="${ink}" stroke-width="1.2"/>` +
+      `${legendText}${cursor}${keyFace(mood, ink)}</g>${extras}</svg>`;
   }
-  const node = h("span", { class: `keychar ${mood ? `k-${mood}` : ""}` });
+  const node = h("span", { class: `keychar ${mood ? `k-${mood}` : ""}`, style: `--bot: ${ink}` });
   node.innerHTML = svg;
   return node;
 }
@@ -721,6 +881,7 @@ function renderCrewColumn() {
         "button",
         {
           class: `member ${bot.id === state.selectedBot ? "on" : ""}`,
+          style: botStyle(bot),
           title: bot.instructions,
           onclick: () => {
             state.selectedBot = bot.id;
@@ -748,6 +909,7 @@ const cap = (text) => String(text).charAt(0).toUpperCase() + String(text).slice(
 function navFooter(current) {
   const links = [
     ["chat", "Chat"],
+    ["home", "Bots"],
     ["memory", "Memory"],
     ["skills", "Skills"],
     ["jobs", "Schedules"],
@@ -864,7 +1026,7 @@ function questCard(q) {
   const showOutput = q.activity && q.status === "running" && (q.activity.name === "bash" ? `$ ${q.activity.input?.command ?? ""}\n${q.activity.output}` : q.activity.output);
   return h(
     "article",
-    { class: `qcard ${q.status}`, onclick: () => go("quest", q.id), tabindex: "0", onkeydown: (e) => e.key === "Enter" && go("quest", q.id) },
+    { class: `qcard ${q.status}`, style: botStyle(q.bot), onclick: () => go("quest", q.id), tabindex: "0", onkeydown: (e) => e.key === "Enter" && go("quest", q.id) },
     q.status === "running" ? h("div", { class: "scanline", "aria-hidden": "true" }, h("span")) : null,
     h("div", { class: "head" }, h("b", {}, q.title), keycap(q.bot.character, 28, mood(q), q.bot.type)),
     approval
@@ -903,7 +1065,7 @@ function renderLog() {
           const detail = q.status === "failed" && q.note ? q.note : q.resumedAt ? "picked up after a restart" : q.branch ? q.branch : "";
           return h(
             "button",
-            { class: "logitem", onclick: () => go("quest", q.id) },
+            { class: "logitem", style: botStyle(q.bot), onclick: () => go("quest", q.id) },
             h("div", { class: "head" }, h("b", {}, q.title), h("span", { class: `pill ${tone}` }, label)),
             h("div", { class: "meta" }, [q.bot.name, shortWhen(q.updatedAt), detail].filter(Boolean).join(" · ")),
           );
@@ -949,7 +1111,7 @@ async function refreshQuest(first = false) {
   const [label, tone] = standing(q);
   const where = q.branch ? ["on branch ", h("code", {}, q.branch), " · your own branch is untouched"] : q.project ? [`in ${basename(q.project)}`] : ["in the workspace folder"];
   fill(ui.qhead, 
-    h("button", { onclick: () => go("home") }, "Back to crew"),
+    h("button", { onclick: () => go("home") }, "Back to bots"),
     keycap(q.bot.character, 40, mood(q), q.bot.type),
     h("div", { class: "titles" }, h("h1", {}, q.title), h("div", { class: "sub" }, `${q.bot.name} the ${cap(q.bot.type)} · `, ...where)),
     ui.meta,
@@ -1195,7 +1357,7 @@ function botView() {
       id: "",
       name: "",
       type: "scout",
-      character: { legend: "?", texture: "dots" },
+      character: { legend: "?", texture: "dots", color: "cyan" },
       instructions: "",
       model: undefined,
       powers: ["web", "memory"],
@@ -1212,7 +1374,7 @@ function botView() {
   const head = h(
     "div",
     { class: "subhead" },
-    h("button", { onclick: () => go("home") }, "Back to crew"),
+    h("button", { onclick: () => go("home") }, "Back to bots"),
     h("div", { class: "titles" }, h("h1", {}, isNew ? "Hatch a bot" : `Edit ${existing.name}`), h("div", { class: "sub mono" }, fileNote)),
     !isNew && existing.source === "personal"
       ? h(
@@ -1252,10 +1414,13 @@ function botView() {
   });
   const drawPortrait = () => {
     draft.character.texture = textureOf(draft.character, draft.type);
-    fill(portrait, 
+    draft.character.color = colorName(draft.character, draft.type);
+    fill(portrait,
       keycap(draft.character, 150, "", draft.type),
       h("h2", {}, draft.name || "New bot"),
       h("div", { class: "type" }, cap(draft.type || "bot")),
+      h("p", { class: "label", style: "margin-top: 22px" }, `Glow · ${NEON[draft.character.color][0]}`),
+      swatches(draft.character.color, (name) => ((draft.character.color = name), drawPortrait()), "Glow colour"),
       h("label", { class: "label", for: "legend", style: "display: block; margin-top: 22px" }, "Key legend"),
       legendInput,
       h("p", { class: "note small" }, "One to three characters printed on the key, such as ? or </>."),
@@ -1272,7 +1437,7 @@ function botView() {
               title: name,
               onclick: () => ((draft.character.texture = key), drawPortrait()),
             },
-            keycap({ legend: draft.character.legend, texture: key }, 30, "", draft.type),
+            keycap({ legend: draft.character.legend, texture: key, color: draft.character.color }, 30, "", draft.type),
             h("span", {}, name),
           ),
         ),
@@ -1291,6 +1456,7 @@ function botView() {
       onchange: (e) => {
         if (draft.character.legend === LEGENDS[draft.type]) draft.character.legend = LEGENDS[e.target.value] ?? draft.character.legend;
         if (draft.character.texture === TYPE_TEXTURES[draft.type]) draft.character.texture = TYPE_TEXTURES[e.target.value] ?? draft.character.texture;
+        if (draft.character.color === TYPE_COLORS[draft.type]) draft.character.color = TYPE_COLORS[e.target.value] ?? draft.character.color;
         draft.type = e.target.value;
         legendInput.value = draft.character.legend;
         drawPortrait();
@@ -1440,39 +1606,159 @@ function chatView() {
   ui.title = h("h1", {}, "New chat");
   ui.meta = h("span", { class: "meta" });
   ui.remove = h("button", { class: "plain danger", title: "Delete this chat", onclick: deleteChat, hidden: !state.convId }, "Delete");
+  // An open chat shows the space it belongs to, wherever it was opened from.
+  const open = state.convs.find((c) => c.id === state.convId);
+  if (open && (open.space || "") !== state.space) setSpace(open.space);
+  ui.move = moveChatPicker();
   const pane = conversationPane();
-  fill(ui.body, ui.chatSide, h("main", { class: "center flush" }, h("div", { class: "chathead" }, ui.title, ui.meta, ui.remove), pane));
+  fill(ui.body, ui.chatSide, h("main", { class: "center flush" }, h("div", { class: "chathead" }, ui.title, ui.meta, ui.move, modelPicker(), ui.remove), pane));
   renderChatList();
   setRunning(false);
   if (state.convId) connect(state.convId);
   else {
+    const ideas = ["Summarize the news on a topic I care about", "Help me write an email", "Explain something step by step", "Find and compare options for me"];
     ui.log.append(
       h(
         "div",
         { class: "empty" },
         h("h2", {}, `Hello. I'm ${state.config.agentName}.`),
-        h("p", {}, "A plain chat with every tool. For work you want to hand off, send a bot on a quest from home base instead."),
+        h("p", {}, "Ask me anything. I can search the web, work with files and remember what matters to you. Pick any AI model at the top right."),
+        state.space
+          ? h("p", { class: "note" }, `This chat is in ${spaceName(state.space)}. I use ${spaceName(state.space)}'s memory along with your general memory, and what I learn here stays in ${spaceName(state.space)}.`)
+          : null,
+        h(
+          "div",
+          { class: "ideas" },
+          ideas.map((idea) => h("button", { onclick: () => ((ui.input.value = `${idea}: `), ui.input.focus()) }, idea)),
+        ),
+        h("p", { class: "note small" }, "Want a task done in the background? ", h("button", { class: "plain link", onclick: () => go("home") }, "Send a bot"), " instead."),
       ),
     );
   }
   ui.input.focus();
 }
 
-function renderChatList() {
+/**
+ * Choose the AI model right where you chat. Lists Claude's models and every
+ * model the other providers (Ollama, LM Studio and so on) say they have.
+ */
+function modelPicker() {
+  const c = state.config;
+  const pick = h("select", { class: "modelpick", "aria-label": "AI model", title: "The AI model that answers" });
+  const label = (ref) => {
+    const slash = ref.indexOf("/");
+    const provider = c.providers.find((p) => p.id === ref.slice(0, slash));
+    const name = ref.slice(slash + 1);
+    if (provider?.kind === "anthropic") return `Claude · ${c.models.find((m) => m.id === name)?.label || name}`;
+    return `${provider?.name || ref.slice(0, slash)} · ${name}`;
+  };
+  const show = (refs) => {
+    const all = [...new Set([c.model, ...refs])];
+    fill(
+      pick,
+      all.map((ref) => h("option", { value: ref, selected: ref === c.model }, label(ref))),
+      h("option", { value: "" }, "Add or set up models…"),
+    );
+  };
+  show([]);
+  Promise.all(
+    c.providers.map(async (p) => {
+      if (p.kind === "anthropic") return c.hasApiKey ? c.models.map((m) => `${p.id}/${m.id}`) : [];
+      const listed = await api("GET", `providers/${encodeURIComponent(p.id)}/models`).catch(() => ({ models: [] }));
+      return listed.models.map((m) => `${p.id}/${m}`);
+    }),
+  ).then((lists) => pick.isConnected && show(lists.flat()));
+  pick.addEventListener("change", () => {
+    if (!pick.value) return go("settings");
+    attempt(async () => {
+      state.config = await api("PUT", "settings", { model: pick.value });
+    });
+  });
+  return pick;
+}
+
+/** Moves the open chat to another space. Hidden until the chat exists. */
+function moveChatPicker() {
+  const pick = h(
+    "select",
+    { class: "modelpick", "aria-label": "Space of this chat", title: "The space this chat belongs to. Choose another to move it.", hidden: !state.convId || !state.spaces.length },
+    h("option", { value: "", selected: !state.space }, "In General"),
+    state.spaces.map((sp) => h("option", { value: sp.id, selected: sp.id === state.space }, `In ${sp.name}`)),
+  );
+  pick.addEventListener("change", () =>
+    attempt(async () => {
+      await api("PATCH", `conversations/${state.convId}`, { space: pick.value || null });
+      setSpace(pick.value);
+      await refreshList();
+      renderChatList();
+    }),
+  );
+  return pick;
+}
+
+/** The space picker at the top of the chat list: chats and memory are shown per space. */
+function spacePicker() {
+  if (ui.addingSpace) {
+    const name = h("input", { placeholder: "Name, e.g. a client or project", maxlength: 40, "aria-label": "Name of the new space" });
+    const cancel = () => ((ui.addingSpace = false), renderChatList(true));
+    const form = h(
+      "form",
+      {
+        class: "spaceform",
+        onsubmit: (e) => {
+          e.preventDefault();
+          attempt(async () => {
+            const made = await api("POST", "spaces", { name: name.value });
+            ui.addingSpace = false;
+            await loadSpaces();
+            setSpace(made.id);
+            go("chat");
+          }, form);
+        },
+      },
+      name,
+      h("div", { class: "row" }, h("button", { class: "primary" }, "Add space"), h("button", { type: "button", onclick: cancel }, "Cancel")),
+    );
+    setTimeout(() => name.focus(), 0);
+    return form;
+  }
+  const pick = h(
+    "select",
+    { "aria-label": "Space", title: "A space keeps one client's or project's chats and memory apart from the rest." },
+    h("option", { value: "", selected: !state.space }, "General"),
+    state.spaces.map((sp) => h("option", { value: sp.id, selected: sp.id === state.space }, sp.name)),
+    h("option", { value: "+new" }, "＋ New space…"),
+    state.spaces.length ? h("option", { value: "+manage" }, "Manage spaces…") : null,
+  );
+  pick.addEventListener("change", () => {
+    if (pick.value === "+new") return (ui.addingSpace = true), renderChatList(true);
+    if (pick.value === "+manage") return go("memory");
+    setSpace(pick.value);
+    go("chat");
+  });
+  return h("label", { class: "sidelabel" }, "Space", pick);
+}
+
+function renderChatList(force = false) {
   if (!ui.chatSide || state.view !== "chat") return;
+  if (!force && ui.chatSide.contains(document.activeElement) && document.activeElement.matches("input, select")) return; // not while the person is choosing or typing
+  const here = state.convs.filter((c) => (c.space || "") === state.space);
   fill(ui.chatSide, 
+    spacePicker(),
     h("button", { class: "primary", onclick: () => go("chat") }, "New chat"),
     h(
       "div",
       { class: "chatlist" },
-      state.convs.map((c) =>
-        h(
-          "button",
-          { class: `navlink ${c.id === state.convId ? "on" : ""}`, title: c.title, onclick: () => go("chat", c.id) },
-          h("span", {}, c.title),
-          c.needsApproval ? h("i", { class: "dot wait", title: "Waiting for your approval" }) : c.running ? h("i", { class: "dot", title: "Working" }) : null,
-        ),
-      ),
+      here.length
+        ? here.map((c) =>
+            h(
+              "button",
+              { class: `navlink ${c.id === state.convId ? "on" : ""}`, title: c.title, onclick: () => go("chat", c.id) },
+              h("span", {}, c.title),
+              c.needsApproval ? h("i", { class: "dot wait", title: "Waiting for your approval" }) : c.running ? h("i", { class: "dot", title: "Working" }) : null,
+            ),
+          )
+        : h("p", { class: "note small", style: "padding: 0 8px" }, state.space ? `No chats in ${spaceName(state.space)} yet.` : "No chats yet."),
     ),
     navFooter("chat"),
   );
@@ -1483,9 +1769,10 @@ async function submit() {
   if (!text || state.running) return;
   await attempt(async () => {
     if (!state.convId) {
-      const conv = await api("POST", "conversations");
+      const conv = await api("POST", "conversations", state.space ? { space: state.space } : {});
       state.convId = conv.id;
       if (ui.remove) ui.remove.hidden = false;
+      if (ui.move) ui.move.hidden = !state.spaces.length;
       fill(ui.log, );
       connect(conv.id);
       await new Promise((resolve) => state.source.addEventListener("open", resolve, { once: true }));
@@ -1522,8 +1809,8 @@ function page(title, intro, ...children) {
   ui.body.className = "body two";
   ui.log = null;
   const views = [
-    ["home", "Home base"],
     ["chat", "Chat"],
+    ["home", "Bots"],
     ["memory", "Memory"],
     ["skills", "Skills"],
     ["jobs", "Schedules"],
@@ -1538,47 +1825,164 @@ function page(title, intro, ...children) {
 }
 
 // ---------- memory ----------
+/** Everything remembered, one space at a time: add, edit, move and forget entries, and manage the spaces. */
 async function memoryView() {
-  const list = h("div");
-  const input = h("textarea", { rows: 2, placeholder: "Something to remember, e.g. “I write mystery novels under a pen name.”" });
+  if (ui.memSpace === undefined || !["", ...state.spaces.map((s) => s.id)].includes(ui.memSpace)) ui.memSpace = state.space;
+  const at = ui.memSpace;
+  const name = spaceName(at);
+  const again = () => memoryView();
   const col = page(
     "Memory",
-    `What ${state.config.agentName} carries into every conversation. It adds to this on its own; you can add or remove entries here.`,
+    `What ${state.config.agentName} remembers between chats. It adds to this on its own, and tells you in the chat when it does. General memory goes into every chat; a space's memory goes only into that space's chats.`,
+  );
+  const entries = await attempt(() => api("GET", "memory"), col);
+  if (!entries || state.view !== "memory") return;
+  const count = (id) => entries.filter((m) => (m.space || "") === id).length;
+
+  // ----- which space -----
+  const newName = h("input", { placeholder: "Name, e.g. a client or project", maxlength: 40, "aria-label": "Name of the new space" });
+  const newForm = h(
+    "form",
+    {
+      class: "row spaceadd",
+      hidden: true,
+      onsubmit: (e) => {
+        e.preventDefault();
+        attempt(async () => {
+          const made = await api("POST", "spaces", { name: newName.value });
+          await loadSpaces();
+          ui.memSpace = made.id;
+          again();
+        }, col);
+      },
+    },
+    newName,
+    h("button", { class: "primary" }, "Add space"),
+  );
+  col.append(
+    h(
+      "div",
+      { class: "spacetabs", role: "tablist", "aria-label": "Spaces" },
+      [{ id: "", name: "General" }, ...state.spaces].map((sp) =>
+        h("button", { role: "tab", class: sp.id === at ? "on" : "", "aria-selected": String(sp.id === at), onclick: () => ((ui.memSpace = sp.id), again()) }, sp.name, h("span", { class: "count" }, String(count(sp.id)))),
+      ),
+      h("button", { class: "plain", onclick: () => ((newForm.hidden = !newForm.hidden), newName.focus()) }, "＋ New space"),
+    ),
+    newForm,
+  );
+  if (at) {
+    const rename = h("input", { value: name, maxlength: 40, "aria-label": "Space name" });
+    const renameForm = h(
+      "form",
+      {
+        class: "row spaceadd",
+        hidden: true,
+        onsubmit: (e) => {
+          e.preventDefault();
+          attempt(async () => {
+            await api("PATCH", `spaces/${at}`, { name: rename.value });
+            await loadSpaces();
+            again();
+          }, col);
+        },
+      },
+      rename,
+      h("button", { class: "primary" }, "Save name"),
+    );
+    col.append(
+      h(
+        "div",
+        { class: "row" },
+        h("span", { class: "note grow" }, `Used only in chats in ${name}, together with General memory.`),
+        h("button", { class: "plain", onclick: () => ((renameForm.hidden = !renameForm.hidden), rename.focus()) }, "Rename"),
+        h(
+          "button",
+          {
+            class: "plain danger",
+            onclick: () =>
+              confirm(`Delete the space “${name}”? Its ${count(at)} ${count(at) === 1 ? "memory is" : "memories are"} deleted for good, and its chats move to General.`) &&
+              attempt(async () => {
+                await api("DELETE", `spaces/${at}`);
+                await Promise.all([loadSpaces(), refreshList()]);
+                ui.memSpace = "";
+                again();
+              }, col),
+          },
+          "Delete space",
+        ),
+      ),
+      renameForm,
+    );
+  } else {
+    col.append(h("p", { class: "note" }, state.spaces.length ? "Carried into every chat, in every space." : "Carried into every chat. Add a space to keep one client's or project's memory and chats apart."));
+  }
+
+  // ----- add -----
+  const input = h("textarea", { rows: 2, placeholder: at ? `Something to remember about ${name}` : "Something to remember, e.g. “I write mystery novels under a pen name.”" });
+  col.append(
     h(
       "form",
       {
         class: "form",
-        onsubmit: async (e) => {
+        onsubmit: (e) => {
           e.preventDefault();
-          await attempt(async () => {
-            await api("POST", "memory", { text: input.value });
-            memoryView();
+          attempt(async () => {
+            await api("POST", "memory", { text: input.value, space: at || undefined });
+            again();
           }, col);
         },
       },
       input,
-      h("div", {}, h("button", { class: "primary" }, "Remember this")),
+      h("div", {}, h("button", { class: "primary" }, at ? `Remember this in ${name}` : "Remember this")),
     ),
-    list,
   );
-  const entries = await attempt(() => api("GET", "memory"), col);
-  if (!entries) return;
-  fill(list, 
-    ...(entries.length
-      ? entries.map((m) =>
-          h(
-            "div",
-            { class: "card" },
-            h(
-              "div",
-              { class: "row" },
-              h("div", { class: "grow" }, m.text, h("div", { class: "note" }, when(m.createdAt))),
-              h("button", { class: "plain danger", onclick: () => attempt(async () => (await api("DELETE", `memory/${m.id}`), memoryView()), col) }, "Forget"),
-            ),
-          ),
-        )
-      : [h("p", { class: "note" }, "Nothing remembered yet.")]),
-  );
+
+  // ----- the entries -----
+  const mine = entries.filter((m) => (m.space || "") === at).reverse(); // newest first
+  const list = h("div");
+  const filter = h("input", { type: "search", placeholder: `Find in ${name}'s memory`, "aria-label": "Find in memory", hidden: mine.length < 8 });
+  const draw = () => {
+    const needle = filter.value.trim().toLowerCase();
+    const shown = needle ? mine.filter((m) => m.text.toLowerCase().includes(needle)) : mine;
+    fill(list, shown.length ? shown.map(card) : h("p", { class: "note" }, mine.length ? "Nothing matches." : at ? `Nothing remembered in ${name} yet.` : "Nothing remembered yet."));
+  };
+  const card = (m) => {
+    const text = h("div", { class: "grow" }, h("div", { class: "mtext" }, m.text), h("div", { class: "note" }, m.updatedAt ? `${when(m.createdAt)} · edited ${when(m.updatedAt)}` : when(m.createdAt)));
+    const move = h(
+      "select",
+      { class: "modelpick", "aria-label": "Move to another space", title: "Move to another space", hidden: !state.spaces.length },
+      h("option", { value: at, selected: true }, "Move to…"),
+      [{ id: "", name: "General" }, ...state.spaces].filter((sp) => sp.id !== at).map((sp) => h("option", { value: sp.id }, sp.name)),
+    );
+    move.addEventListener("change", () => attempt(async () => (await api("PATCH", `memory/${m.id}`, { space: move.value || null }), again()), col));
+    const row = h(
+      "div",
+      { class: "row" },
+      text,
+      h("button", { class: "plain", onclick: () => edit() }, "Edit"),
+      move,
+      h("button", { class: "plain danger", onclick: () => attempt(async () => (await api("DELETE", `memory/${m.id}`), again()), col) }, "Forget"),
+    );
+    const node = h("div", { class: "card" }, row);
+    const edit = () => {
+      const box = h("textarea", { rows: 3 });
+      box.value = m.text;
+      fill(
+        node,
+        h(
+          "form",
+          { class: "form", onsubmit: (e) => (e.preventDefault(), attempt(async () => (await api("PATCH", `memory/${m.id}`, { text: box.value }), again()), col)) },
+          box,
+          h("div", { class: "row" }, h("button", { class: "primary" }, "Save"), h("button", { type: "button", onclick: () => fill(node, row) }, "Cancel")),
+        ),
+      );
+      box.focus();
+    };
+    return node;
+  };
+  filter.addEventListener("input", draw);
+  col.append(filter, list);
+  draw();
 }
 
 // ---------- skills ----------
@@ -1683,6 +2087,17 @@ function settingsView() {
   col.append(
     h("h3", {}, "Anthropic API key"),
     h("form", { class: "form", onsubmit: (e) => (e.preventDefault(), key.value.trim() && save({ apiKey: key.value })) }, key, h("div", {}, h("button", { class: "primary" }, "Save key"))),
+  );
+
+  // The accent is a per-person choice, kept in this browser, so it changes at once without saving.
+  const accentLabel = h("span", {}, NEON[accent][0]);
+  const accentRow = h("div");
+  const drawAccent = () => fill(accentRow, swatches(accent, (name) => (applyAccent(name), (accentLabel.textContent = NEON[name][0]), drawAccent()), "Accent colour"));
+  drawAccent();
+  col.append(
+    h("h3", {}, "Look"),
+    h("p", { class: "note" }, "Accent colour: ", accentLabel, ". Used for buttons, highlights and the cursor. Each bot glows in its own colour, which you can change when you edit the bot."),
+    accentRow,
   );
 
   const name = h("input", { value: c.agentName });

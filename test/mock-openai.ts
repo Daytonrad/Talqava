@@ -23,6 +23,12 @@ export function startMockChat(script: ChatReply[]) {
       res.end(JSON.stringify({ error: { message: "scripted failure" } }));
       return;
     }
+    if (requests.at(-1)!.body.stream === false) {
+      // A plain (not streamed) reply, as used for conversation summaries.
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: reply.text ?? "" } }], usage: reply.usage ?? { prompt_tokens: 100, completion_tokens: 20 } }));
+      return;
+    }
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (choice: unknown, extra: Record<string, unknown> = {}) =>
       res.write(`data: ${JSON.stringify({ id: "chatcmpl-test", object: "chat.completion.chunk", choices: choice ? [choice] : [], ...extra })}\n\n`);

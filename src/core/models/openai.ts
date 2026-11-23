@@ -2,6 +2,7 @@
 // "chat completions" format (most local runners, and many hosted services).
 // The conversation stays in the app's own format; this file translates it
 // on the way out and translates replies back.
+import crypto from "node:crypto";
 import type { ContentBlock, Message, Tool, ToolResult } from "../types.ts";
 import { ModelError } from "./types.ts";
 import type { Model, ModelCallbacks, ModelReply, ModelRequest, Prices, StopReason } from "./types.ts";
@@ -17,9 +18,30 @@ export interface OpenAICompatibleOptions {
   maxTokens?: number;
   /** How many tokens the model can hold. Longer conversations are shortened to fit (default 32,000). */
   contextTokens?: number;
+  /** Where summaries of long conversations are kept between calls. Kept in this process when not given. */
+  summaries?: SummaryCache;
   /** For tests: replaces the global fetch. */
   fetch?: typeof fetch;
 }
+
+/** A summary of the older part of one long conversation: how many messages it covers, and proof they are the same ones. */
+export interface ConversationSummary {
+  covered: number;
+  prefix: string;
+  summary: string;
+}
+export interface SummaryCache {
+  get(key: string): ConversationSummary | undefined;
+  set(key: string, value: ConversationSummary): void;
+}
+const processSummaries = new Map<string, ConversationSummary>();
+const defaultSummaries: SummaryCache = {
+  get: (key) => processSummaries.get(key),
+  set: (key, value) => {
+    if (processSummaries.size > 200) processSummaries.delete(processSummaries.keys().next().value!);
+    processSummaries.set(key, value);
+  },
+};
 
 type ChatMessage =
   | { role: "system" | "user"; content: string }
@@ -100,6 +122,38 @@ export function fitToContext(messages: ChatMessage[], budgetTokens: number): Cha
   return out;
 }
 
+const digest = (value: unknown) => crypto.createHash("sha1").update(JSON.stringify(value)).digest("hex");
+const clip = (text: string, keep: number) => (text.length > keep ? `${text.slice(0, keep)} […]` : text);
+
+/** Older messages as plain text, for the model to summarise. */
+function transcript(messages: ChatMessage[], keep: number): string {
+  return messages
+    .map((m) => {
+      if (m.role === "tool") return `Tool result: ${clip(m.content, keep)}`;
+      if (m.role === "assistant") {
+        const calls = (m.tool_calls ?? []).map((c) => `[used ${c.function.name}: ${clip(c.function.arguments, 200)}]`).join(" ");
+        return `Assistant: ${clip(m.content ?? "", keep)} ${calls}`.trim();
+      }
+      return `User: ${clip(m.content, keep)}`;
+    })
+    .join("\n\n");
+}
+
+const SUMMARY_INSTRUCTIONS =
+  "You keep the running summary of a long conversation between a user and an AI agent, so the agent can carry on after the early part is no longer in view. Write what a colleague taking over would need: what the user wants, facts and preferences the user stated, decisions made, what was done and what came of it (names, numbers, file paths, links, exact values), what failed and why, and what is still open. Keep everything that may matter later; leave out pleasantries and repetition. Plain text, at most 400 words. Do not address the user and do not add anything that was not said.";
+
+/** The conversation with its older part replaced by a summary. The first message and everything from `covered` on stay whole. */
+function withSummary(messages: ChatMessage[], covered: number, summary: string): ChatMessage[] {
+  const note = `[The earlier part of this conversation was summarised to fit. Summary so far:]\n${summary}`;
+  const system: ChatMessage = { role: "system", content: `${messages[0].content}\n\nThis is a long conversation: its earlier part is given as a summary. Rely on the summary for what happened before, and say so if a detail you need is not in it.` };
+  const first = messages[1] as { role: "user"; content: string };
+  const rest = messages.slice(covered);
+  // Kept in turns (user, assistant, user…), which some models insist on.
+  return rest[0]?.role === "user"
+    ? [system, first, { role: "assistant", content: note }, ...rest]
+    : [system, { role: "user", content: `${first.content}\n\n${note}` }, ...rest];
+}
+
 /** Our tools, described in the chat completions format. Tools with no portable description are left out. */
 export function toChatTools(tools: Tool[]) {
   return tools
@@ -156,10 +210,21 @@ export class OpenAICompatibleModel implements Model {
     const { baseUrl, apiKey, model, providerName } = this.#options;
     const doFetch = this.#options.fetch ?? fetch;
     const tools = toChatTools(request.tools);
+    // Room is left for the reply and the tool descriptions.
+    const budget = (this.#options.contextTokens ?? 32_000) - (this.#options.maxTokens ?? 8192) - Math.ceil(JSON.stringify(tools).length / 3.5);
+    const summaryUsage = { input: 0, output: 0 };
+    let messages = toChatMessages(request.system, request.messages);
+    if (tokensIn(messages) > budget) {
+      // A conversation too long for the model: its older part becomes a summary, so nothing said early is simply cut off.
+      // If the summary cannot be made, the older messages are shortened instead (fitToContext, below).
+      messages = await this.#summarised(messages, budget, request.signal, summaryUsage).catch((err) => {
+        if (request.signal.aborted) throw err;
+        return messages;
+      });
+    }
     const body = {
       model,
-      // Room is left for the reply and the tool descriptions.
-      messages: fitToContext(toChatMessages(request.system, request.messages), (this.#options.contextTokens ?? 32_000) - (this.#options.maxTokens ?? 8192) - Math.ceil(JSON.stringify(tools).length / 3.5)),
+      messages: fitToContext(messages, budget),
       ...(tools.length ? { tools } : {}),
       stream: true,
       stream_options: { include_usage: true },
@@ -188,6 +253,7 @@ export class OpenAICompatibleModel implements Model {
     let text = "";
     let finish: string | null | undefined;
     const usage = { input: 0, output: 0 };
+    const total = () => ({ input: usage.input + summaryUsage.input, output: usage.output + summaryUsage.output });
     const calls: { id: string; name: string; args: string }[] = [];
 
     for await (const data of events(response.body)) {
@@ -239,6 +305,58 @@ export class OpenAICompatibleModel implements Model {
       }
       content.push({ type: "tool_use", id: call.id, name: call.name, input } as unknown as ContentBlock);
     }
-    return { content, stopReason: stopReason(finish, calls.length > 0), usage };
+    return { content, stopReason: stopReason(finish, calls.length > 0), usage: total() };
+  }
+
+  /**
+   * Replaces the older part of a too-long conversation with a summary written
+   * by the model itself. The summary is kept, and only extended when the
+   * conversation outgrows the model again, so most calls reuse it as it is.
+   */
+  async #summarised(messages: ChatMessage[], budget: number, signal: AbortSignal, usage: { input: number; output: number }): Promise<ChatMessage[]> {
+    if (messages.length < 6 || messages[1].role !== "user") return messages;
+    const cache = this.#options.summaries ?? defaultSummaries;
+    const key = digest([this.ref, messages[1], messages[2]]);
+    let known = cache.get(key);
+    // Only trust a summary of exactly these messages (an edited or different conversation starts again).
+    if (known && (known.covered > messages.length - 2 || known.prefix !== digest(messages.slice(1, known.covered)))) known = undefined;
+    if (known) {
+      const fitted = withSummary(messages, known.covered, known.summary);
+      if (tokensIn(fitted) <= budget) return fitted;
+    }
+
+    // The latest messages stay whole, up to about half the room; everything before them is summarised.
+    let covered = messages.length - 2;
+    for (let size = tokensIn(messages.slice(covered)); covered > 2; covered--) {
+      size += tokensIn([messages[covered - 1]]);
+      if (size > budget * 0.5) break;
+    }
+    // The kept part must not begin with a tool result cut off from its call.
+    while (covered < messages.length - 1 && messages[covered].role === "tool") covered++;
+    const from = known?.covered ?? 2;
+    if (covered <= from) return known ? withSummary(messages, known.covered, known.summary) : messages;
+
+    const older = messages.slice(from, covered);
+    const room = Math.max(2000, budget * 0.6 * 3.5);
+    const said = [1500, 600, 200].map((keep) => transcript(older, keep)).find((text) => text.length <= room) ?? clip(transcript(older, 200), room);
+    const first = clip(messages[1].content ?? "", 2000);
+    const ask = `How the conversation started:\n${first}\n\n${known ? `Summary so far:\n${known.summary}\n\n` : ""}What happened next:\n${said}\n\nWrite the updated summary of everything so far.`;
+
+    const { baseUrl, apiKey, model } = this.#options;
+    const response = await (this.#options.fetch ?? fetch)(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
+      body: JSON.stringify({ model, stream: false, max_tokens: 1500, messages: [{ role: "system", content: SUMMARY_INSTRUCTIONS }, { role: "user", content: ask }] }),
+      signal,
+    });
+    if (!response.ok) throw new Error(`summary failed (${response.status})`);
+    const data = (await response.json()) as { choices?: { message?: { content?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    usage.input += data.usage?.prompt_tokens ?? 0;
+    usage.output += data.usage?.completion_tokens ?? 0;
+    // Some local models write their thinking first, inside <think> tags.
+    const summary = String(data.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    if (!summary) throw new Error("summary was empty");
+    cache.set(key, { covered, prefix: digest(messages.slice(1, covered)), summary });
+    return withSummary(messages, covered, summary);
   }
 }

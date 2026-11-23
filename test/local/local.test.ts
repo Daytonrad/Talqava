@@ -87,6 +87,56 @@ test("memory, skills and jobs are kept in files", async () => {
   assert.equal(fs.statSync(path.join(store.DATA, "config.json")).mode & 0o777, 0o600);
 });
 
+test("spaces keep a client's memory and chats apart, and memory can be edited and moved", async () => {
+  const acme = store.spaces.create("Acme");
+  const birch = store.spaces.create("Birch");
+  assert.throws(() => store.spaces.create("acme"), /already a space/);
+  assert.throws(() => store.spaces.create("General"), /General is already there/);
+
+  const general = store.memory.add("The user likes plain language.");
+  const fact = store.memory.add("Acme's contract renews in March.", acme.id);
+  assert.equal(store.memory.add("Acme's contract renews in March.", acme.id).id, fact.id); // saying it twice saves it once
+  assert.throws(() => store.memory.add("x", "nope"), /No such space/);
+  assert.throws(() => store.memory.add("y".repeat(2000)), /too long for one memory/);
+  // No overall cap: far more than the old two-page limit can be saved.
+  for (let i = 0; i < 60; i++) store.memory.add(`Birch fact ${i}: ${"detail ".repeat(30)}`, birch.id);
+
+  // A chat in Acme is given General's and Acme's memory, not Birch's.
+  const inAcme = tools.localPrompt(undefined, undefined, [], { space: acme.id, title: "renewal", messages: [] } as unknown as Conversation);
+  assert.match(inAcme, /\(Acme\) Acme's contract renews in March/);
+  assert.match(inAcme, /plain language/);
+  assert.doesNotMatch(inAcme, /Birch fact/);
+  assert.doesNotMatch(tools.localPrompt(), /contract renews/);
+
+  // Editing and moving an entry.
+  assert.equal(store.memory.update(fact.id, { text: "Acme's contract renews in April." }).text, "Acme's contract renews in April.");
+  assert.equal(store.memory.update(fact.id, { space: null }).space, undefined);
+  assert.match(tools.localPrompt(), /renews in April/);
+  store.memory.update(fact.id, { space: acme.id });
+
+  // Past chats: Acme's chat finds Acme's and General's, not Birch's; General finds all.
+  const chat = (title: string, text: string, space?: string) => {
+    const c = store.conversations.create({ title, ...(space ? { space } : {}) });
+    c.messages.push({ role: "user", content: text });
+    store.conversations.save(c);
+    return c;
+  };
+  const a = chat("Acme pricing", "We settled what Acme is charged: 900 a month.", acme.id);
+  chat("Birch pricing", "Birch is charged 400 a month.", birch.id);
+  chat("General pricing", "My usual charge is 500 a month.");
+  const titles = (scope?: { space?: string; exclude?: string }) => store.conversations.search("charges per month", 8, scope).map((h) => h.conversation).sort();
+  assert.deepEqual(titles({ space: acme.id }), ["Acme pricing", "General pricing"]);
+  assert.deepEqual(titles(), ["Acme pricing", "Birch pricing", "General pricing"]);
+  assert.deepEqual(titles({ space: acme.id, exclude: a.id }), ["General pricing"]);
+
+  // Removing a space deletes its memory and moves its chats to General.
+  store.spaces.remove(acme.id);
+  assert.ok(!store.memory.list().some((e) => e.space === acme.id));
+  assert.equal(store.conversations.get(a.id)!.space, undefined);
+  store.spaces.remove(birch.id);
+  store.memory.remove(general.id);
+});
+
 test("a local model gets the page reader instead of Claude's hosted tools, and old settings move to provider refs", async () => {
   const fs = await import("node:fs");
   const file = path.join(store.DATA, "config.json");

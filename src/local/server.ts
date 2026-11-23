@@ -19,6 +19,7 @@ import {
   conversations,
   memory,
   skills,
+  spaces,
   jobStore,
 } from "./store.ts";
 import type { Config, ProviderConfig } from "./store.ts";
@@ -362,10 +363,23 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
         const chats = conversations.list().filter((c) => c.source !== "quest");
         return send(res, 200, chats.map((c) => ({ ...c, running: engine.isRunning(c.id), needsApproval: engine.awaitingApproval(c.id) })));
       }
-      if (req.method === "POST") return send(res, 200, conversations.create());
+      if (req.method === "POST") {
+        // A chat started in a space stays in it: its memory and searches are kept to that space.
+        if (body.space && !spaces.get(String(body.space))) throw new HttpError(400, "No such space.");
+        return send(res, 200, conversations.create(body.space ? { space: String(body.space) } : {}));
+      }
     }
     const conversation = conversationOr404(id);
     if (!action && req.method === "GET") return send(res, 200, { ...conversation, live: engine.liveState(id) });
+    if (!action && req.method === "PATCH") {
+      // Moves a chat to another space (or to General with space: null).
+      if (engine.isRunning(id)) throw new HttpError(409, "Wait for the agent to finish, then move the chat.");
+      if (body.space && !spaces.get(String(body.space))) throw new HttpError(400, "No such space.");
+      if (body.space) conversation.space = String(body.space);
+      else delete conversation.space;
+      conversations.save(conversation, { touch: false });
+      return send(res, 200, { ok: true, space: conversation.space ?? null });
+    }
     if (!action && req.method === "DELETE") {
       engine.stop(id);
       conversations.remove(id);
@@ -376,6 +390,10 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       if (!text) throw new HttpError(400, "Type a message first.");
       if (engine.isRunning(id)) throw new HttpError(409, "The agent is still working. Stop it first.");
       if (questStore.get(id)?.outcome) throw new HttpError(409, "This quest is closed. Send a new quest instead.");
+      // Say plainly what is missing, instead of the model library's error about headers.
+      if (!questStore.get(id) && getConfig().model.startsWith("anthropic/") && !publicConfig().hasApiKey) {
+        throw new HttpError(400, "No AI model is set up yet. Open Settings and paste your Anthropic API key, or choose a free local model there.");
+      }
       await engine.startRun(id, text);
       return send(res, 200, { ok: true });
     }
@@ -529,8 +547,19 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   };
 
   if (route === "GET memory") return send(res, 200, memory.list());
-  if (route === "POST memory") return send(res, 200, await attempt(() => memory.add(body.text)));
+  if (route === "POST memory") return send(res, 200, await attempt(() => memory.add(body.text, body.space ? String(body.space) : undefined)));
+  if (route === "PATCH memory") {
+    const patch: { text?: string; space?: string | null } = {};
+    if (body.text !== undefined) patch.text = String(body.text);
+    if (body.space !== undefined) patch.space = body.space ? String(body.space) : null;
+    return send(res, 200, await attempt(() => memory.update(parts[1], patch)));
+  }
   if (route === "DELETE memory") return send(res, 200, await attempt(() => memory.remove(parts[1])));
+
+  if (route === "GET spaces") return send(res, 200, spaces.list());
+  if (route === "POST spaces") return send(res, 200, await attempt(() => spaces.create(body.name)));
+  if (route === "PATCH spaces") return send(res, 200, await attempt(() => spaces.rename(parts[1], body.name)));
+  if (route === "DELETE spaces") return send(res, 200, await attempt(() => spaces.remove(parts[1])));
 
   if (route === "GET skills") return send(res, 200, skills.list());
   if (route === "DELETE skills") return send(res, 200, await attempt(() => skills.remove(decodeURIComponent(parts[1]))));

@@ -1,7 +1,7 @@
 // Turns the model named in the settings ("provider/model") into something the engine can call.
 import { AnthropicModel, OpenAICompatibleModel } from "../core/index.ts";
 import type { Model } from "../core/index.ts";
-import { apiKey, getConfig } from "./store.ts";
+import { apiKey, getConfig, summaries } from "./store.ts";
 import type { Config } from "./store.ts";
 
 export function splitRef(ref: string): { providerId: string; model: string } {
@@ -26,5 +26,6 @@ export function resolveModel(cfg: Config = getConfig(), ref = cfg.model): Model 
     model,
     prices: provider.prices,
     contextTokens: provider.contextTokens,
+    summaries,
   });
 }

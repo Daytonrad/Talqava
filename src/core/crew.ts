@@ -22,6 +22,18 @@ export type Texture = (typeof TEXTURES)[number];
 const TYPE_TEXTURES: Record<string, Texture> = { scout: "dots", scribe: "lines", maker: "hatch", keeper: "solid", counter: "grid", spark: "zigzag" };
 export const defaultTexture = (type: string): Texture => TYPE_TEXTURES[type] ?? "plain";
 
+/** Neon colours a bot's key glows in. The window draws each one (see public/app.js). */
+export const COLORS = ["green", "cyan", "magenta", "lime", "amber", "violet", "pink", "yellow", "mint"] as const;
+export type Color = (typeof COLORS)[number];
+const TYPE_COLORS: Record<string, Color> = { scout: "cyan", scribe: "violet", maker: "lime", keeper: "mint", counter: "yellow", spark: "magenta" };
+/** A starter type's colour; any other type gets one picked from its name, so it stays the same. */
+export function defaultColor(type: string, name: string): Color {
+  if (TYPE_COLORS[type]) return TYPE_COLORS[type];
+  let sum = 0;
+  for (const ch of name) sum = (sum * 31 + ch.codePointAt(0)!) >>> 0;
+  return COLORS[sum % COLORS.length];
+}
+
 /** One to three visible characters, no spaces. */
 export function isLegend(text: string): boolean {
   const chars = [...text];
@@ -37,7 +49,7 @@ export interface Bot {
   /** scout, scribe, maker, keeper, counter, spark, or a type of one's own. */
   type: string;
   /** How the bot looks: a keycap with this legend printed on it and this texture on its base. */
-  character: { legend: string; texture: Texture };
+  character: { legend: string; texture: Texture; color: Color };
   instructions: string;
   /** "provider/model", or undefined to use the default model in Settings. */
   model?: string;
@@ -75,6 +87,8 @@ export function parseBot(id: string, text: string, source: BotSource): Bot {
   // Files from before black and white may name a colour (or a hat); both are ignored.
   const texture = (character.texture ?? defaultTexture(type)) as Texture;
   if (!TEXTURES.includes(texture)) throw problem(`texture must be one of ${TEXTURES.join(", ")}.`);
+  // A colour that is not one of the neon names (such as an old hex code) falls back to the default.
+  const color = COLORS.includes(character.color as Color) ? (character.color as Color) : defaultColor(type, name);
 
   const powers = Array.isArray(data.powers) ? data.powers : [];
   for (const power of powers) {
@@ -105,7 +119,7 @@ export function parseBot(id: string, text: string, source: BotSource): Bot {
     budget = { ...(steps !== undefined ? { steps: steps as number } : {}), ...(spend !== undefined ? { spend: spend as number } : {}) };
   }
 
-  return { id, name, type, character: { legend, texture }, instructions, model, powers: [...new Set(powers as Power[])], approvals, budget, source };
+  return { id, name, type, character: { legend, texture, color }, instructions, model, powers: [...new Set(powers as Power[])], approvals, budget, source };
 }
 
 /**

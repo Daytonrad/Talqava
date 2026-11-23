@@ -29,9 +29,16 @@ export class MemoryNotes implements MemoryStore {
   async list() {
     return this.items;
   }
-  async add(text: string) {
-    const entry = { id: id(), text, createdAt: new Date().toISOString() };
+  async add(text: string, space?: string) {
+    const entry: MemoryEntry = { id: id(), text, createdAt: new Date().toISOString(), ...(space ? { space } : {}) };
     this.items.push(entry);
+    return entry;
+  }
+  async update(key: string, patch: { text?: string; space?: string | null }) {
+    const entry = this.items.find((e) => e.id === key);
+    if (!entry) throw new Error(`No memory entry with id ${key}.`);
+    if (patch.text !== undefined) entry.text = patch.text;
+    if (patch.space !== undefined) entry.space = patch.space ?? undefined;
     return entry;
   }
   async remove(key: string) {
