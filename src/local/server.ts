@@ -21,6 +21,8 @@ import {
   skills,
   spaces,
   jobStore,
+  readJson,
+  writeJson,
 } from "./store.ts";
 import type { Config, ProviderConfig } from "./store.ts";
 import { CAUTION_TOOLS, localRunSpec } from "./tools.ts";
@@ -34,6 +36,7 @@ import { mcpIntegration, setClaudeDesktop } from "./mcpintegration.ts";
 import { EVERYONE, ensureFolders, library, libraryFolder, removeLibrary, syncLibrary } from "./library.ts";
 import { execFile } from "node:child_process";
 import { needsFor } from "./preflight.ts";
+import { audit, readAudit, redact } from "./audit.ts";
 import { finishOpenRouterSignIn, openrouterIntegration, openrouterModels, removeOpenRouter, saveOpenRouterKey, startOpenRouterSignIn, useOpenRouterModel } from "./openrouter.ts";
 import { autoSetupGit, cloneRepository, disconnectRepository, gitIntegration, githubAccounts, githubRepos, installGit, listIntegrations, pollGithubSignIn, removeGitIntegration, startGithubSignIn, testGithub } from "./integrations.ts";
 import { ASSIGN_RULES, INDUSTRIES, REQUEST_RULES, STRUCTURES, seatsFor } from "./structures.ts";
@@ -61,9 +64,75 @@ export const jobs = new JobBook(jobStore);
 export const engine = new Engine({
   conversations,
   resolveRun: localRunSpec(jobs),
-  onEvent: (id, event) => quests.onEvent(id, event),
+  onEvent: (id, event) => {
+    quests.onEvent(id, event);
+    auditEvent(id, event);
+  },
 });
 quests.attach(engine);
+
+// ---------- the audit log: what the owner does and what each agent does ----------
+const TOOL_WORDS: Record<string, string> = { bash: "Ran a command", str_replace_based_edit_tool: "Worked on a file", web_search: "Searched the web", web_fetch: "Read a web page", http_request: "Called a web API", memory: "Used memory", skill: "Used a skill", schedule: "Scheduled work", browser: "Used the browser", conversation_search: "Searched past chats", code_execution: "Ran code", assign_task: "Handed work to a colleague", request_work: "Requested work from another department", escalate: "Took a decision to their lead", ask_colleague: "Asked a colleague", team_memory: "Used team memory", library: "Used the library" };
+const lastCost = new Map<string, number>();
+/** Who is behind a conversation: the agent doing a task, or the chat assistant. */
+function actorOf(id: string) {
+  const quest = questStore.get(id);
+  if (quest) return { actor: quest.bot.id, actorName: quest.bot.title || quest.bot.name };
+  return { actor: "assistant", actorName: getConfig().agentName || "Assistant" };
+}
+function auditEvent(id: string, event: RunEvent) {
+  const who = { ...actorOf(id), task: id };
+  if (event.type === "assistant") {
+    for (const block of event.content as { type: string; name?: string; input?: unknown }[]) {
+      if (block.type !== "tool_use" && block.type !== "server_tool_use") continue;
+      const input = (block.input ?? {}) as Record<string, unknown>;
+      const detail = typeof input.command === "string" ? input.command : typeof input.path === "string" ? `${input.command ?? ""} ${input.path}`.trim() : typeof input.query === "string" ? input.query : typeof input.url === "string" ? input.url : JSON.stringify(redact(input));
+      audit({ ...who, kind: "tool", action: TOOL_WORDS[block.name ?? ""] ?? `Used ${block.name}`, detail });
+    }
+  } else if (event.type === "tool_result") {
+    const result = event.result as { is_error?: boolean; content?: unknown };
+    if (result.is_error) audit({ ...who, kind: "problem", ok: false, action: "A step did not work", detail: typeof result.content === "string" ? result.content : JSON.stringify(result.content ?? "").slice(0, 400) });
+  } else if (event.type === "approval") {
+    audit({ ...who, kind: "approval", action: `Asked for approval: ${TOOL_WORDS[event.approval.name] ?? event.approval.name}`, detail: JSON.stringify(redact(event.approval.input)) });
+  } else if (event.type === "approval_done") {
+    audit({ actor: "owner", actorName: "You", kind: "approval", task: id, action: event.decision === "deny" ? "Did not allow a step" : event.decision === "always" ? "Allowed a step, always" : "Allowed a step once" });
+  } else if (event.type === "status" && !event.running) {
+    const total = event.usage?.cost ?? conversations.get(id)?.usage.cost ?? 0;
+    const spent = Math.max(0, total - (lastCost.get(id) ?? 0));
+    lastCost.set(id, total);
+    const quest = questStore.get(id);
+    audit({ ...who, kind: "spend", action: quest ? `Stopped working (${quest.status === "asking" ? "waiting for you" : quest.status})` : "Finished answering", detail: `This run cost $${spent.toFixed(4)}; $${total.toFixed(4)} in all.`, cost: spent });
+  } else if (event.type === "error") {
+    audit({ ...who, kind: "problem", ok: false, action: "Stopped with an error", detail: event.text });
+  } else if (event.type === "notice" && /budget/i.test(event.text)) {
+    audit({ ...who, kind: "spend", ok: false, action: "Stopped at its budget", detail: event.text });
+  }
+}
+
+/** An owner's request, described in plain words for the log. */
+function describeRequest(method: string, parts: string[], body: any, url: URL): { kind: string; action: string; detail?: string; task?: string } | null {
+  const [area, id, action] = parts;
+  const words = (b: unknown) => JSON.stringify(redact(b ?? {})).slice(0, 400);
+  if (area === "login") return { kind: "settings", action: "Signed in" };
+  if (area === "quests" && !id && method === "POST") return null; // the route records it, knowing whether the task started
+  if (area === "quests" && id) return { kind: "task", task: id, action: action === "stop" ? "Stopped a task" : action === "escalate" ? "Handed a task to Claude" : action === "accept" ? "Kept a task's changes" : action === "undo" ? "Undid a task's changes" : method === "DELETE" ? "Deleted a task" : `${method} task ${action ?? ""}`.trim() };
+  if (area === "conversations") {
+    if (action === "messages") return { kind: "chat", task: id, action: questStore.get(id) ? "Replied to an agent" : "Sent a chat message", detail: String(body.text ?? "").slice(0, 300) };
+    if (action === "approvals") return null; // the agent's event records the decision
+    if (!id && method === "POST") return { kind: "chat", action: "Started a chat" };
+    return { kind: "chat", task: id, action: method === "DELETE" ? "Deleted a chat" : action === "stop" ? "Stopped a chat" : "Changed a chat" };
+  }
+  if (area === "settings") return { kind: "settings", action: "Changed settings", detail: Object.keys(body ?? {}).join(", ") + " · " + words(body) };
+  if (area === "library") {
+    const name = url.searchParams.get("name");
+    const map: Record<string, string> = { upload: `Uploaded “${name ?? "a file"}”`, folders: `Made the folder “${body.name ?? ""}”`, move: body.name ? `Renamed to “${body.name}”` : "Moved files", delete: "Deleted files", restore: "Restored from Deleted", purge: "Deleted for good", open: "Showed in Finder", launch: "Opened a file", search: "Searched the library", folder: "Changed who can use a folder" };
+    return { kind: "library", action: map[id] ?? (method === "PATCH" ? "Changed who can use a file" : method === "DELETE" ? "Deleted a file" : `${method} library ${id ?? ""}`.trim()), detail: name ? `into ${url.searchParams.get("folder") ?? ""}` : words(body) };
+  }
+  if (area === "integrations") return { kind: "integration", action: `${id ? id[0].toUpperCase() + id.slice(1) : "Integration"}: ${(action ?? method.toLowerCase()).replace(/-/g, " ")}`, detail: words(body) };
+  if (area === "orgs" || area === "marketplace") return { kind: "organization", action: area === "marketplace" ? "Added from the marketplace" : `Changed the organization${action ? ` (${action})` : ""}`, detail: words(body) };
+  if (area === "inbox") return { kind: "inbox", action: id === "names" ? `Renamed an agent to “${body.name || "its default"}”` : "Updated messages", detail: id === "names" ? parts[2] : words(body) };
+  return { kind: "other", action: `${method} ${parts.join(" / ")}`, detail: words(body) };
+}
 
 async function runJob(job: Job) {
   const { conversation } = await engine.runJob(job);
@@ -154,6 +223,7 @@ async function updateSettings(body: any) {
   }
   if (EFFORTS.includes(body.effort)) patch.effort = body.effort;
   if (body.savings === "balanced" || body.savings === "off") patch.savings = body.savings;
+  if (typeof body.checkFirst === "boolean") patch.checkFirst = body.checkFirst;
   if (["ask", "auto"].includes(body.approvalMode)) patch.approvalMode = body.approvalMode;
   if (typeof body.apiKey === "string") patch.apiKey = body.apiKey.trim();
 
@@ -324,7 +394,7 @@ function lastWords(conversation: Conversation | null): string {
 /** How far the tasks handed on from one task have got. */
 function chainProgress(rootId: string) {
   const parts = chainOf(rootId).filter((q) => q.id !== rootId);
-  return { finished: parts.filter((q) => q.status === "done").length, working: parts.filter((q) => q.status === "running" || q.status === "waiting").length, who: [...new Set(parts.map((q) => q.bot.name))].slice(0, 8) };
+  return { finished: parts.filter((q) => q.status === "done").length, working: parts.filter((q) => q.status === "running" || q.status === "waiting").length, stopped: parts.filter((q) => q.status === "failed" || q.status === "budget" || q.status === "stopped").length, who: [...new Set(parts.map((q) => q.bot.name))].slice(0, 8) };
 }
 
 /** Every action an agent took in one task, in order, and whether each one worked. */
@@ -480,6 +550,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   // A file dropped into the library arrives as it is, not as JSON; it is read after the sign-in check below.
   const upload = route === "POST library" && parts[1] === "upload";
   const body = upload ? {} : ["POST", "PUT", "PATCH"].includes(req.method ?? "") ? await readBody(req) : {};
+  (req as { auditBody?: unknown }).auditBody = route === "POST login" ? {} : body;
 
   if (route === "POST login") {
     const ok = PASSWORD && crypto.timingSafeEqual(sha(String(body.password || "")), sha(PASSWORD));
@@ -493,7 +564,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (route === "GET integrations" && parts[1] === "openrouter" && parts[2] === "callback") {
     // OpenRouter sends the person's browser back here after they approve. The browser may not be signed in to
     // this app (it can be a different browser), so the one-time state from the start of the sign-in is the proof.
-    let message = "OpenRouter is connected to Talqava Agents. You can close this tab and go back to the app.";
+    let message = "OpenRouter is connected to Talqava. You can close this tab and go back to the app.";
     let ok = true;
     try {
       await finishOpenRouterSignIn(url.searchParams.get("code"), url.searchParams.get("state"));
@@ -716,7 +787,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       // What the task cannot do without is checked first, for free. The person can still start it anyway where that makes sense.
       const needs = needsFor({ bot, text, project });
       const blocking = needs.filter((n) => !n.canSkip || body.anyway !== true);
-      if (blocking.length) return send(res, 200, { needs: blocking, repositories: getConfig().projects });
+      if (blocking.length) {
+        audit({ actor: "owner", actorName: "You", kind: "task", ok: false, action: `Tried to assign a task to the ${bot.title || bot.name}; not started`, detail: blocking.map((n) => `${n.title}: ${n.detail}`).join(" | ") });
+        return send(res, 200, { needs: blocking, repositories: getConfig().projects });
+      }
+      audit({ actor: "owner", actorName: "You", kind: "task", action: `Assigned a task to the ${bot.title || bot.name}`, detail: String(body.title || text).slice(0, 300) });
       try {
         return send(res, 200, questSummary(await quests.start({ bot, text, title: typeof body.title === "string" && body.title.trim() ? body.title.trim() : undefined, project: project ?? undefined })));
       } catch (err) {
@@ -861,6 +936,47 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (route === "DELETE library" && parts[1]) return send(res, 200, await attempt(async () => (await library.remove(org, Number(parts[1])), { ok: true })));
   }
 
+  if (route === "GET audit") {
+    return send(res, 200, readAudit({ limit: Number(url.searchParams.get("limit")) || 500, actor: url.searchParams.get("actor") || undefined, kind: url.searchParams.get("kind") || undefined, q: url.searchParams.get("q") || undefined, since: url.searchParams.get("since") || undefined }));
+  }
+
+  // The inbox: what the person has read, saved, archived or deleted, and the names they gave their agents.
+  // Messages themselves come from the tasks; only these marks are kept here.
+  if (parts[0] === "inbox") {
+    type Mark = { readAt?: string; starred?: boolean; archived?: boolean; deletedAt?: string; purged?: boolean };
+    const file = path.join(DATA, "inbox.json");
+    const box = { messages: {} as Record<string, Mark>, names: {} as Record<string, string>, ...readJson<{ messages?: Record<string, Mark>; names?: Record<string, string> }>(file, {}) };
+    const save = () => writeJson(file, box);
+    const ids = (list: unknown) => (Array.isArray(list) ? list : []).map(String).filter((id) => /^[a-z]+:[\w:.-]{1,120}$/.test(id)).slice(0, 500);
+    if (route === "GET inbox") return send(res, 200, box);
+    if (route === "PATCH inbox") {
+      const now = new Date().toISOString();
+      for (const id of ids(body.ids)) {
+        const m = (box.messages[id] ??= {});
+        if (body.read === true) m.readAt = now;
+        if (body.read === false) delete m.readAt;
+        if (typeof body.starred === "boolean") m.starred = body.starred || undefined;
+        if (typeof body.archived === "boolean") m.archived = body.archived || undefined;
+        if (body.deleted === true) m.deletedAt = now;
+        if (body.deleted === false) delete m.deletedAt, delete m.purged;
+        if (body.purge === true && m.deletedAt) m.purged = true;
+      }
+      // Deleted messages are kept 30 days, then hidden for good.
+      for (const m of Object.values(box.messages) as Mark[]) if (m.deletedAt && Date.now() - new Date(m.deletedAt).getTime() > 30 * 24 * 3600 * 1000) m.purged = true;
+      save();
+      return send(res, 200, box);
+    }
+    if (route === "PUT inbox" && parts[1] === "names" && parts[2]) {
+      const bot = decodeURIComponent(parts[2]);
+      if (!/^[\w.-]{1,80}$/.test(bot)) throw new HttpError(400, "No such agent.");
+      const name = String(body.name ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+      if (name) box.names[bot] = name;
+      else delete box.names[bot];
+      save();
+      return send(res, 200, box);
+    }
+  }
+
   // Integrations: the outside tools agents work with. Git is the first.
   if (parts[0] === "integrations") {
     if (route === "GET integrations" && !parts[1]) return send(res, 200, await listIntegrations());
@@ -976,7 +1092,24 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   try {
     checkOrigin(req);
     const url = new URL(req.url ?? "/", "http://local");
-    if (url.pathname.startsWith("/api/")) return await api(req, res, url);
+    if (url.pathname.startsWith("/api/")) {
+      const parts = url.pathname.split("/").filter(Boolean).slice(1);
+      const record = req.method !== "GET" && req.method !== "OPTIONS" && parts[0] !== "audit";
+      try {
+        await api(req, res, url);
+        if (record) {
+          const d = describeRequest(req.method ?? "", parts, (req as { auditBody?: unknown }).auditBody ?? {}, url);
+          if (d) audit({ actor: "owner", actorName: "You", ...d, ok: res.statusCode < 400 });
+        }
+      } catch (err) {
+        if (record) {
+          const d = describeRequest(req.method ?? "", parts, (req as { auditBody?: unknown }).auditBody ?? {}, url);
+          if (d && parts[0] !== "login") audit({ actor: "owner", actorName: "You", ...d, ok: false, detail: `${d.detail ? `${d.detail} · ` : ""}Refused: ${(err as Error).message}` });
+        }
+        throw err;
+      }
+      return;
+    }
     if (req.method !== "GET") throw new HttpError(405, "Method not allowed.");
     return serveStatic(res, url.pathname);
   } catch (err) {
@@ -999,6 +1132,10 @@ export function start() {
   getConfig();
   const server = http.createServer(handle);
   server.listen(PORT, HOST, () => {
+    // If Talqava was added to the Claude app from an older copy of this app (it was renamed), point Claude at this one.
+    // Only the desktop app does this, so running from the code folder never repoints Claude.
+    if (process.env.ELECTRON_RUN_AS_NODE === "1") import("./mcpintegration.ts").then((m) => m.refreshClaudeDesktop()).catch(() => {});
+    audit({ actor: "system", actorName: "Talqava", kind: "other", action: "Started the app" });
     console.log(`${BRAND.name} is running at http://${LOCAL_HOSTS.has(HOST) ? "localhost" : HOST}:${PORT}`);
     console.log(`Data: ${DATA}\nWorkspace: ${WORKSPACE}`);
     // A note of where this app is listening, so the Talqava MCP server (run by Claude or another AI app) can find it.

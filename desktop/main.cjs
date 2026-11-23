@@ -1,4 +1,4 @@
-// Talqava Agents for Mac. Starts the app's own server in the background, then
+// Talqava for Mac. Starts the app's own server in the background, then
 // shows it in a window. Closing the window keeps it running (so scheduled jobs
 // and bots carry on); Quit from the menu or Dock stops everything.
 const { app, BrowserWindow, Menu, shell, dialog } = require("electron");
@@ -8,7 +8,7 @@ const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
 
-const NAME = "Talqava Agents";
+const NAME = "Talqava";
 const FIRST_PORT = 8788; // 8787 is left for the web version, so both can run at once
 const HOST = "127.0.0.1";
 
@@ -16,7 +16,9 @@ app.setName(NAME);
 if (!app.requestSingleInstanceLock()) app.quit();
 
 const serverDir = app.isPackaged ? path.join(process.resourcesPath, "server") : path.resolve(__dirname, "..");
-const dataDir = path.join(app.getPath("userData"), "data"); // ~/Library/Application Support/Talqava Agents/data
+// Where everything is kept. The app was called "Talqava Agents" before; data made then stays in that folder.
+const oldDataDir = path.join(app.getPath("appData"), "Talqava Agents", "data");
+const dataDir = fs.existsSync(oldDataDir) ? oldDataDir : path.join(app.getPath("userData"), "data"); // ~/Library/Application Support/Talqava/data
 const logFile = path.join(app.getPath("logs"), "server.log");
 
 let server = null;

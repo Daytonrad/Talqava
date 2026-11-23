@@ -101,7 +101,7 @@ export async function acceptCopy(copy: QuestCopy, message: string): Promise<stri
   }
   // Use the user's own name for the commit when git knows it.
   const named = (await git(copy.worktree, ["config", "user.email"], { allowFail: true })).trim();
-  const identity = named ? [] : ["-c", "user.name=Talqava Agents", "-c", "user.email=talqava@localhost"];
+  const identity = named ? [] : ["-c", "user.name=Talqava", "-c", "user.email=talqava@localhost"];
   await git(copy.worktree, [...identity, "commit", "-q", "-m", message]);
   await removeCopy(copy);
   return copy.branch;

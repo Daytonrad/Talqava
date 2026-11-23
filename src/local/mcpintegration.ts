@@ -81,6 +81,26 @@ export function mcpIntegration() {
  * one entry in Claude's own settings file, with everything else in that file
  * left exactly as it was. A copy of the file is kept beside it first.
  */
+/**
+ * When Talqava is already added to the Claude desktop app but its settings point at an old copy of this app
+ * (it was renamed, or moved), points them at this one. Changes nothing otherwise; keeps a copy first.
+ */
+export function refreshClaudeDesktop(): boolean {
+  try {
+    const file = claudeDesktopFile();
+    const { found, config } = readClaudeDesktop();
+    const servers = (config.mcpServers ?? {}) as Record<string, { command?: string; args?: string[] }>;
+    const now = mcpLaunch();
+    const entry = servers[SERVER_NAME];
+    if (!found || !entry || (entry.command === now.command && JSON.stringify(entry.args) === JSON.stringify(now.args))) return false;
+    fs.copyFileSync(file, `${file}.before-talqava`);
+    fs.writeFileSync(file, `${JSON.stringify({ ...config, mcpServers: { ...servers, [SERVER_NAME]: now } }, null, 2)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function setClaudeDesktop(add: boolean): { added: boolean; file: string } {
   const file = claudeDesktopFile();
   const { found, config } = readClaudeDesktop();

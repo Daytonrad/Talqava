@@ -21,7 +21,7 @@ import {
   setting,
 } from "../core/index.ts";
 import type { Bot, Conversation, JobBook, Power, RunSpec, Tool } from "../core/index.ts";
-import { MAX_DEPTH, MAX_OPEN_HANDOFFS, chainBudget, chainOver, questStore, quests, rootOf } from "./quests.ts";
+import { MAX_DEPTH, MAX_OPEN_HANDOFFS, chainBudget, chainCost, chainOf, chainOver, questStore, quests, rootOf } from "./quests.ts";
 import { loadCrew } from "./crew.ts";
 import { assignableBy, memberOf, oneLine, orgs, reportsOf, requestableBy, rolePrompt } from "./orgs.ts";
 import { orgMemoryPrompt, teamMemoryTool } from "./orgmemory.ts";
@@ -213,6 +213,19 @@ export async function localTools(jobs: JobBook): Promise<Tool[]> {
   return tools;
 }
 
+/** The owner's saved skills, for reading only: every agent follows them, whether or not it may write new ones. */
+const skillReader = defineTool<{ name: string }>({
+  name: "skill",
+  description: "Procedures the owner has saved for how work is done here. Read the one that covers your task before you start it, and follow it.",
+  properties: { name: { type: "string", description: "The skill's name, as listed under Skills." } },
+  required: ["name"],
+  async run(input) {
+    const skill = skills.list().find((s) => s.name === String(input.name ?? "").trim());
+    if (!skill) throw new Error(`No skill named "${input.name}". The skills are: ${skills.list().map((s) => s.name).join(", ") || "none"}.`);
+    return skill.content;
+  },
+});
+
 /** What the person is asking about now: the latest thing they said, and the chat's title. */
 function topicOf(conversation?: Conversation): string {
   const said = [...(conversation?.messages ?? [])].reverse().find((m) => m.role === "user" && typeof m.content === "string");
@@ -253,6 +266,7 @@ async function botTools(bot: Bot, root: string, jobs: JobBook, claude: boolean):
   if (has("shell")) tools.push(makeBashTool(root));
   if (has("memory")) tools.push(memoryTool(memory));
   if (has("skills")) tools.push(skillTool(skills));
+  else if (skills.list().length) tools.push(skillReader);
   if (has("search")) tools.push(conversationSearchTool(conversations));
   if (has("api")) tools.push(httpTool(() => getConfig().secrets));
   if (has("schedule")) tools.push(scheduleTool(jobs));
@@ -518,6 +532,24 @@ async function connectors(enabled: boolean) {
   return { tools, note, names: tools.map((t) => t.name) };
 }
 
+/** Part of a task's budget kept for the agent who leads it, so it can always write the owner its report. */
+export const LEAD_RESERVE = 0.2;
+
+/**
+ * What a task, or a part handed on from it, may still spend of the budget they share. The lead may use all that
+ * is left. Parts leave the lead's reserve alone, and parts working at the same time split the rest evenly, so
+ * together they cannot run past the budget.
+ */
+export function shareLeft(questId: string): number {
+  const quest = questStore.get(questId);
+  if (!quest) return Infinity;
+  const rootId = rootOf(quest);
+  const left = chainBudget() - chainCost(rootId);
+  if (rootId === questId) return left;
+  const busy = chainOf(rootId).filter((q) => q.id !== rootId && (q.status === "running" || q.status === "waiting" || q.id === questId)).length;
+  return (left - chainBudget() * LEAD_RESERVE) / Math.max(1, busy);
+}
+
 /** Builds what the engine needs for one run, from the settings file and, for a quest, its bot. */
 export function localRunSpec(jobs: JobBook) {
   return async (conversation: Conversation): Promise<RunSpec> => {
@@ -542,7 +574,7 @@ export function localRunSpec(jobs: JobBook) {
       const org = orgs.active();
       const role = rolePrompt(bot, org);
       const onChart = Boolean(memberOf(org, bot.id));
-      const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id)].filter(Boolean).join("\n\n") : "";
+      const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const question = Boolean(quest.kind);
       // Whoever may hand work to someone gets assign_task; every member can ask a colleague and use the shared memory.
       const teamwork = !onChart ? [] : question ? [teamMemory, libraryForAgents] : teamworkTools(org, bot.id);
@@ -557,7 +589,7 @@ export function localRunSpec(jobs: JobBook) {
             `You are the ${me?.title ?? bot.title} in the ${me?.department ?? bot.group} department of ${org.name}. ${oneLine(bot)}`,
             "A colleague has put a question to you, or asked you to decide something. Answer in a few sentences, from what you know and what the organization's memory and library hold. Look something up at most once or twice. Do not start any work, do not ask anyone else, and do not pad the answer. If you do not know, say so in one line and say who might.",
             // A question carries less of the organization's memory than a full task does.
-            onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation), 1200), libraryPrompt(org, bot.id)].filter(Boolean).join("\n\n") : "",
+            onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation), 1200), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "",
             `Today's date is ${new Date().toDateString()}.`,
           ]
             .filter(Boolean)
@@ -568,6 +600,7 @@ export function localRunSpec(jobs: JobBook) {
           approvalMode: bot.approvals,
           budget: QUESTION_BUDGET,
           cautionAfter: [...CAUTION_TOOLS],
+          remaining: () => shareLeft(quest.id),
         };
       }
       return {
@@ -581,6 +614,8 @@ export function localRunSpec(jobs: JobBook) {
         budget: question ? QUESTION_BUDGET : { ...cfg.budget, ...bot.budget },
         // What a connector returns is outside content too.
         cautionAfter: [...CAUTION_TOOLS, ...linked.names],
+        // The task and what is handed on from it share one budget, checked before every step.
+        remaining: () => shareLeft(quest.id),
       };
     }
 
@@ -593,7 +628,7 @@ export function localRunSpec(jobs: JobBook) {
       const org = orgs.active();
       const role = rolePrompt(chatBot, org);
       const onChart = Boolean(memberOf(org, chatBot.id));
-      const remembered = onChart ? [orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id)].filter(Boolean).join("\n\n") : "";
+      const remembered = onChart ? [orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const teamwork = onChart ? teamworkTools(org, chatBot.id) : [];
       return {
         model,
@@ -613,7 +648,7 @@ export function localRunSpec(jobs: JobBook) {
     const linked = await connectors(true);
     return {
       model,
-      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", libraryPrompt(orgs.active(), GENERAL_AGENT)].filter(Boolean).join("\n\n"))}`,
+      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", libraryPrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation))].filter(Boolean).join("\n\n"))}`,
       // Other models read the web with our own page reader; Claude uses Anthropic's.
       tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],

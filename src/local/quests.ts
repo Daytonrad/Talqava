@@ -10,6 +10,7 @@ import { budgetBlock, recordSpend } from "./spend.ts";
 import { loadCrew } from "./crew.ts";
 import { orgs } from "./orgs.ts";
 import { orgMemory } from "./orgmemory.ts";
+import { audit } from "./audit.ts";
 import type { CheckResult } from "./checks.ts";
 import type { QuestCheck, QuestTemplate } from "./templates.ts";
 import { fill, resolveInputs } from "./templates.ts";
@@ -17,7 +18,8 @@ import { gitLog, githubIssues, githubReport, githubSlug } from "./gather.ts";
 import { acceptCopy, changes, prepareCopy, undoCopy } from "./git.ts";
 import type { Changes, QuestCopy } from "./git.ts";
 
-export type QuestStatus = "running" | "waiting" | "done" | "stopped" | "failed" | "budget";
+/** "asking": the agent checked the task before starting and is waiting for the owner to answer its questions. */
+export type QuestStatus = "running" | "waiting" | "done" | "stopped" | "failed" | "budget" | "asking";
 
 export interface Quest {
   /** The same id as the quest's conversation. */
@@ -201,6 +203,15 @@ export class QuestRunner {
     }
     questStore.save(quest);
     journal.append(quest.id, { type: "quest_start", bot: bot.id, title: quest.title, project: project ?? null, branch: quest.copy?.branch ?? null });
+    audit({ actor: bot.id, actorName: bot.title || bot.name, kind: "task", action: parent ? `Started a task handed on by ${parent.by}` : kind ? `Received a ${kind}` : "Started a task", detail: quest.title, task: quest.id });
+    // A task the owner gave (not a hand-off or a question between agents) is checked first: does the agent have what it needs?
+    if (!parent && !kind && !template && getConfig().checkFirst !== false) {
+      const asked = await this.#checkFirst(quest, text, project).catch((err) => {
+        audit({ actor: bot.id, actorName: bot.title || bot.name, kind: "problem", action: "Could not check the task before starting; started anyway", detail: (err as Error).message, task: quest.id, ok: false });
+        return false;
+      });
+      if (asked) return questStore.get(quest.id)!;
+    }
     try {
       await this.#engine.startRun(quest.id, text, { keepTitle: true });
     } catch (err) {
@@ -208,6 +219,36 @@ export class QuestRunner {
       throw err;
     }
     return questStore.get(quest.id)!;
+  }
+
+  /**
+   * The check before a task starts. Returns true when the agent asked the owner for something instead of
+   * starting: the task, and the agent's questions, are then in its conversation, and the owner's reply starts it.
+   */
+  async #checkFirst(quest: Quest, text: string, project: string | undefined): Promise<boolean> {
+    const { checkReadiness, askingMessage } = await import("./readiness.ts");
+    const r = await checkReadiness(quest.bot, text, project, AbortSignal.timeout(90_000));
+    const conversation = conversations.get(quest.id);
+    if (conversation) {
+      // What the check cost belongs to the task, so it shows on its receipt and counts towards its budget.
+      conversation.usage.input += r.input;
+      conversation.usage.output += r.output;
+      conversation.usage.cost = (conversation.usage.cost ?? 0) + r.cost;
+    }
+    const who = { actor: quest.bot.id, actorName: quest.bot.title || quest.bot.name, task: quest.id, cost: r.cost };
+    if (r.ready) {
+      if (conversation) conversations.save(conversation, { touch: false });
+      audit({ ...who, kind: "task", action: "Checked the task before starting: has what it needs", detail: r.plan || undefined });
+      return false;
+    }
+    const message = askingMessage(r);
+    if (conversation) {
+      conversation.messages.push({ role: "user", content: text }, { role: "assistant", content: [{ type: "text", text: message, citations: null }] as never });
+      conversations.save(conversation);
+    }
+    this.#set(quest.id, { status: "asking", note: [...r.missing, ...r.questions].join(" · ").slice(0, 400) });
+    audit({ ...who, kind: "task", action: "Asked the owner for what the task needs before starting", detail: [...r.missing.map((m) => `Missing: ${m}`), ...r.questions.map((q) => `Question: ${q}`)].join(" | ") });
+    return true;
   }
 
   /**
@@ -351,7 +392,8 @@ export class QuestRunner {
         if (event.running) {
           this.#ending.delete(id);
           this.#stopping.delete(id);
-          this.#set(id, { status: "running" });
+          // A task that was waiting for the owner's answers starts now; its questions are no longer a note.
+          this.#set(id, quest.status === "asking" ? { status: "running", note: undefined } : { status: "running" });
         } else {
           const status = this.#stopping.has(id) ? "stopped" : (this.#ending.get(id) ?? "done");
           this.#ending.delete(id);
@@ -438,7 +480,7 @@ export class QuestRunner {
   /** Keeps the quest's changes as a commit on its own branch. */
   async accept(id: string): Promise<{ branch: string | null }> {
     const quest = this.#closable(id);
-    const branch = await acceptCopy(quest.copy, `${quest.title}\n\nTask by ${quest.bot.name === quest.bot.title ? quest.bot.name : `${quest.bot.name} (${quest.bot.title})`} in Talqava Agents.`);
+    const branch = await acceptCopy(quest.copy, `${quest.title}\n\nTask by ${quest.bot.name === quest.bot.title ? quest.bot.name : `${quest.bot.name} (${quest.bot.title})`} in Talqava.`);
     this.#set(id, { outcome: branch ? "accepted" : "no-changes" });
     journal.append(id, { type: "quest_accept", branch });
     return { branch };

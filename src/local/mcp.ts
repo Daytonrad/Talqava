@@ -18,15 +18,15 @@ function appUrl(): string {
     const note = JSON.parse(fs.readFileSync(path.join(DATA, "running.json"), "utf8")) as { port?: number };
     if (note.port) return `http://127.0.0.1:${note.port}`;
   } catch {}
-  throw new Error("Talqava Agents is not running. Open the Talqava Agents app on this computer, then try again.");
+  throw new Error("Talqava is not running. Open the Talqava app on this computer, then try again.");
 }
 
 async function app<T>(method: string, route: string, body?: unknown): Promise<T> {
   const res = await fetch(`${appUrl()}/api/${route}`, { method, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20_000) }).catch(() => null);
-  if (!res) throw new Error("Talqava Agents is not running. Open the Talqava Agents app on this computer, then try again.");
+  if (!res) throw new Error("Talqava is not running. Open the Talqava app on this computer, then try again.");
   const data = (await res.json().catch(() => ({}))) as { error?: string };
-  if (res.status === 401) throw new Error("Talqava Agents is protected by a password, so it cannot be used from another app yet.");
-  if (!res.ok) throw new Error(data.error || `Talqava Agents answered with an error (${res.status}).`);
+  if (res.status === 401) throw new Error("Talqava is protected by a password, so it cannot be used from another app yet.");
+  if (!res.ok) throw new Error(data.error || `Talqava answered with an error (${res.status}).`);
   return data as T;
 }
 
@@ -144,7 +144,7 @@ async function run(name: string, input: Record<string, unknown>): Promise<string
   throw new Error(`There is no tool called ${name}.`);
 }
 
-const server = new Server({ name: "talqava", version: "0.1.0" }, { capabilities: { tools: {} }, instructions: "Talqava Agents: the person's own team of AI agents, organized into departments. Use talqava_team to see who is on it, talqava_assign_task to give one of them work, and talqava_task to read the result. Work that changes files or sends anything waits for the person's approval in the Talqava app." });
+const server = new Server({ name: "talqava", version: "0.1.0" }, { capabilities: { tools: {} }, instructions: "Talqava: the person's own team of AI agents, organized into departments. Use talqava_team to see who is on it, talqava_assign_task to give one of them work, and talqava_task to read the result. Work that changes files or sends anything waits for the person's approval in the Talqava app." });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {

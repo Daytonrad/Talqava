@@ -1,4 +1,4 @@
-// The Talqava Agents window. No framework: small helpers that build DOM nodes.
+// The Talqava window. No framework: small helpers that build DOM nodes.
 // Layout: a top bar (repository, command box, spending, settings) over a body
 // that each view fills: home base, a quest, a bot, chats, and the other pages.
 import { renderMarkdown } from "/markdown.js";
@@ -123,7 +123,7 @@ function showLogin() {
         }, form);
       },
     },
-    h("div", { class: "brand", role: "img", "aria-label": "Talqava Agents" }, brandLogo({ mark: 48, word: 18 })),
+    h("div", { class: "brand", role: "img", "aria-label": "Talqava" }, brandLogo({ mark: 48, word: 18 })),
     password,
     h("button", { class: "primary" }, "Sign in"),
   );
@@ -141,7 +141,7 @@ async function boot() {
   } catch {
     return;
   }
-  document.title = "Talqava Agents";
+  document.title = "Talqava";
   if (!state.config.projects.includes(state.project)) state.project = "";
   if (needsKey(state.config)) state.view = "settings";
   await Promise.all([loadCrew(), loadQuests(), refreshList(), loadTemplates(), loadSpaces(), loadOrgs()]);
@@ -253,6 +253,7 @@ const ICONS = {
   jobs: "M10 5.5V10l3 2M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0z",
   settings: "M4 6h7M15 6h1M4 14h1M9 14h7M13 4v4M7 12v4",
   integrations: "M7.5 3.5v4M12.5 3.5v4M5.5 7.5h9v2.5a4.5 4.5 0 0 1-9 0zM10 14.5v2.5",
+  audit: "M6 3.5h6l3 3v10H6A1.5 1.5 0 0 1 4.5 15V5A1.5 1.5 0 0 1 6 3.5zM7.5 9h5M7.5 11.5h5M7.5 14h3",
   library: "M3.5 6A1.5 1.5 0 0 1 5 4.5h3l1.5 2H15A1.5 1.5 0 0 1 16.5 8v6A1.5 1.5 0 0 1 15 15.5H5A1.5 1.5 0 0 1 3.5 14zM7 10.5h6M7 12.8h4",
 };
 const icon = (name) => {
@@ -270,10 +271,10 @@ function renderRail() {
   inbox.append(ui.inboxCount);
   fill(
     ui.rail,
-    h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava Agents, chat" }, brandLogo()),
+    h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava, chat" }, brandLogo()),
     h("div", { class: "railgroup" }, item("chat", "Chat", v === "chat"), inbox),
     h("div", { class: "raillabel" }, "Team"),
-    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Assign tasks to agents and follow their work"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department")),
+    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Assign tasks to agents and follow their work"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department"), item("audit", "Audit log", v === "audit", "Every operation, by you and by each agent")),
     h("div", { class: "raillabel" }, "Knowledge"),
     h("div", { class: "railgroup" }, item("library", "Library", v === "library", "Documents you share with your agents"), item("memory", "Memory", v === "memory"), item("skills", "Skills", v === "skills"), item("jobs", "Schedules", v === "jobs")),
     h("div", { class: "raillabel" }, "Connect"),
@@ -301,7 +302,7 @@ function renderBody() {
   state.source = null;
   ui.log = null;
   ui.body.className = "body";
-  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView, integrations: integrationsView, library: libraryView };
+  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView, integrations: integrationsView, library: libraryView, audit: auditView };
   (views[state.view] || homeView)();
 }
 
@@ -1034,6 +1035,7 @@ const mood = (q) =>
 /** How a quest stands: a glyph and a word or two, and whether it needs attention. */
 function standing(q) {
   if (q.status === "waiting") return ["◌ Waiting on you", "loud"];
+  if (q.status === "asking") return ["? Needs your answer", "loud"];
   if (q.status === "running") return q.template?.tries ? [`● Fixing · try ${q.template.tries} of ${q.template.maxTries}`, "loud"] : ["● Working", "loud"];
   if (q.checking) return ["◌ Checking the result", "loud"];
   if (q.check && !q.check.passed && q.status === "done") return ["✕ Check failed", "loud"];
@@ -1549,88 +1551,379 @@ function updateCard(q, { compact = false } = {}) {
   );
 }
 
+// ---------- the inbox: a mailbox of messages from the team ----------
+// Every task the person assigned is a message thread from the agent doing it; approvals, failures and budget
+// stops arrive as messages too. The person reads, saves (stars), archives and deletes them like email. Only
+// those marks are stored (on this computer); the messages are built from the tasks each time.
+
+// Agents get a person's name for the inbox, which the owner can change. The default is picked from the
+// agent's id, so it stays the same every time.
+const FIRST_NAMES = ["Maya", "Noah", "Ava", "Liam", "Zara", "Ethan", "Priya", "Lucas", "Sofia", "Omar", "Chloe", "Mateo", "Amara", "Daniel", "Leila", "Kenji", "Grace", "Ravi", "Nora", "Diego", "Hana", "Samuel", "Isla", "Arjun", "Elena", "Theo", "Yara", "Marcus", "Ines", "Jonah", "Mei", "Felix", "Aisha", "Leo", "Camila", "Owen", "Nadia", "Hugo", "Ruby", "Tariq", "Freya", "Kofi", "Lina", "Rafael", "June", "Idris", "Sana", "Elias"];
+const LAST_NAMES = ["Brooks", "Chen", "Patel", "Rivera", "Okafor", "Novak", "Kim", "Hughes", "Silva", "Moreau", "Haddad", "Larsen", "Ito", "Mensah", "Costa", "Fischer", "Reyes", "Sato", "Walsh", "Kaur", "Bennett", "Duarte", "Lindqvist", "Nakamura", "Adeyemi", "Byrne", "Castillo", "Dubois"];
+const nameHash = (text, seed) => [...text].reduce((h, c) => (Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0), seed);
+const defaultAgentName = (id) => `${FIRST_NAMES[nameHash(id, 2166136261) % FIRST_NAMES.length]} ${LAST_NAMES[nameHash(id, 374761393) % LAST_NAMES.length]}`;
+/** The name an agent goes by in the inbox: the one the owner gave it, or its default. */
+const agentName = (bot) => (bot ? state.mail?.names?.[bot.id] || defaultAgentName(bot.id) : "Talqava");
+const agentRole = (bot) => (bot ? bot.title || bot.name : "Your workspace");
+
+async function loadMail() {
+  try {
+    state.mail = await api("GET", "inbox");
+  } catch {
+    state.mail ??= { messages: {}, names: {} };
+  }
+}
+
+const MONTH_START = () => `${new Date().toISOString().slice(0, 7)}-01T00:00:00.000Z`;
+
+/** Every message: one per task the person assigned, plus whatever else needs them. Newest activity first. */
+function mailMessages() {
+  const out = [];
+  const own = ownTasks();
+  for (const q of own) {
+    const live = isLive(q);
+    const failed = q.status === "failed" || q.status === "budget" || (q.check && !q.check.passed) || (!live && q.chain?.stopped > 0);
+    const label = q.approvals?.length || q.status === "asking" ? "needs" : failed ? "failed" : live ? "working" : "done";
+    const snippet = q.status === "failed" && q.note ? q.note : q.said || (live ? "Working on it now." : "Finished without a written report.");
+    out.push({ id: `task:${q.id}`, kind: "task", q, bot: q.bot, subject: q.title, snippet, at: q.updatedAt, activityAt: live && !q.approvals?.length ? q.createdAt : q.updatedAt, label });
+  }
+  for (const n of inboxItems().needs) {
+    if (n.q && own.includes(n.q)) continue;
+    // A part of a task the person assigned reports inside that task's message; only a part waiting for approval (or for a review of its changes) writes on its own.
+    if (n.q?.parent && n.kind !== "approval" && n.kind !== "review") continue;
+    const q = n.q;
+    if (n.kind === "approval") out.push({ id: `need:approval:${q.id}:${n.approval.id}`, kind: "need", need: n, q, bot: q.bot, subject: `Approval needed: ${NAMES[n.approval.name] || n.approval.name} for “${q.title}”`, snippet: n.approval.name === "bash" ? n.approval.input.command : JSON.stringify(n.approval.input), at: q.updatedAt, activityAt: q.updatedAt, label: "needs" });
+    else if (n.kind === "review") out.push({ id: `need:review:${q.id}`, kind: "need", need: n, q, bot: q.bot, subject: `Ready for your review: ${q.title}`, snippet: `${q.changedFiles ?? "Some"} file${q.changedFiles === 1 ? "" : "s"} changed on ${q.branch}.`, at: q.updatedAt, activityAt: q.updatedAt, label: "needs" });
+    else if (n.kind === "check") out.push({ id: `need:check:${q.id}`, kind: "need", need: n, q, bot: q.bot, subject: `Did not pass its check: ${q.title}`, snippet: "The result did not pass its check. Open the task to see why.", at: q.updatedAt, activityAt: q.updatedAt, label: "failed" });
+    else if (n.kind === "failed") out.push({ id: `need:failed:${q.id}`, kind: "need", need: n, q, bot: q.bot, subject: `Could not finish: ${q.title}`, snippet: q.note || "The task failed.", at: q.updatedAt, activityAt: q.updatedAt, label: "failed" });
+    else if (n.kind === "budget") out.push({ id: `need:budget:${q.id}`, kind: "need", need: n, q, bot: q.bot, subject: `Stopped at its budget: ${q.title}`, snippet: "Reply “continue” to keep going.", at: q.updatedAt, activityAt: q.updatedAt, label: "failed" });
+    else if (n.kind === "chat") out.push({ id: `need:chat:${n.c.id}`, kind: "need", need: n, bot: null, subject: "A chat is waiting for your approval", snippet: n.c.title, at: n.c.updatedAt ?? MONTH_START(), activityAt: n.c.updatedAt ?? MONTH_START(), label: "needs" });
+    else if (n.kind === "monthly") out.push({ id: `need:monthly:${n.bot.id}:${MONTH_START().slice(0, 7)}`, kind: "need", need: n, bot: n.bot, subject: "I have reached my monthly budget", snippet: `${money(n.bot.month.spent)} of ${money(n.bot.month.limit)}. I start no new work until you raise it.`, at: MONTH_START(), activityAt: MONTH_START(), label: "needs" });
+    else if (n.kind === "total") out.push({ id: `need:total:${MONTH_START().slice(0, 7)}`, kind: "need", need: n, bot: null, subject: "Your agents have reached this month's budget", snippet: "No agent starts new work until you raise it or the month turns.", at: MONTH_START(), activityAt: MONTH_START(), label: "needs" });
+  }
+  return out;
+}
+
+const markOf = (m) => state.mail?.messages?.[m.id] ?? {};
+/** Unread: never opened, or something new happened since it was opened. Before the inbox kept marks, the last visit counts. */
+const isUnread = (m) => {
+  const mark = markOf(m);
+  const seen = mark.readAt || (state.mail && Object.keys(state.mail.messages ?? {}).length ? "" : seenUpdates());
+  return !seen || String(m.activityAt) > seen;
+};
+const MAIL_FOLDERS = [
+  ["inbox", "Inbox", (m, k) => !k.archived && !k.deletedAt],
+  ["starred", "Saved", (m, k) => k.starred && !k.deletedAt],
+  ["needs", "Needs you", (m, k) => (m.label === "needs" || m.label === "failed") && !k.deletedAt],
+  ["working", "In progress", (m, k) => m.label === "working" && !k.deletedAt],
+  ["archive", "Archive", (m, k) => k.archived && !k.deletedAt],
+  ["trash", "Trash", (m, k) => k.deletedAt && !k.purged],
+];
+const LABEL_WORDS = { needs: "Needs you", failed: "Problem", working: "In progress", done: "Done" };
+
 function syncInboxCount() {
   if (!ui.inboxCount) return;
-  const n = inboxItems().needs.length + unreadUpdates().length;
+  if (!state.mail && !ui.mailLoading) ui.mailLoading = loadMail().then(() => syncInboxCount());
+  const n = mailMessages().filter((m) => !markOf(m).archived && !markOf(m).deletedAt && isUnread(m)).length;
   ui.inboxCount.hidden = !n;
   ui.inboxCount.textContent = String(n);
+}
+
+async function mailMark(ids, set) {
+  if (!ids.length) return;
+  try {
+    state.mail = await api("PATCH", "inbox", { ids, ...set });
+  } catch (err) {
+    ui.mailNote = err.message;
+  }
+  renderInbox();
+  syncInboxCount();
 }
 
 function inboxView() {
   ui.body.className = "body";
   ui.log = null;
-  ui.inbox = h("div", { class: "inbox" });
-  fill(ui.body, h("main", { class: "center" }, ui.inbox));
+  ui.mailSel ??= new Set();
+  ui.mailFolder ??= "inbox";
+  ui.mailBody ??= {};
+  ui.mailDraft ??= {};
+  ui.mailListKey = ui.mailReadKey = null;
+  // The search box is made once, so typing is never interrupted when new messages arrive.
+  const find = h("input", { type: "search", class: "mailfind", placeholder: "Search mail: a name, a task, any word", value: ui.mailFind ?? "", "aria-label": "Search mail" });
+  find.addEventListener("input", () => ((ui.mailFind = find.value), (ui.mailOpen = null), renderInbox()));
+  const sort = h("select", { class: "mailsort", "aria-label": "Sort", onchange: (e) => ((ui.mailSort = e.target.value), renderInbox()) }, [["newest", "Newest first"], ["oldest", "Oldest first"], ["unread", "Unread first"], ["sender", "Sender A to Z"]].map(([v, t]) => h("option", { value: v, selected: v === (ui.mailSort ?? "newest") }, t)));
+  ui.mailSide = h("nav", { class: "mailside", "aria-label": "Mail folders" });
+  ui.mailBulk = h("div", { class: "mailbulk" });
+  ui.mailList = h("div", { class: "maillist", role: "list" });
+  ui.mailRead = h("article", { class: "mailread" });
+  ui.inbox = h("div", { class: "mail" }, ui.mailSide, h("div", { class: "mailmain" }, h("div", { class: "mailtop" }, find, sort), ui.mailBulk, h("div", { class: "mailpanes" }, ui.mailList, ui.mailRead)));
+  fill(ui.body, h("main", { class: "center flush" }, ui.inbox));
   renderInbox();
-  loadCrew().then(() => state.view === "inbox" && renderInbox());
+  Promise.all([loadCrew(), loadMail()]).then(() => state.view === "inbox" && (renderInbox(), syncInboxCount()));
 }
 
 function renderInbox() {
-  if (state.view !== "inbox" || !ui.inbox) return;
-  // Updates count as read a moment after the Inbox is opened, so the ones that were new are still marked this time.
-  clearTimeout(ui.seenTimer);
-  ui.seenTimer = setTimeout(() => (remember("talqava.updatesSeen", new Date().toISOString()), syncInboxCount()), 4000);
-  const { needs, working, done } = inboxItems();
-  const act = (fn) => attempt(async () => (await fn(), await Promise.all([loadQuests(), refreshList(), loadCrew()]), renderInbox(), syncInboxCount()), ui.inbox);
-  const row = (bot, title, sub, extra, buttons, tone = "") =>
-    h("div", { class: `irow ${tone}`, style: bot ? botStyle(bot) : "" }, bot ? keycap(bot.character, 40, "", bot.type) : h("span", { class: "ichat", "aria-hidden": "true" }, "…"), h("div", { class: "grow" }, h("b", {}, title), h("div", { class: "note small" }, sub), extra), h("div", { class: "row" }, buttons));
-  const need = (n) => {
-    const { q } = n;
+  if (state.view !== "inbox" || !ui.mailList) return;
+  const all = mailMessages().filter((m) => !markOf(m).purged);
+  const folder = MAIL_FOLDERS.find(([id]) => id === ui.mailFolder) ?? MAIL_FOLDERS[0];
+  const words = (ui.mailFind ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const haystack = (m) => `${agentName(m.bot)} ${agentRole(m.bot)} ${m.subject} ${m.snippet}`.toLowerCase();
+  const sorters = {
+    newest: (a, b) => String(b.at).localeCompare(String(a.at)),
+    oldest: (a, b) => String(a.at).localeCompare(String(b.at)),
+    unread: (a, b) => Number(isUnread(b)) - Number(isUnread(a)) || String(b.at).localeCompare(String(a.at)),
+    sender: (a, b) => agentName(a.bot).localeCompare(agentName(b.bot)) || String(b.at).localeCompare(String(a.at)),
+  };
+  // A search looks in every folder but Trash, as mail apps do.
+  const shown = all.filter((m) => (words.length ? !markOf(m).deletedAt : folder[2](m, markOf(m))) && words.every((w) => haystack(m).includes(w))).sort(sorters[ui.mailSort ?? "newest"]);
+  for (const id of [...ui.mailSel]) if (!shown.some((m) => m.id === id)) ui.mailSel.delete(id);
+  const open = shown.find((m) => m.id === ui.mailOpen) ?? all.find((m) => m.id === ui.mailOpen) ?? null;
+
+  // ----- the folders -----
+  const compose = h("button", { class: "primary compose", onclick: () => composeMail() }, "Compose");
+  fill(
+    ui.mailSide,
+    compose,
+    MAIL_FOLDERS.map(([id, label, test]) => {
+      const inIt = all.filter((m) => test(m, markOf(m)));
+      const count = id === "inbox" || id === "needs" ? inIt.filter(isUnread).length : id === "trash" ? 0 : inIt.length;
+      return h("button", { class: `mailfolder ${id === folder[0] && !words.length ? "on" : ""}`, "aria-current": id === folder[0] ? "page" : null, onclick: () => ((ui.mailFolder = id), (ui.mailOpen = null), ui.mailSel.clear(), (ui.mailFind = ""), document.querySelector(".mailfind") && (document.querySelector(".mailfind").value = ""), renderInbox()) }, h("span", { class: "grow" }, label), count ? h("b", {}, String(count)) : null);
+    }),
+    folder[0] === "trash" ? h("p", { class: "note small mailtrashnote" }, "Messages in Trash are removed after 30 days. Deleting a message never deletes the task or its work.") : null,
+  );
+
+  // ----- the bar above the list: select all, and what to do with the selection -----
+  const sel = shown.filter((m) => ui.mailSel.has(m.id));
+  const ids = sel.map((m) => m.id);
+  const allOn = shown.length > 0 && sel.length === shown.length;
+  const inTrash = folder[0] === "trash" && !words.length;
+  fill(
+    ui.mailBulk,
+    h("input", { type: "checkbox", class: "pick", "aria-label": "Select all", checked: allOn, onchange: () => (allOn ? ui.mailSel.clear() : shown.forEach((m) => ui.mailSel.add(m.id)), renderInbox()) }),
+    sel.length
+      ? [
+          h("span", { class: "note small" }, `${sel.length} selected`),
+          inTrash
+            ? [h("button", { class: "small", onclick: () => (ui.mailSel.clear(), mailMark(ids, { deleted: false })) }, "Restore"), h("button", { class: "small danger", onclick: () => confirm(`Delete ${sel.length} message${sel.length === 1 ? "" : "s"} forever?`) && (ui.mailSel.clear(), mailMark(ids, { purge: true })) }, "Delete forever")]
+            : [
+                folder[0] === "archive" ? h("button", { class: "small", onclick: () => (ui.mailSel.clear(), mailMark(ids, { archived: false })) }, "Move to Inbox") : h("button", { class: "small", onclick: () => (ui.mailSel.clear(), mailMark(ids, { archived: true })) }, "Archive"),
+                h("button", { class: "small", onclick: () => (ui.mailSel.clear(), (ui.mailOpen = ids.includes(ui.mailOpen) ? null : ui.mailOpen), mailMark(ids, { deleted: true })) }, "Delete"),
+                h("button", { class: "small", onclick: () => mailMark(ids, { read: true }) }, "Mark read"),
+                h("button", { class: "small", onclick: () => mailMark(ids, { read: false }) }, "Mark unread"),
+                h("button", { class: "small", onclick: () => mailMark(ids, { starred: !sel.every((m) => markOf(m).starred) }) }, sel.every((m) => markOf(m).starred) ? "Unsave" : "Save"),
+              ],
+        ]
+      : [
+          h("button", { class: "plain small", title: "Mark every message here as read", onclick: () => mailMark(shown.filter(isUnread).map((m) => m.id), { read: true }) }, "Mark all read"),
+          inTrash && shown.length ? h("button", { class: "plain small danger", onclick: () => confirm("Empty Trash? These messages are removed for good. Tasks and their work are kept.") && mailMark(shown.map((m) => m.id), { purge: true }) }, "Empty Trash") : null,
+        ],
+    h("span", { class: "grow" }),
+    h("span", { class: "note small" }, words.length ? `${shown.length} result${shown.length === 1 ? "" : "s"} in all mail` : `${shown.length} message${shown.length === 1 ? "" : "s"}`),
+  );
+
+  // ----- the list -----
+  const row = (m) => {
+    const mark = markOf(m);
+    const unread = isUnread(m);
+    const node = h(
+      "div",
+      { class: `mailrow ${unread ? "unread" : ""} ${ui.mailOpen === m.id ? "open" : ""} ${ui.mailSel.has(m.id) ? "sel" : ""}`, role: "listitem", tabindex: "0", style: m.bot ? botStyle(m.bot) : "", onclick: () => openMail(m), onkeydown: (e) => e.key === "Enter" && e.target === node && openMail(m) },
+      h("input", { type: "checkbox", class: "pick", "aria-label": `Select ${m.subject}`, checked: ui.mailSel.has(m.id), onclick: (e) => e.stopPropagation(), onchange: (e) => (e.target.checked ? ui.mailSel.add(m.id) : ui.mailSel.delete(m.id), renderInbox()) }),
+      h("button", { class: `star ${mark.starred ? "on" : ""}`, "aria-label": mark.starred ? "Unsave" : "Save", "aria-pressed": String(Boolean(mark.starred)), title: mark.starred ? "Saved" : "Save", onclick: (e) => (e.stopPropagation(), mailMark([m.id], { starred: !mark.starred })) }, mark.starred ? "★" : "☆"),
+      m.bot ? keycap(m.bot.character, 28, "", m.bot.type) : h("span", { class: "sysavatar", "aria-hidden": "true" }, "T"),
+      h("span", { class: "msender" }, agentName(m.bot)),
+      h("span", { class: "msubject" }, h("b", {}, m.subject), h("span", { class: "msnippet" }, ` — ${String(m.snippet).replace(/\s+/g, " ").slice(0, 160)}`)),
+      h("span", { class: `mlabel ${m.label === "done" ? "empty" : m.label}` }, m.label === "done" ? "" : LABEL_WORDS[m.label]),
+      h("span", { class: "mtime" }, shortWhen(m.at)),
+      h(
+        "span",
+        { class: "mhover" },
+        inTrash
+          ? h("button", { class: "plain small", onclick: (e) => (e.stopPropagation(), mailMark([m.id], { deleted: false })) }, "Restore")
+          : [
+              h("button", { class: "plain small", title: mark.archived ? "Move to Inbox" : "Archive", onclick: (e) => (e.stopPropagation(), mailMark([m.id], { archived: !mark.archived })) }, mark.archived ? "Inbox" : "Archive"),
+              h("button", { class: "plain small", title: "Delete", onclick: (e) => (e.stopPropagation(), ui.mailOpen === m.id && (ui.mailOpen = null), mailMark([m.id], { deleted: true })) }, "Delete"),
+              h("button", { class: "plain small", title: unread ? "Mark read" : "Mark unread", onclick: (e) => (e.stopPropagation(), mailMark([m.id], { read: unread })) }, unread ? "Read" : "Unread"),
+            ],
+      ),
+    );
+    return node;
+  };
+  const listKey = JSON.stringify([ui.mailNote, folder[0], ui.mailOpen, shown.map((m) => [m.id, m.subject, m.snippet, m.at, m.label, isUnread(m), markOf(m).starred, markOf(m).archived, markOf(m).deletedAt, ui.mailSel.has(m.id), agentName(m.bot)])]);
+  const listChanged = listKey !== ui.mailListKey;
+  ui.mailListKey = listKey;
+  const empty = { inbox: "No messages. When you assign a task, the agent writes to you here.", starred: "Nothing saved. Press the star on a message to keep it here.", needs: "Nothing needs you right now.", working: "Nothing is in progress.", archive: "Nothing archived.", trash: "Trash is empty." };
+  if (listChanged) fill(ui.mailList, ui.mailNote ? h("div", { class: "banner error" }, ui.mailNote) : null, shown.length ? shown.map(row) : h("div", { class: "mailempty" }, h("b", {}, words.length ? "No messages match that search." : empty[folder[0]])));
+  ui.mailNote = null;
+  ui.inbox.classList.toggle("reading", Boolean(open));
+
+  // ----- the open message (kept as it is while a reply is being typed) -----
+  if (open && ui.mailRead.contains(document.activeElement) && ui.mailRead.dataset.id === open.id) return;
+  const readKey = JSON.stringify([open?.id, open?.at, open?.label, open?.snippet, open && markOf(open), open?.q?.approvals?.length, open?.q?.activity?.name, open?.q?.chain, open && agentName(open.bot), ui.mailNote]);
+  if (readKey === ui.mailReadKey && ui.mailRead.dataset.id === (open?.id ?? "")) return;
+  ui.mailReadKey = readKey;
+  ui.mailRead.dataset.id = open?.id ?? "";
+  fill(ui.mailRead, open ? readMail(open) : h("div", { class: "mailpick" }, h("b", {}, "Select a message to read it."), h("span", { class: "note small" }, `${all.filter((m) => !markOf(m).archived && !markOf(m).deletedAt && isUnread(m)).length} unread in your Inbox.`)));
+}
+
+function openMail(m) {
+  ui.mailOpen = m.id;
+  if (isUnread(m)) mailMark([m.id], { read: true });
+  else renderInbox();
+}
+
+/** The full text of the agent's last message in a task, fetched once per change. */
+async function mailFullText(q) {
+  const cached = ui.mailBody[q.id];
+  if (cached && cached.at === q.updatedAt) return cached.text;
+  const conv = await api("GET", `conversations/${q.id}`).catch(() => null);
+  let text = "";
+  for (const message of [...(conv?.messages ?? [])].reverse()) {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    text = message.content.filter((b) => b.type === "text").map((b) => b.text).join("\n\n").trim();
+    if (text) break;
+  }
+  ui.mailBody[q.id] = { at: q.updatedAt, text };
+  return text;
+}
+
+function readMail(m) {
+  const mark = markOf(m);
+  const q = m.q;
+  const back = h("button", { class: "plain small", onclick: () => ((ui.mailOpen = null), renderInbox()) }, "← Back");
+  const tools = h(
+    "div",
+    { class: "readtools" },
+    back,
+    h("span", { class: "grow" }),
+    mark.deletedAt
+      ? h("button", { class: "small", onclick: () => mailMark([m.id], { deleted: false }) }, "Restore")
+      : [
+          h("button", { class: "small", onclick: () => ((ui.mailOpen = mark.archived ? m.id : null), mailMark([m.id], { archived: !mark.archived })) }, mark.archived ? "Move to Inbox" : "Archive"),
+          h("button", { class: "small", onclick: () => ((ui.mailOpen = null), mailMark([m.id], { deleted: true })) }, "Delete"),
+          h("button", { class: "small", onclick: () => ((ui.mailOpen = null), mailMark([m.id], { read: false })) }, "Mark unread"),
+          h("button", { class: `small ${mark.starred ? "on" : ""}`, "aria-pressed": String(Boolean(mark.starred)), onclick: () => mailMark([m.id], { starred: !mark.starred }) }, mark.starred ? "★ Saved" : "☆ Save"),
+        ],
+  );
+
+  // The sender, whose name can be changed right here.
+  const nameBox = h("span", { class: "fromname" });
+  const showName = () =>
+    fill(
+      nameBox,
+      h("b", {}, agentName(m.bot)),
+      m.bot
+        ? h("button", {
+            class: "plain small rename",
+            title: "Give this agent another name",
+            onclick: () => {
+              const input = h("input", { class: "renamebox", value: agentName(m.bot), "aria-label": "Agent's name", maxlength: "40" });
+              const save = async (value) => {
+                try {
+                  state.mail = await api("PUT", `inbox/names/${encodeURIComponent(m.bot.id)}`, { name: value });
+                } catch (err) {
+                  ui.mailNote = err.message;
+                }
+                document.activeElement?.blur();
+                renderInbox();
+              };
+              input.addEventListener("keydown", (e) => (e.key === "Enter" ? save(input.value.trim()) : e.key === "Escape" ? showName() : null));
+              fill(nameBox, input, h("button", { class: "small primary", onclick: () => save(input.value.trim()) }, "Save"), state.mail?.names?.[m.bot.id] ? h("button", { class: "plain small", title: `Back to ${defaultAgentName(m.bot.id)}`, onclick: () => save("") }, "Use default") : null);
+              setTimeout(() => (input.focus(), input.select()), 0);
+            },
+          }, "Rename")
+        : null,
+    );
+  showName();
+  const from = h("div", { class: "readfrom", style: m.bot ? botStyle(m.bot) : "" }, m.bot ? keycap(m.bot.character, 44, isLive(q ?? {}) ? "working" : "", m.bot.type) : h("span", { class: "sysavatar big", "aria-hidden": "true" }, "T"), h("div", { class: "grow" }, nameBox, h("div", { class: "note small" }, `${agentRole(m.bot)}${m.bot ? ` · ${departmentOf(m.bot.id)}` : ""} · to me`)), h("span", { class: "mtime" }, new Date(m.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })));
+
+  const body = h("div", { class: "readbody" });
+  const act = (fn) => attempt(async () => (await fn(), await Promise.all([loadQuests(), refreshList(), loadCrew()]), renderInbox(), syncInboxCount()), body);
+  if (m.kind === "need") {
+    const n = m.need;
     if (n.kind === "approval") {
       const a = n.approval;
       const decide = (decision) => act(() => api("POST", `conversations/${q.id}/approvals/${a.id}`, { decision }));
-      return row(q.bot, `${q.bot.name} wants to use ${NAMES[a.name] || a.name}`, `${q.title} · step ${q.steps || 1}`, h("pre", {}, a.name === "bash" ? a.input.command : JSON.stringify(a.input, null, 2)), [
-        h("button", { class: "primary", onclick: () => decide("allow") }, "Allow once"),
-        h("button", { class: "danger", onclick: () => decide("deny") }, "Don't allow"),
-        h("button", { class: "plain", onclick: () => go("quest", q.id) }, "Open"),
-      ]);
-    }
-    if (n.kind === "review") return row(q.bot, `${q.title} is ready for your review`, `${q.bot.name}${q.check?.passed ? " · passed its check" : ""} · ${q.changedFiles ?? "some"} file${q.changedFiles === 1 ? "" : "s"} changed on ${q.branch}`, null, [h("button", { class: "primary", onclick: () => go("quest", q.id) }, "Review")]);
-    if (n.kind === "check") return row(q.bot, `${q.title} did not pass its check`, `${q.bot.name} · ${shortWhen(q.updatedAt)}`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
-    if (n.kind === "failed") return row(q.bot, `${q.title} failed`, `${q.bot.name} · ${q.note || shortWhen(q.updatedAt)}`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
-    if (n.kind === "budget") return row(q.bot, `${q.title} stopped at its budget`, `${q.bot.name} · say “continue” in the task to keep going`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
-    if (n.kind === "chat") return row(null, "A chat is waiting for your approval", n.c.title, null, [h("button", { class: "primary", onclick: () => go("chat", n.c.id) }, "Open chat")]);
-    if (n.kind === "monthly") return row(n.bot, `${n.bot.name} has reached its monthly budget`, `${money(n.bot.month.spent)} of ${money(n.bot.month.limit)} · it starts no new work until you raise it`, null, [h("button", { class: "primary", onclick: () => go("bot", n.bot.id) }, "Raise budget")]);
-    return row(null, "Your agents have reached the monthly budget for all agents", "No agent starts new work until you raise it or the month turns.", null, [h("button", { class: "primary", onclick: () => go("team") }, "Change budget")]);
-  };
-  const live = working.filter((w) => w.q).length;
-  fill(
-    ui.inbox,
-    h(
-      "div",
-      { class: "row" },
-      h("div", { class: "grow" }, h("h1", {}, "Inbox"), h("p", { class: "lead" }, "What needs you, what is being worked on, and what got done today, across chats and agents.")),
-      live ? h("button", { class: "danger", onclick: () => confirm(`Stop the ${live} bot${live === 1 ? "" : "s"} working now? Their work so far is kept, and you can say “continue” later.`) && act(() => Promise.all(working.filter((w) => w.q).map((w) => api("POST", `quests/${w.q.id}/stop`)))) }, "Stop all agents") : null,
-    ),
-    ((updates) =>
-      h(
-        "section",
-        {},
-        h("h2", { class: "label" }, `Updates from your team · ${updates.length}`),
-        updates.length ? updates.map((q) => updateCard(q)) : h("p", { class: "note" }, "When you assign a task, each update and the final report arrive here."),
-      ))(ownTasks().filter((q) => Date.now() - new Date(q.updatedAt).getTime() < 7 * 24 * 3600 * 1000).slice(0, 20)),
-    h("section", {}, h("h2", { class: `label ${needs.length ? "loud" : ""}` }, `◌ Needs you · ${needs.length}`), needs.length ? needs.map(need) : h("p", { class: "note" }, "Nothing needs you right now.")),
-    h(
-      "section",
-      {},
-      h("h2", { class: "label" }, `● Working now · ${working.length}`),
-      working.length
-        ? working.map((w) =>
-            w.q
-              ? row(w.q.bot, `${w.q.bot.name} · ${w.q.title}`, `step ${w.q.steps || 1}${w.q.activity ? ` · ${NAMES[w.q.activity.name] || w.q.activity.name}` : ""}${w.q.cost >= 0.001 ? ` · ${money(w.q.cost)} so far` : ""}`, null, [h("button", { onclick: () => go("quest", w.q.id) }, "Open"), h("button", { class: "plain", onclick: () => act(() => api("POST", `quests/${w.q.id}/stop`)) }, "Stop")])
-              : row(null, w.c.title, "A chat is being answered", null, [h("button", { onclick: () => go("chat", w.c.id) }, "Open chat")]),
-          )
-        : h("p", { class: "note" }, "Nothing is running."),
-    ),
-    h(
-      "section",
-      {},
-      h("h2", { class: "label" }, `✓ Done today · ${done.length}`),
-      done.length
-        ? done.map((q) => h("button", { class: "idone", onclick: () => go("quest", q.id) }, h("span", { class: "grow" }, q.title), h("span", { class: "mono small muted" }, `${q.bot.name} · ${shortWhen(q.updatedAt)} · ${standing(q)[0]}${q.cost >= 0.001 ? ` · ${money(q.cost)}` : ""}`)))
-        : h("p", { class: "note" }, "Finished work from today appears here."),
-    ),
+      fill(body, h("p", {}, `I want to use ${NAMES[a.name] || a.name} for “${q.title}”. Is that all right?`), h("pre", {}, a.name === "bash" ? a.input.command : JSON.stringify(a.input, null, 2)), h("div", { class: "row" }, h("button", { class: "primary", onclick: () => decide("allow") }, "Allow once"), h("button", { class: "danger", onclick: () => decide("deny") }, "Don't allow"), h("button", { class: "plain", onclick: () => go("quest", q.id) }, "Open the task")));
+    } else if (n.kind === "chat") fill(body, h("p", {}, `The chat “${n.c.title}” is waiting for you to approve a step.`), h("button", { class: "primary", onclick: () => go("chat", n.c.id) }, "Open the chat"));
+    else if (n.kind === "monthly") fill(body, h("p", {}, `I have spent ${money(n.bot.month.spent)} of my ${money(n.bot.month.limit)} monthly budget, so I won't start new work until you raise it or the month turns.`), h("button", { class: "primary", onclick: () => go("bot", n.bot.id) }, "Raise my budget"));
+    else if (n.kind === "total") fill(body, h("p", {}, "All your agents together have reached this month's budget. No agent starts new work until you raise it or the month turns."), h("button", { class: "primary", onclick: () => go("team") }, "Change the budget"));
+    else fill(body, h("p", {}, m.snippet), h("button", { class: "primary", onclick: () => go("quest", q.id) }, n.kind === "review" ? "Review the changes" : "Open the task"));
+    return [tools, h("h2", { class: "readsubject" }, m.subject, h("span", { class: `mlabel ${m.label}` }, LABEL_WORDS[m.label])), from, body];
+  }
+
+  // A task: what the agent wrote, what it is doing, what it cost.
+  const live = isLive(q);
+  const report = h("div", { class: "md readreport" }, q.said ? renderMarkdown(q.said) : null);
+  mailFullText(q).then((text) => text && report.isConnected && fill(report, renderMarkdown(text)));
+  const approvals = (q.approvals ?? []).map((a) =>
+    h("div", { class: "readapproval" }, h("b", {}, `May I use ${NAMES[a.name] || a.name}?`), h("pre", {}, a.name === "bash" ? a.input.command : JSON.stringify(a.input, null, 2)), h("div", { class: "row" }, h("button", { class: "primary small", onclick: () => act(() => api("POST", `conversations/${q.id}/approvals/${a.id}`, { decision: "allow" })) }, "Allow once"), h("button", { class: "danger small", onclick: () => act(() => api("POST", `conversations/${q.id}/approvals/${a.id}`, { decision: "deny" })) }, "Don't allow"))),
   );
+  const parts = q.chain?.tasks > 1 ? `${q.chain.finished} of ${q.chain.tasks - 1} parts done${q.chain.working ? `, ${q.chain.working} under way` : ""}${q.chain.stopped ? `, ${q.chain.stopped} stopped` : ""}` : "";
+  fill(
+    body,
+    approvals,
+    live && !q.approvals?.length ? h("div", { class: "readnow" }, h("i", { class: "dot", "aria-hidden": "true" }), q.activity ? `Working on it: ${NAMES[q.activity.name] || q.activity.name}` : "Working on it now.") : null,
+    q.status === "failed" && q.note ? h("div", { class: "banner error" }, q.note) : null,
+    !live && q.chain?.stopped ? h("div", { class: "banner" }, `${q.chain.stopped} part${q.chain.stopped === 1 ? "" : "s"} of this task stopped before finishing${q.chain.cost >= q.chain.budget ? `, because the task reached its ${money(q.chain.budget)} budget` : ""}. The receipt shows which, and what each cost. Reply “continue” to carry on, or raise the budget per task under Settings.`) : null,
+    q.said || !live ? report : null,
+    !q.said && !live && q.status !== "failed" ? h("p", { class: "note" }, "I finished without writing a report.") : null,
+    h("div", { class: "readfacts" }, [parts, q.chain ? `${money(q.chain.cost)} for the whole task` : q.cost ? money(q.cost) : "", LABEL_WORDS[m.label]].filter(Boolean).map((x) => h("span", {}, x)), h("span", { class: "grow" }), h("button", { class: "plain small", onclick: () => ((state.openReceipt = q.id), go("quest", q.id)) }, "See the receipt"), h("button", { class: "plain small", onclick: () => go("quest", q.id) }, "Open the task")),
+  );
+  // Replying continues the task: the agent reads the reply and carries on.
+  const reply = h("textarea", { rows: 3, placeholder: `Reply to ${agentName(m.bot).split(" ")[0]}… (they will continue the task)`, "aria-label": "Reply" }, ui.mailDraft[q.id] ?? "");
+  reply.addEventListener("input", () => (ui.mailDraft[q.id] = reply.value));
+  const sendBtn = h("button", { class: "primary small" }, "Send");
+  sendBtn.addEventListener("click", () => {
+    const text = reply.value.trim();
+    if (!text) return reply.focus();
+    sendBtn.disabled = true;
+    attempt(async () => {
+      await api("POST", `conversations/${q.id}/messages`, { text });
+      ui.mailDraft[q.id] = "";
+      reply.value = "";
+      ui.mailNote = null;
+      await loadQuests();
+      reply.blur();
+      renderInbox();
+    }, body).finally(() => (sendBtn.disabled = false));
+  });
+  reply.addEventListener("keydown", (e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && sendBtn.click());
+  const replyBox = live ? h("p", { class: "note small" }, "You can reply once they have finished, or open the task to follow along.") : h("div", { class: "readreply" }, reply, h("div", { class: "row" }, sendBtn, h("span", { class: "note small" }, "Replying asks them to carry on, which uses their budget.")));
+  return [tools, h("h2", { class: "readsubject" }, m.subject, m.label !== "done" ? h("span", { class: `mlabel ${m.label}` }, LABEL_WORDS[m.label]) : null), from, body, replyBox];
+}
+
+/** A new message to an agent or a team: it becomes a task, and their replies arrive in the inbox. */
+async function composeMail() {
+  await loadCrew();
+  const org = activeOrg();
+  const bots = (state.crew?.bots ?? []).filter((b) => !org.members.length || org.members.some((m) => m.bot === b.id));
+  const leads = bots.filter((b) => org.members.some((m) => m.manager === b.id));
+  const to = h(
+    "select",
+    { "aria-label": "To" },
+    leads.length ? h("optgroup", { label: "Teams (the lead shares the work out)" }, leads.map((b) => h("option", { value: `team:${b.id}` }, `${agentName(b)}'s team · ${b.title || b.name}`))) : null,
+    h("optgroup", { label: "Agents" }, bots.map((b) => h("option", { value: b.id }, `${agentName(b)} · ${b.title || b.name}`))),
+  );
+  const subject = h("input", { placeholder: "Subject", "aria-label": "Subject" });
+  const message = h("textarea", { rows: 7, placeholder: "What should they do? Say what a good result looks like.", "aria-label": "Message" });
+  const form = h("div", { class: "composeform" }, h("label", {}, "To", to), subject, message, h("p", { class: "note small" }, "Sending starts the work. Their reply arrives in your Inbox, with a receipt of what it cost."));
+  const chosen = await libDialog("New message", form, [["Send", () => ({ to: to.value, subject: subject.value.trim(), text: message.value.trim() }), true]]);
+  if (!chosen || (!chosen.subject && !chosen.text)) return;
+  const team = chosen.to.startsWith("team:");
+  const bot = team ? chosen.to.slice(5) : chosen.to;
+  const brief = [chosen.subject, chosen.text].filter(Boolean).join("\n\n");
+  const text = team ? `${brief}\n\n[This task is for your whole team, not for you alone. Split it into parts and hand each part to the right member of your team with assign_task. When their reports come back, check them, put them together, and give one combined result. Do only the parts that nobody on your team can do.]` : brief;
+  await attempt(async () => {
+    const started = await startTask({ bot, text, title: chosen.subject || undefined, project: state.project || undefined });
+    if (!started) return;
+    ui.mailNote = null;
+    await loadQuests();
+    ui.mailFolder = "inbox";
+    ui.mailOpen = `task:${started.id}`;
+    renderInbox();
+    syncInboxCount();
+  }, ui.mailList);
 }
 
 // ---------- the organization ----------
@@ -2822,6 +3115,80 @@ async function libraryView() {
   if (ui.libraryQuery) search();
 }
 
+// ---------- the audit log: every operation, by you and by each agent ----------
+const AUDIT_KINDS = [["", "Everything"], ["task", "Tasks"], ["tool", "Agent actions"], ["approval", "Approvals"], ["spend", "Spending"], ["problem", "Problems"], ["library", "Library"], ["settings", "Settings"], ["integration", "Integrations"], ["organization", "Organization"], ["chat", "Chats"], ["inbox", "Inbox"]];
+const AUDIT_SINCE = [["", "All time"], ["1", "Last 24 hours"], ["7", "Last 7 days"], ["30", "Last 30 days"]];
+
+async function auditView() {
+  ui.body.className = "body";
+  ui.log = null;
+  ui.audit ??= { kind: "", actor: "", since: "7", q: "" };
+  const f = ui.audit;
+  const col = h("div", { class: "auditpage" });
+  fill(ui.body, h("main", { class: "center" }, col));
+  await loadCrew().catch(() => {});
+  const bots = state.crew?.bots ?? [];
+  const since = f.since ? new Date(Date.now() - Number(f.since) * 24 * 3600 * 1000).toISOString() : "";
+  let data;
+  try {
+    data = await api("GET", `audit?limit=1000&kind=${encodeURIComponent(f.kind)}&actor=${encodeURIComponent(f.actor)}&q=${encodeURIComponent(f.q)}&since=${encodeURIComponent(since)}`);
+  } catch (err) {
+    return fill(col, h("div", { class: "banner error" }, err.message));
+  }
+  if (state.view !== "audit") return;
+  const again = () => auditView();
+  const pick = (key, options, label) => h("select", { "aria-label": label, onchange: (e) => ((f[key] = e.target.value), again()) }, options.map(([v, t]) => h("option", { value: v, selected: v === f[key] }, t)));
+  const who = pick("actor", [["", "Everyone"], ["owner", "You"], ["agents", "All agents"], ...bots.map((b) => [b.id, b.title || b.name])], "Who");
+  const find = h("input", { type: "search", placeholder: "Search: a command, a file, a task…", value: f.q, "aria-label": "Search the audit log" });
+  find.addEventListener("keydown", (e) => e.key === "Enter" && ((f.q = find.value.trim()), again()));
+  const spent = data.entries.reduce((n, e) => n + (e.kind === "spend" && e.cost ? e.cost : 0), 0);
+  const problems = data.entries.filter((e) => e.ok === false || e.kind === "problem").length;
+  const byAgent = data.entries.filter((e) => e.actor !== "owner" && e.actor !== "system").length;
+
+  const csv = async () => {
+    // The export takes up to 5,000 operations matching the filters, more than the page shows.
+    const all = await api("GET", `audit?limit=5000&kind=${encodeURIComponent(f.kind)}&actor=${encodeURIComponent(f.actor)}&q=${encodeURIComponent(f.q)}&since=${encodeURIComponent(since)}`).catch(() => data);
+    const cell = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = [["Time", "Who", "Kind", "What", "Detail", "Task", "Cost", "Worked"], ...all.entries.map((e) => [e.at, e.actorName, e.kind, e.action, e.detail ?? "", e.task ?? "", e.cost ?? "", e.ok === false ? "no" : "yes"])];
+    const a = h("a", { href: URL.createObjectURL(new Blob([rows.map((r) => r.map(cell).join(",")).join("\n")], { type: "text/csv" })), download: `talqava-audit-${new Date().toISOString().slice(0, 10)}.csv` });
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  const botOf = (id) => bots.find((b) => b.id === id);
+  const row = (e) => {
+    const bot = botOf(e.actor);
+    const open = h("details", { class: `auditrow ${e.ok === false || e.kind === "problem" ? "bad" : ""}` });
+    fill(
+      open,
+      h(
+        "summary",
+        {},
+        h("span", { class: "atime" }, new Date(e.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+        h("span", { class: "awho", style: bot ? botStyle(bot) : "" }, bot ? keycap(bot.character, 20, "", bot.type) : h("span", { class: "sysavatar small", "aria-hidden": "true" }, e.actor === "owner" ? "Y" : "T"), h("span", {}, e.actorName)),
+        h("span", { class: `akind ${e.kind}` }, (AUDIT_KINDS.find(([k]) => k === e.kind) ?? [e.kind, e.kind])[1]),
+        h("span", { class: "awhat" }, h("b", {}, e.action), e.detail ? h("span", { class: "adetail" }, ` — ${e.detail}`) : null),
+        h("span", { class: "acost" }, e.cost ? money(e.cost) : e.ok === false ? "✕" : ""),
+      ),
+      h(
+        "div",
+        { class: "auditmore" },
+        e.detail ? h("pre", {}, e.detail) : null,
+        h("div", { class: "row wrap" }, h("span", { class: "note small" }, `${new Date(e.at).toLocaleString()} · ${e.ok === false ? "did not work" : "worked"}${e.cost ? ` · cost ${money(e.cost)}` : ""}`), e.task && (state.quests ?? []).some((q) => q.id === e.task) ? h("button", { class: "plain small", onclick: () => go("quest", e.task) }, "Open the task") : e.task ? h("button", { class: "plain small", onclick: () => go("chat", e.task) }, "Open the chat") : null),
+      ),
+    );
+    return open;
+  };
+
+  fill(
+    col,
+    h("div", { class: "row" }, h("div", { class: "grow" }, h("h1", {}, "Audit log"), h("p", { class: "lead" }, "Every operation, by you and by each agent: what was done, to what, whether it worked, and what it cost. Kept on this computer; keys and passwords are never written down.")), h("button", { onclick: csv, disabled: !data.entries.length }, "Export CSV")),
+    h("div", { class: "auditfilters" }, find, who, pick("kind", AUDIT_KINDS, "Kind"), pick("since", AUDIT_SINCE, "When")),
+    h("div", { class: "auditstats" }, [[String(data.total), `operation${data.total === 1 ? "" : "s"}`], [String(byAgent), "by agents"], [String(problems), "did not work"], [money(spent), "spent"]].map(([n, t]) => h("div", {}, h("b", {}, n), h("span", {}, t)))),
+    data.entries.length ? h("div", { class: "auditlist" }, data.entries.map(row)) : h("div", { class: "card quiet" }, h("b", {}, "Nothing recorded for these filters."), h("span", { class: "note" }, " Everything you and your agents do from now on is recorded here.")),
+    data.total > data.entries.length ? h("p", { class: "note small" }, `Showing the newest ${data.entries.length} of ${data.total}. Narrow the filters to see the rest; Export CSV includes up to 5,000.`) : null,
+  );
+}
+
 // ---------- integrations ----------
 // The outside tools agents work with, filed by category. Git is the first:
 // repositories agents may work on, each task in a branch and copy of its own.
@@ -3291,7 +3658,7 @@ function gitIntegrationPage(git, act, col, again) {
         "div",
         { class: "body" },
         h("p", { class: "note" }, "“Connect GitHub” signs people in on github.com with a short code, with no token to copy. GitHub requires an app to be registered for that, once, by whoever publishes this product. After that it works for everyone who uses it."),
-        h("ol", { class: "isteps" }, h("li", {}, "On GitHub open Settings → Developer settings → OAuth Apps → New OAuth App."), h("li", {}, "Name it Talqava Agents. For both web addresses use your website (they are not used by this kind of sign-in)."), h("li", {}, "Tick “Enable Device Flow”, then Register application."), h("li", {}, "Copy the Client ID shown on the app's page and paste it here. No secret is needed.")),
+        h("ol", { class: "isteps" }, h("li", {}, "On GitHub open Settings → Developer settings → OAuth Apps → New OAuth App."), h("li", {}, "Name it Talqava. For both web addresses use your website (they are not used by this kind of sign-in)."), h("li", {}, "Tick “Enable Device Flow”, then Register application."), h("li", {}, "Copy the Client ID shown on the app's page and paste it here. No secret is needed.")),
         h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), (ui.githubOnceOpen = true), act(() => api("POST", "integrations/git/github-client", { clientId: clientId.value }))) }, clientId, h("button", { class: "primary" }, "Save Client ID"), h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/applications/new") }, "Open that page on GitHub")),
       ),
     );
@@ -3321,7 +3688,7 @@ function gitIntegrationPage(git, act, col, again) {
                     "div",
                     { class: "body" },
                     h("p", { class: "note" }, "GitHub only shows a company (an “organization”) to an app the company has allowed. Whoever connects decides this on GitHub, and a company owner may have to approve it once."),
-                    h("ol", { class: "isteps" }, h("li", {}, "If you used Connect GitHub: on github.com open Settings → Applications → Authorized OAuth Apps → Talqava Agents, and under Organization access press Grant (or Request) beside your company. ", h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/applications") }, "Open that page")), h("li", {}, "If you used a token and your company uses single sign-on: on the tokens page press Configure SSO beside the token and authorize it for your company. ", h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/tokens") }, "Open that page")), h("li", {}, "Then press Refresh here, or type the company's GitHub name below to look at it directly.")),
+                    h("ol", { class: "isteps" }, h("li", {}, "If you used Connect GitHub: on github.com open Settings → Applications → Authorized OAuth Apps → Talqava, and under Organization access press Grant (or Request) beside your company. ", h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/applications") }, "Open that page")), h("li", {}, "If you used a token and your company uses single sign-on: on the tokens page press Configure SSO beside the token and authorize it for your company. ", h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/tokens") }, "Open that page")), h("li", {}, "Then press Refresh here, or type the company's GitHub name below to look at it directly.")),
                     h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), other.value.trim() ? loadAccount(other.value.trim().replace(/^@|^https:\/\/github\.com\//, "").replace(/\/.*$/, "")) : other.focus()) }, other, h("button", {}, "Show its repositories"), h("button", { type: "button", class: "plain link", onclick: () => ((ui.githubPick = null), loadAccount()) }, "Refresh the list of accounts")),
                   ),
                 ),
@@ -4927,6 +5294,7 @@ function settingsView() {
   const ref = () => `${provider.value}/${modelName.value.trim()}`;
   const effort = select(c.efforts.map((e) => [e, e]), c.effort);
   const savings = select([["off", "Off: every agent uses my model"], ["balanced", "On: match the model to the work"]], c.savings ?? "off");
+  const checkFirst = select([["on", "Check first, and ask me if something is missing"], ["off", "Start straight away"]], c.checkFirst === false ? "off" : "on");
   const mode = select(
     [
       ["ask", "Ask me before commands, file changes and API writes"],
@@ -4976,7 +5344,7 @@ function settingsView() {
         class: "form",
         onsubmit: (e) => (
           e.preventDefault(),
-          save({ agentName: name.value, model: ref(), effort: effort.value, savings: savings.value, approvalMode: mode.value, budget: { steps: Number(steps.value), spend: spend.value === "" ? null : Number(spend.value) } })
+          save({ agentName: name.value, model: ref(), effort: effort.value, savings: savings.value, checkFirst: checkFirst.value === "on", approvalMode: mode.value, budget: { steps: Number(steps.value), spend: spend.value === "" ? null : Number(spend.value) } })
         ),
       },
       h("label", {}, "Name", name),
@@ -4988,6 +5356,8 @@ function settingsView() {
       checkBox,
       h("label", {}, "Effort, for Claude (higher thinks longer and costs more)", effort),
       h("label", {}, "Cost saving for your team of agents", savings),
+      h("label", {}, "Before starting a task", checkFirst),
+      h("p", { class: "note small" }, "With this on, an agent first checks it has what your task needs (information, a repository, documents, access). If something is missing, it asks you in your Inbox instead of spending money guessing. The check costs a few cents at most and shows on the receipt."),
       h("p", { class: "note small" }, "With cost saving on, and Claude Opus or Fable as your model: managers who plan and check keep your model, team members doing their own part use Claude Sonnet 5.5 (about half the price), and quick questions between agents use Claude Haiku 5.5 (about a fortieth). An agent you gave a model of its own keeps it. Off uses your model for everything."),
       h("label", {}, "Approvals", mode),
       h("p", { class: "note" }, "With “ask”, a scheduled job that needs approval waits until you open its chat and answer. “Run everything” is only sensible when the agent runs in Docker or on a machine with nothing you'd mind losing."),

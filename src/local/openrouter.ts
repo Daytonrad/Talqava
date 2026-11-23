@@ -21,7 +21,7 @@ export const openrouterApi = () => (process.env.TALQAVA_OPENROUTER_API || "https
 const authPage = () => process.env.TALQAVA_OPENROUTER_AUTH || "https://openrouter.ai/auth";
 
 /** Sent with every request so OpenRouter can show which app the usage came from. */
-export const ATTRIBUTION = { "HTTP-Referer": "https://talqava.com", "X-OpenRouter-Title": "Talqava Agents", "X-Title": "Talqava Agents" };
+export const ATTRIBUTION = { "HTTP-Referer": "https://talqava.com", "X-OpenRouter-Title": "Talqava", "X-Title": "Talqava" };
 
 /** One model on OpenRouter that can use tools (agents need tools to work). */
 export interface OpenRouterModel {
@@ -118,14 +118,14 @@ export function startOpenRouterSignIn(appAddress: string): { url: string } {
   url.searchParams.set("code_challenge", base64url(crypto.createHash("sha256").update(verifier).digest()));
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("state", state);
-  url.searchParams.set("key_label", "Talqava Agents");
+  url.searchParams.set("key_label", "Talqava");
   return { url: url.href };
 }
 
 /** Finishes a sign-in: trades the one-time code for a key and saves it. */
 export async function finishOpenRouterSignIn(code: unknown, state: unknown): Promise<void> {
   const started = typeof state === "string" ? pending.get(state) : undefined;
-  if (!started || Date.now() - started.at > 10 * 60_000) throw new Error("This sign-in has expired or was already used. Go back to Talqava Agents and press Connect OpenRouter again.");
+  if (!started || Date.now() - started.at > 10 * 60_000) throw new Error("This sign-in has expired or was already used. Go back to Talqava and press Connect OpenRouter again.");
   pending.delete(state as string);
   if (typeof code !== "string" || !code) throw new Error("OpenRouter did not send a code back. The sign-in may have been cancelled.");
   const r = await fetch(`${openrouterApi()}/auth/keys`, {

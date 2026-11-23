@@ -25,6 +25,8 @@ before(async () => {
   tools = await import("../../src/local/tools.ts");
   app = await import("../../src/local/server.ts");
   store.initStore();
+  // These tests script each reply the agent gets, so the check before a task starts (one extra model call) is off; it has its own test.
+  store.saveConfig({ checkFirst: false });
 });
 after(() => mock.server.close());
 
@@ -1261,4 +1263,86 @@ test("the library works like a file manager: folders, moves that keep settings, 
   assert.equal(library.purge(org(), "all").removed, 1);
   assert.deepEqual(library.deleted(org()), []);
   orgs.remove(org0.id);
+});
+
+test("before starting, an agent checks it has what the task needs, asks the owner if not, and everything is in the audit log", { timeout: 30_000 }, async () => {
+  const quests = await import("../../src/local/quests.ts");
+  const crew = await import("../../src/local/crew.ts");
+  const { readAudit } = await import("../../src/local/audit.ts");
+  store.saveConfig({ checkFirst: true });
+  // Replies left over from earlier tests would be taken as the check's answer.
+  script.length = 0;
+  (mock as { route?: unknown }).route = undefined;
+  try {
+    // A clean copy: earlier tests may have pointed this agent at a model that is no longer there.
+    const bot = { ...crew.findBot("pip"), model: undefined };
+    // Something essential is missing: the agent asks instead of starting.
+    script.push(say('{"ready": false, "missing": ["Which market to research"], "questions": ["Which country should I look at?"], "plan": "Compare prices"}'));
+    const asked = await quests.quests.start({ bot, text: "Research our competitors' prices." });
+    assert.equal(asked.status, "asking");
+    const conv = store.conversations.get(asked.id)!;
+    assert.equal(conv.messages.length, 2);
+    assert.match(JSON.stringify(conv.messages[1].content), /Which country should I look at\?/);
+    assert.ok((conv.usage.cost ?? 0) > 0, "the check's cost is on the task");
+    // The owner's reply starts the task, with the task, the questions and the answer all in front of the agent.
+    script.push(say("Done: prices for Canada compared."));
+    await app.engine.startRun(asked.id, "Canada, please.");
+    for (let i = 0; i < 50 && quests.questStore.get(asked.id)?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(quests.questStore.get(asked.id)?.status, "done");
+    assert.equal(quests.questStore.get(asked.id)?.note, undefined);
+    // Ready: it starts at once.
+    script.push(say('{"ready": true, "missing": [], "questions": [], "plan": "Write it"}'), say("Here is the summary."));
+    const started = await quests.quests.start({ bot, text: "Summarize our refund policy." });
+    for (let i = 0; i < 50 && quests.questStore.get(started.id)?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(quests.questStore.get(started.id)?.status, "done");
+    // A muddled answer never blocks work.
+    script.push(say("I am not sure what you mean."), say("Done anyway."));
+    const muddled = await quests.quests.start({ bot, text: "Tidy the notes." });
+    assert.notEqual(muddled.status, "asking");
+    for (let i = 0; i < 50 && quests.questStore.get(muddled.id)?.status === "running"; i++) await new Promise((r) => setTimeout(r, 20));
+
+    // The audit log has the task, the check, the question, the run and its cost; secrets never appear in it.
+    const log = readAudit({ limit: 200 }).entries;
+    assert.ok(log.some((e) => e.task === asked.id && /Asked the owner/.test(e.action) && /Which country/.test(e.detail ?? "")));
+    assert.ok(log.some((e) => e.task === started.id && /has what it needs/.test(e.action)));
+    assert.ok(log.some((e) => e.task === asked.id && e.kind === "spend"));
+    const { audit, redact } = await import("../../src/local/audit.ts");
+    audit({ actor: "owner", actorName: "You", kind: "settings", action: "Changed settings", detail: JSON.stringify(redact({ apiKey: "sk-ant-api03-secretsecretsecret", budget: 2 })) });
+    const last = readAudit({ limit: 1 }).entries[0];
+    assert.doesNotMatch(JSON.stringify(last), /secretsecret/);
+    assert.match(last.detail ?? "", /"budget":2/);
+    assert.ok(readAudit({ q: "country", limit: 50 }).entries.length >= 1);
+  } finally {
+    store.saveConfig({ checkFirst: false });
+  }
+});
+
+
+test("agents start from the library passages that match their task (never private ones) and can read every saved skill", { timeout: 30_000 }, async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const { library, libraryPrompt } = await import("../../src/local/library.ts");
+  const org0 = orgs.create("Knowledge Co", "", "functional");
+  market.buildStructure(org0.id, "functional", "general");
+  const org = () => orgs.active();
+  try {
+    await library.add(org(), "shipping.txt", Buffer.from("Orders ship within two working days from the Leeds warehouse."));
+    await library.add(org(), "salaries.txt", Buffer.from("Salary bands for the Leeds warehouse staff."));
+    library.setAccess(org(), library.list(org()).find((d) => d.name === "salaries.txt")!.id, { private: true });
+    const prompt = libraryPrompt(org(), "bookkeeper", "How fast do orders ship from the Leeds warehouse?");
+    assert.match(prompt, /ship within two working days/);
+    assert.doesNotMatch(prompt, /Salary bands/);
+    // Without a task to match, only the note that the library exists.
+    assert.doesNotMatch(libraryPrompt(org(), "bookkeeper"), /two working days/);
+
+    // A saved skill: an agent without the skills ability still gets a tool to read it.
+    await store.skills.save({ name: "refund-steps", description: "How we handle refunds", content: "1. Check the receipt. 2. Refund within 30 days." });
+    const spec = await tools.localRunSpec(app.jobs)({ id: "7".repeat(16), bot: "bookkeeper", messages: [], usage: { input: 0, output: 0 } } as unknown as Conversation);
+    const skill = spec.tools.find((t) => t.name === "skill");
+    assert.ok(skill, "the agent can read skills");
+    assert.match(String(await skill!.run({ name: "refund-steps" }, context)), /Refund within 30 days/);
+    assert.match(spec.system, /refund-steps/);
+  } finally {
+    orgs.remove(org0.id);
+  }
 });

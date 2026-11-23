@@ -112,9 +112,10 @@ test("a run stops at its spend budget", async () => {
   mock.requests.length = 0;
   for (let i = 0; i < 4; i++) script.push({ calls: [{ name: "echo", args: { word: `w${i}` } }] });
   const { saved, notices } = await runOnce("keep echoing");
-  assert.equal(mock.requests.length, 2);
-  assert.deepEqual(notices, ['Stopped at its budget: about $2.00 spent of $1.50. Say "continue" to keep going.']);
-  assert.equal(saved.usage.cost, 2);
+  // After one $1 call, a second would make $2, past the $1.50 budget, so the run stops before it.
+  assert.equal(mock.requests.length, 1);
+  assert.deepEqual(notices, ['Stopped at its budget: about $1.00 spent of $1.50; the next step would have gone over. Say "continue" to keep going.']);
+  assert.equal(saved.usage.cost, 1);
   script.length = 0;
 });
 
@@ -205,8 +206,8 @@ test("a cost the service reports (as OpenRouter does) is used instead of an esti
   run = { model: local({ input: 1, output: 1 }), budget: { steps: 10, spend: 0.5 } };
   script.push({ calls: [{ name: "echo", args: { word: "a" } }], usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0.3 } }, { calls: [{ name: "echo", args: { word: "b" } }], usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0.3 } }, { text: "never reached" });
   const { saved, notices } = await runOnce("echo twice");
-  // 0.3 + 0.3 reported, not the 0.00012 per call the list prices would give; the second call passes the $0.50 budget.
-  assert.equal(Math.round(saved.usage.cost! * 100) / 100, 0.6);
+  // $0.30 reported, not the $0.00012 the list prices would give; a second call would pass the $0.50 budget, so it is not made.
+  assert.equal(Math.round(saved.usage.cost! * 100) / 100, 0.3);
   assert.ok(notices.some((n) => /Stopped at its budget/.test(n)));
   script.length = 0;
 });
@@ -217,5 +218,28 @@ test("a model with no known prices still keeps to the budget when the service re
   const { saved, notices } = await runOnce("echo once");
   assert.equal(saved.usage.cost, 0.2);
   assert.ok(notices.some((n) => /Stopped at its budget/.test(n)));
+  script.length = 0;
+});
+
+test("a run stops before a step that would go past a budget it shares with other runs", async () => {
+  // Each call costs $1; $2.50 is left of the shared budget, then less as the run spends.
+  let shared = 2.5;
+  const model = local({ input: 10_000, output: 0 });
+  run = { model, budget: { steps: 50 } };
+  const spec = run as { remaining?: () => number };
+  spec.remaining = () => shared;
+  mock.requests.length = 0;
+  for (let i = 0; i < 5; i++) script.push({ calls: [{ name: "echo", args: { word: `w${i}` } }] });
+  const { id } = await conversations.create();
+  const events: RunEvent[] = [];
+  engine.subscribe(id, (e) => {
+    events.push(e);
+    if (e.type === "assistant") shared -= 1;
+  });
+  await (await engine.startRun(id, "keep echoing")).done;
+  // Two calls ($2), then $0.50 is left: less than the next $1 step, so it stops without overspending.
+  assert.equal(mock.requests.length, 2);
+  assert.ok(events.some((e) => e.type === "notice" && /shared budget has \$0\.50 left/.test(e.text)));
+  delete spec.remaining;
   script.length = 0;
 });
