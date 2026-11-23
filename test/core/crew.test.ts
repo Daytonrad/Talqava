@@ -17,7 +17,9 @@ test("the six starter bots are valid bot files", () => {
   assert.equal(pip.name, "Pip");
   assert.equal(pip.approvals, "ask");
   assert.equal(pip.model, undefined);
-  assert.deepEqual(pip.character, { hat: "explorer", colour: "#5cc8ff" });
+  assert.deepEqual(pip.character, { legend: "?", texture: "dots" });
+  assert.deepEqual(bots.map((b) => b.character.texture).sort(), ["dots", "grid", "hatch", "lines", "solid", "zigzag"]);
+  assert.deepEqual(bots.map((b) => b.character.legend).sort(), ["!", "#", "</>", "?", "Aa", "zz"]);
   // A scout cannot touch files.
   assert.ok(!pip.powers.includes("files") && !pip.powers.includes("shell"));
 });
@@ -27,7 +29,16 @@ test("a bad bot file is refused with a plain reason", () => {
   assert.equal(parseBot("bo", good, "personal").name, "Bo");
   assert.throws(() => parseBot("bo", "type: scout\ninstructions: x", "personal"), /needs a name/);
   assert.throws(() => parseBot("bo", `${good}powers: [web, teleport]\n`.replace("powers: [web]\n", ""), "personal"), /unknown power "teleport"/);
-  assert.throws(() => parseBot("bo", `${good}character: { hat: crown }\n`, "personal"), /hat must be one of/);
+  assert.throws(() => parseBot("bo", `${good}character: { legend: "toolong" }\n`, "personal"), /legend is one to three characters/);
+  assert.throws(() => parseBot("bo", `${good}character: { legend: "a b" }\n`, "personal"), /legend is one to three characters/);
+  // A file with no legend gets its type's; an old file that names a hat still loads.
+  assert.equal(parseBot("bo", good, "personal").character.legend, "?");
+  assert.equal(parseBot("bo", good.replace("type: scout", "type: gardener"), "personal").character.legend, "B");
+  // Older files that name a hat or a colour still load; both are ignored.
+  assert.deepEqual(parseBot("bo", `${good}character: { hat: hardhat, colour: "#ff9f45" }\n`, "personal").character, { legend: "?", texture: "dots" });
+  assert.equal(parseBot("bo", good.replace("type: scout", "type: gardener"), "personal").character.texture, "plain");
+  assert.throws(() => parseBot("bo", `${good}character: { texture: plaid }\n`, "personal"), /texture must be one of/);
+  assert.equal(parseBot("bo", `${good}character: { legend: "¶" }\n`, "personal").character.legend, "¶");
   assert.throws(() => parseBot("bo", `${good}approvals: whenever\n`, "personal"), /approvals should be/);
   assert.throws(() => parseBot("bo", `${good}model: llama3\n`, "personal"), /provider\/model/);
   assert.throws(() => parseBot("bo", `${good}budget: { steps: 9999 }\n`, "personal"), /1 to 500/);

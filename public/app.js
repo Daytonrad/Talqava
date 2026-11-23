@@ -223,7 +223,7 @@ function renderTop() {
   );
   ui.spent = h("div", { class: "spent" });
   fill(ui.top, 
-    h("button", { class: "plain brand", onclick: () => go("home"), title: "Home base" }, "Talqava Agents"),
+    h("button", { class: "plain brand", onclick: () => go("home"), title: "Home base", "aria-label": "Talqava Agents, home base" }, "TALQAVA", h("span", { class: "cursor", "aria-hidden": "true" })),
     h(
       "div",
       { class: "repo", title: state.project || "Quests work in the workspace folder. Add repositories under Settings." },
@@ -315,7 +315,7 @@ function openPalette(box) {
       h(
         "li",
         { class: i === ui.paletteAt ? "on" : "", role: "option", onmousedown: (e) => (e.preventDefault(), item.run()) },
-        item.bot ? gremlin(item.bot.character, 22) : null,
+        item.bot ? keycap(item.bot.character, 22, "", item.bot.type) : null,
         h("span", {}, item.label),
         item.what ? h("span", { class: "what" }, item.what) : null,
       ),
@@ -560,54 +560,98 @@ function addApproval(approval) {
 }
 
 // ---------- characters ----------
-// Each type wears its own hat; the shapes follow the design mockups.
-const HAT_ART = {
-  explorer: '<path d="M9 15q15-13 30 0Z" fill="#8a5a2b"/><rect x="4" y="13.5" width="40" height="4" rx="2" fill="#6e4520"/>',
-  hardhat: '<path d="M9.5 16a14.5 12 0 0 1 29 0Z" fill="#ffd23f"/><rect x="6" y="14.5" width="36" height="4" rx="2" fill="#e0b000"/>',
-  visor: '<path d="M9.5 16q14.5-9 29 0l4 5.5q-18.5-7-37 0Z" fill="#1fae72"/>',
-  nightcap: '<path d="M9 16q4-12 18-11t15 6q-3 0-4 2q-14-3-29 3Z" fill="#6a5be0"/>',
-  beret: '<path d="M9 15q3-10 16-9.5t14 9q-15 4-30 .5Z" fill="#e0457b"/>',
-  flame: "",
-  none: "",
-};
-const HATS = { explorer: "Explorer's hat", beret: "Beret", hardhat: "Hard hat", nightcap: "Nightcap", visor: "Visor", flame: "Flame", none: "No hat" };
-const FLAME = '<path d="M24 0q6 5 3 10q4-1 4-5q5 6 0 11h-14q-5-5 0-11q0 4 3 5q-2-5 4-10Z" fill="#ffd23f"/>';
-const COLOURS = ["#5cc8ff", "#ffd23f", "#ff9f45", "#4be3a0", "#b69cff", "#ff7ac3", "#ff6b6b", "#7ee0e6"];
-const safeColour = (c) => (/^#[0-9a-f]{6}$/i.test(c || "") ? c : "#5cc8ff");
+// Each agent is a keycap drawn in one white line. The legend printed on it is
+// its job; the texture on its base tells it from the others. Status is carried
+// by motion and a glyph, never by colour. Follows the Mono design boards.
+const LEGENDS = { scout: "?", scribe: "Aa", maker: "</>", keeper: "zz", counter: "#", spark: "!" };
+const TEXTURES = { dots: "Dots", lines: "Ruled lines", hatch: "Diagonal hatch", solid: "Solid", grid: "Grid", zigzag: "Zigzag", plain: "Plain" };
+const TYPE_TEXTURES = { scout: "dots", scribe: "lines", maker: "hatch", keeper: "solid", counter: "grid", spark: "zigzag" };
+const WHITE = "#f2f2f2";
+const BLACK = "#0a0a0a";
+const escapeXml = (text) => String(text).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+const legendOf = (character, type) => [...String(character?.legend || LEGENDS[type] || "?")].slice(0, 3).join("");
+const textureOf = (character, type) => (TEXTURES[character?.texture] ? character.texture : TYPE_TEXTURES[type] || "plain");
+let patternIds = 0;
 
-/** A crew member's face: a small gremlin in the bot's colour, wearing its type's hat. */
-function gremlin(character, size = 40, mood = "") {
-  const colour = safeColour(character?.colour);
-  const hat = HAT_ART[character?.hat] !== undefined ? character.hat : "none";
-  const eyeY = hat === "visor" ? 27 : 25;
-  const svg =
-    `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 48 48">` +
-    (hat === "flame" ? FLAME : "") +
-    `<path d="M11 25Q-2 21 1 7q11 3 15 13Z" fill="${colour}"/><path d="M37 25Q50 21 47 7q-11 3-15 13Z" fill="${colour}"/>` +
-    `<path d="M24 8c10 0 17 8.5 17 19 0 9.5-7 16.5-17 16.5S7 36.5 7 27C7 16.5 14 8 24 8Z" fill="${colour}"/>` +
-    HAT_ART[hat] +
-    `<circle cx="17.5" cy="${eyeY}" r="5" fill="#fff"/><circle cx="30.5" cy="${eyeY}" r="5" fill="#fff"/>` +
-    `<circle cx="18.5" cy="${eyeY + 1}" r="2.4" fill="#15131f"/><circle cx="29.5" cy="${eyeY + 1}" r="2.4" fill="#15131f"/>` +
-    `<path d="M17.5 ${eyeY + 7}q6.5 5 13 0" fill="none" stroke="#15131f" stroke-width="1.8" stroke-linecap="round"/>` +
-    `<path d="M20.8 ${eyeY + 8.9}l1.4 2.8 1.5-2.2Z" fill="#fff"/></svg>`;
-  const node = h("span", { class: `gremlin ${mood}` });
+/** A white-on-black texture as an SVG pattern, or null for solid and plain. */
+function texturePattern(kind, id) {
+  const body = {
+    dots: `<circle cx="1.5" cy="1.5" r="0.75" fill="${WHITE}"/>`,
+    lines: `<path d="M0 1.5h3" stroke="${WHITE}" stroke-width="0.7"/>`,
+    hatch: `<path d="M-0.5 3.5l4-4M-0.5 0.5l1-1M2.5 3.5l1-1" stroke="${WHITE}" stroke-width="0.6"/>`,
+    grid: `<path d="M0 0.3h3M0.3 0v3" stroke="${WHITE}" stroke-width="0.55"/>`,
+    zigzag: `<path d="M0 2.2l0.75-1.4 0.75 1.4 0.75-1.4 0.75 1.4" fill="none" stroke="${WHITE}" stroke-width="0.6"/>`,
+  }[kind];
+  return body ? `<pattern id="${id}" width="3" height="3" patternUnits="userSpaceOnUse">${body}</pattern>` : null;
+}
+
+/** The face, set by the mood. */
+function keyFace(mood) {
+  const line = (d, w = 1.3) => `<path d="${d}" fill="none" stroke="${WHITE}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
+  if (mood === "working") return line("M16.8 24.5h4.4M26.8 24.5h4.4", 1.5) + line("M22 29.6h4", 1.2);
+  if (mood === "waiting") return `<circle cx="19" cy="24.5" r="2.3" fill="${WHITE}"/><circle cx="29" cy="24.5" r="2.3" fill="${WHITE}"/><circle cx="24" cy="30.2" r="1.3" fill="${WHITE}"/>`;
+  if (mood === "done") return line("M16.8 25.2q2.2-2.6 4.4 0M26.8 25.2q2.2-2.6 4.4 0", 1.4) + line("M21 28.8q3 3.4 6 0");
+  if (mood === "stuck") return line("M17.4 23l3.2 3.2M20.6 23l-3.2 3.2M27.4 23l3.2 3.2M30.6 23l-3.2 3.2") + line("M21 30.4l1.5-1 1.5 1 1.5-1 1.5 1", 1.1);
+  if (mood === "asleep") return line("M17 24.8h4M27 24.8h4") + line("M22.6 29.8h2.8", 1.1);
+  return `<circle cx="19" cy="24.5" r="1.7" fill="${WHITE}"/><circle cx="29" cy="24.5" r="1.7" fill="${WHITE}"/>` + line("M21.8 29.4q2.2 2.4 4.4 0", 1.15);
+}
+
+/**
+ * An agent, drawn as a keycap. Moods: "" (idle), working, waiting, done,
+ * stuck, asleep; each moves in one way (see style.css), and idle is still.
+ * Below 24 px only the cap and a bigger legend are drawn.
+ */
+function keycap(character, size = 40, mood = "", type = "") {
+  const legend = legendOf(character, type);
+  const text = escapeXml(legend);
+  const texture = textureOf(character, type);
+  const id = `tx${++patternIds}`;
+  const pattern = texturePattern(texture, id);
+  const baseFill = texture === "solid" ? WHITE : pattern ? `url(#${id})` : BLACK;
+  let svg;
+  if (size < 24) {
+    const n = [...legend].length;
+    const fs = n === 1 ? 14 : n === 2 ? 10.5 : 8;
+    svg =
+      `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24"><defs>${pattern ?? ""}</defs>` +
+      `<rect x="1.5" y="2" width="21" height="20.5" rx="4.5" fill="${baseFill}" stroke="${WHITE}" stroke-width="1"/>` +
+      `<rect x="3.2" y="2.4" width="17.6" height="15.6" rx="3.5" fill="${BLACK}" stroke="${WHITE}" stroke-width="1"/>` +
+      `<text x="12" y="${(10.2 + fs * 0.36).toFixed(1)}" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="${fs}" font-weight="700" fill="${WHITE}">${text}</text></svg>`;
+  } else {
+    const big = size >= 64;
+    const legendText = big
+      ? `<text x="12" y="18.4" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="7.2" font-weight="700" fill="${WHITE}">${text}</text>`
+      : `<text x="11" y="19.4" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9.6" font-weight="800" fill="${WHITE}">${text}</text>`;
+    const cursorX = (big ? 12 : 11) + (big ? 4.4 : 5.8) * [...legend].length + 0.6;
+    const cursor = mood === "working" ? `<rect class="k-blink" x="${cursorX.toFixed(1)}" y="${big ? 12.4 : 12}" width="${big ? 3.2 : 3.6}" height="${big ? 6.4 : 8}" fill="${WHITE}"/>` : "";
+    const extras =
+      (mood === "waiting" ? `<rect class="k-march" x="2.5" y="5.5" width="43" height="38" rx="10.5" fill="none" stroke="${WHITE}" stroke-width="1.1" stroke-dasharray="3 3"/>` : "") +
+      (mood === "done" ? `<circle cx="42" cy="8" r="5.2" fill="${WHITE}"/><path class="k-tick" d="M39.6 8.2l1.7 1.7 3.2-3.4" fill="none" stroke="${BLACK}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8" stroke-dashoffset="8"/>` : "") +
+      (mood === "asleep" ? `<text class="k-z" x="39" y="9" font-family="ui-monospace, monospace" font-size="7" fill="#b8b8b8">z</text>` : "");
+    svg =
+      `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 48 48"><defs>${pattern ?? ""}</defs>` +
+      `<path d="M17.5 41v5M30.5 41v5" stroke="${WHITE}" stroke-width="1.6" stroke-linecap="round"/>` +
+      `<g class="cap"><rect x="5" y="8" width="38" height="33" rx="8" fill="${baseFill}" stroke="${WHITE}" stroke-width="1.2"/>` +
+      `<rect x="8.5" y="8.5" width="31" height="26" rx="6" fill="${BLACK}" stroke="${WHITE}" stroke-width="1.2"/>` +
+      `${legendText}${cursor}${keyFace(mood)}</g>${extras}</svg>`;
+  }
+  const node = h("span", { class: `keychar ${mood ? `k-${mood}` : ""}` });
   node.innerHTML = svg;
   return node;
 }
 
-const botStyle = (bot) => `--bot: ${safeColour(bot?.character?.colour)}`;
 const isLive = (q) => q.status === "running" || q.status === "waiting";
-const mood = (q) => (q?.status === "waiting" ? "waiting" : q?.status === "running" ? "working" : "");
+const mood = (q) => (q?.status === "waiting" ? "waiting" : q?.status === "running" ? "working" : q?.status === "failed" ? "stuck" : "");
 
-/** How a quest stands, in a word or two, and its colour. */
+/** How a quest stands: a glyph and a word or two, and whether it needs attention. */
 function standing(q) {
-  if (q.status === "waiting") return ["Waiting on you", "warn"];
-  if (q.status === "running") return ["Working", "work"];
-  if (q.branch && !q.outcome && q.status !== "failed") return ["Ready for review", "ok"];
-  if (q.outcome === "accepted") return ["Changes kept", "ok"];
-  if (q.outcome === "undone") return ["Undone", "info"];
-  if (q.resumedAt && q.status === "done") return ["Done after restart", "info"];
-  return { done: ["Done", "ok"], stopped: ["Stopped", "warn"], budget: ["Hit its budget", "warn"], failed: ["Failed", "bad"] }[q.status] || [q.status, ""];
+  if (q.status === "waiting") return ["◌ Waiting on you", "loud"];
+  if (q.status === "running") return ["● Working", "loud"];
+  if (q.branch && !q.outcome && q.status !== "failed") return ["→ Ready for review", "loud"];
+  if (q.outcome === "accepted") return ["✓ Changes kept", ""];
+  if (q.outcome === "undone") return ["↶ Undone", ""];
+  if (q.resumedAt && q.status === "done") return ["↺ Done after restart", ""];
+  return { done: ["✓ Done", ""], stopped: ["■ Stopped", ""], budget: ["■ Hit its budget", ""], failed: ["✕ Failed", "loud"] }[q.status] || [q.status, ""];
 }
 
 function modelChip(info) {
@@ -654,12 +698,11 @@ function renderCrewColumn() {
     h("div", { class: "side-head" }, h("h2", { class: "label" }, `Crew · ${bots.length}`), h("span", { class: "note small" }, fromRepo ? ".crew/ in this repo" : "")),
     ...bots.map((bot) => {
       const q = live.get(bot.id);
-      const status = q ? (q.status === "waiting" ? "Waiting on you" : `Working · step ${q.steps || 1}`) : "Idle";
+      const status = q ? (q.status === "waiting" ? "◌ waiting on you" : `● step ${q.steps || 1}`) : "idle";
       return h(
         "button",
         {
           class: `member ${bot.id === state.selectedBot ? "on" : ""}`,
-          style: botStyle(bot),
           title: bot.instructions,
           onclick: () => {
             state.selectedBot = bot.id;
@@ -670,8 +713,8 @@ function renderCrewColumn() {
           },
           ondblclick: () => go("bot", bot.id),
         },
-        gremlin(bot.character, 40, mood(q)),
-        h("span", { class: "who" }, h("b", {}, bot.name), " · ", h("span", { class: "type" }, cap(bot.type)), h("span", { class: `status ${q?.status === "waiting" ? "wait" : ""}` }, status)),
+        keycap(bot.character, 40, mood(q), bot.type),
+        h("span", { class: "who" }, h("b", {}, bot.name), " ", h("span", { class: "type" }, bot.type), h("span", { class: `status ${q?.status === "waiting" ? "wait" : ""}` }, status)),
         modelChip(bot.modelInfo),
         h("span", { class: "plain edit", role: "button", onclick: (e) => (e.stopPropagation(), go("bot", bot.id)) }, "Edit"),
       );
@@ -707,7 +750,7 @@ function renderBoard() {
       : h(
           "div",
           { class: "empty-board" },
-          selected ? gremlin(selected.character, 72) : null,
+          selected ? keycap(selected.character, 72, "", selected.type) : null,
           h("h2", {}, "Nobody is on a quest"),
           h("p", {}, selected ? `Type a quest in the box at the top and ${selected.name} will go. Start it with @name to send someone else.` : "Type a quest in the box at the top."),
           h("button", { class: "primary", onclick: () => ui.palette?.focus() }, selected ? `Send ${selected.name} on a quest` : "Send a quest"),
@@ -729,11 +772,12 @@ function questCard(q) {
   const showOutput = q.activity && q.status === "running" && (q.activity.name === "bash" ? `$ ${q.activity.input?.command ?? ""}\n${q.activity.output}` : q.activity.output);
   return h(
     "article",
-    { class: `qcard ${q.status}`, style: botStyle(q.bot), onclick: () => go("quest", q.id), tabindex: "0", onkeydown: (e) => e.key === "Enter" && go("quest", q.id) },
-    h("div", { class: "head" }, h("b", {}, q.title), h("span", { class: "botname" }, q.bot.name)),
+    { class: `qcard ${q.status}`, onclick: () => go("quest", q.id), tabindex: "0", onkeydown: (e) => e.key === "Enter" && go("quest", q.id) },
+    q.status === "running" ? h("div", { class: "scanline", "aria-hidden": "true" }, h("span")) : null,
+    h("div", { class: "head" }, h("b", {}, q.title), keycap(q.bot.character, 28, mood(q), q.bot.type)),
     approval
-      ? h("div", { class: "now wait" }, `Wants to use ${NAMES[approval.name] || approval.name}`)
-      : h("div", { class: "now" }, `Step ${q.steps || 1}${q.budget?.steps ? ` of up to ${q.budget.steps}` : ""} · ${doing}`),
+      ? h("div", { class: "now wait" }, `◌ ${q.bot.name.toLowerCase()} wants to use ${NAMES[approval.name] || approval.name}`)
+      : h("div", { class: "now" }, `● ${q.bot.name.toLowerCase()} · step ${q.steps || 1}${q.budget?.steps ? ` of up to ${q.budget.steps}` : ""} · ${doing}`),
     approval ? h("pre", {}, approval.name === "bash" ? approval.input.command : JSON.stringify(approval.input, null, 2)) : showOutput ? h("pre", {}, showOutput.trim()) : null,
     approval?.reason || (q.readOutside && q.status === "running")
       ? h("div", { class: "caution" }, `Read outside content, so any change ${q.bot.name} wants to make now needs your approval.`)
@@ -814,10 +858,10 @@ async function refreshQuest(first = false) {
   const where = q.branch ? ["on branch ", h("code", {}, q.branch), " · your own branch is untouched"] : q.project ? [`in ${basename(q.project)}`] : ["in the workspace folder"];
   fill(ui.qhead, 
     h("button", { onclick: () => go("home") }, "Back to crew"),
-    gremlin(q.bot.character, 40, mood(q)),
+    keycap(q.bot.character, 40, mood(q), q.bot.type),
     h("div", { class: "titles" }, h("h1", {}, q.title), h("div", { class: "sub" }, `${q.bot.name} the ${cap(q.bot.type)} · `, ...where)),
     ui.meta,
-    h("span", { class: `pill solid ${tone === "warn" || tone === "bad" ? "warn" : ""}` }, label),
+    h("span", { class: `pill solid ${tone}` }, label),
     h(
       "button",
       {
@@ -977,6 +1021,15 @@ function renderSteps(q, conversation) {
   );
 }
 
+/** The step budget as a row of ticks, one per step (grouped when there are many). */
+function stepTicks(used, total) {
+  if (!total) return null;
+  const per = Math.ceil(total / 60);
+  const count = Math.ceil(total / per);
+  const filled = Math.min(count, Math.ceil(used / per));
+  return h("div", { class: "ticks", role: "img", "aria-label": `${used} of ${total} steps used` }, Array.from({ length: count }, (_, i) => h("span", { class: i < filled ? "on" : "" })));
+}
+
 function renderQuestRight(q) {
   const spend = q.budget?.spend;
   const share = spend ? Math.min(1, (q.cost || 0) / spend) : q.budget?.steps ? Math.min(1, q.steps / q.budget.steps) : 0;
@@ -986,7 +1039,7 @@ function renderQuestRight(q) {
       "section",
       { class: "panel-block" },
       h("h2", { class: "label" }, "Budget"),
-      h("div", { class: "meter" }, h("span", { style: `width: ${Math.round(share * 100)}%` })),
+      stepTicks(q.steps, q.budget?.steps),
       h("div", { class: "mono small" }, `${money(q.cost || 0)}${spend ? ` of ${money(spend)}` : ""} · ${q.steps} of ${q.budget?.steps ?? "?"} steps`),
       h("p", { class: "note" }, `${q.bot.name} stops and asks when either runs out.`),
     ),
@@ -999,9 +1052,9 @@ function renderQuestRight(q) {
     ),
     h(
       "section",
-      { class: "panel-block", style: botStyle(q.bot) },
+      { class: "panel-block" },
       h("h2", { class: "label" }, q.bot.name),
-      h("div", { class: "type", style: "color: var(--bot); font-weight: 600" }, cap(q.bot.type)),
+      h("div", { class: "mono small muted" }, `${q.bot.type} · [${legendOf(q.bot.character, q.bot.type)}] · ${(TEXTURES[textureOf(q.bot.character, q.bot.type)] || "").toLowerCase()} base`),
       h("p", { class: "note" }, q.bot.source === "project" ? "From the repository's .crew/ folder." : q.bot.source === "personal" ? "Your own bot." : "A starter bot."),
       bot ? h("button", { onclick: () => go("bot", bot.id) }, `Edit ${q.bot.name}`) : null,
     ),
@@ -1019,7 +1072,7 @@ function botView() {
       id: "",
       name: "",
       type: "scout",
-      character: { hat: "explorer", colour: COLOURS[Math.floor(Math.random() * COLOURS.length)] },
+      character: { legend: "?", texture: "dots" },
       instructions: "",
       model: undefined,
       powers: ["web", "memory"],
@@ -1059,24 +1112,46 @@ function botView() {
 
   // ----- portrait -----
   const portrait = h("aside", { class: "portrait" });
+  draft.character.legend = legendOf(draft.character, draft.type);
+  const legendInput = h("input", {
+    id: "legend",
+    value: draft.character.legend,
+    maxlength: 6,
+    autocomplete: "off",
+    style: "text-align: center; font-family: var(--mono); font-size: 18px; max-width: 120px",
+    oninput: (e) => {
+      const chars = [...e.target.value.replace(/\s/g, "")].slice(0, 3).join("");
+      if (chars) {
+        draft.character.legend = chars;
+        portrait.querySelector(".keychar")?.replaceWith(keycap(draft.character, 150, "", draft.type));
+      }
+    },
+  });
   const drawPortrait = () => {
-    portrait.setAttribute("style", botStyle(draft));
+    draft.character.texture = textureOf(draft.character, draft.type);
     fill(portrait, 
-      gremlin(draft.character, 150),
+      keycap(draft.character, 150, "", draft.type),
       h("h2", {}, draft.name || "New bot"),
       h("div", { class: "type" }, cap(draft.type || "bot")),
-      h("p", { class: "label", style: "margin-top: 22px" }, "Hat"),
-      h(
-        "select",
-        { onchange: (e) => ((draft.character.hat = e.target.value), drawPortrait()) },
-        Object.entries(HATS).map(([key, label]) => h("option", { value: key, selected: key === draft.character.hat }, label)),
-      ),
-      h("p", { class: "label", style: "margin-top: 16px" }, "Colour"),
+      h("label", { class: "label", for: "legend", style: "display: block; margin-top: 22px" }, "Key legend"),
+      legendInput,
+      h("p", { class: "note small" }, "One to three characters printed on the key, such as ? or </>."),
+      h("p", { class: "label", style: "margin-top: 16px" }, "Texture on its base"),
       h(
         "div",
-        { class: "swatches" },
-        [...new Set([...COLOURS, safeColour(draft.character.colour)])].map((c) =>
-          h("button", { class: `swatch ${c === draft.character.colour ? "on" : ""}`, style: `--c: ${c}`, "aria-label": c, onclick: () => ((draft.character.colour = c), drawPortrait()) }),
+        { class: "textures" },
+        Object.entries(TEXTURES).map(([key, name]) =>
+          h(
+            "button",
+            {
+              class: `texture ${key === draft.character.texture ? "on" : ""}`,
+              "aria-pressed": String(key === draft.character.texture),
+              title: name,
+              onclick: () => ((draft.character.texture = key), drawPortrait()),
+            },
+            keycap({ legend: draft.character.legend, texture: key }, 30, "", draft.type),
+            h("span", {}, name),
+          ),
         ),
       ),
     );
@@ -1089,7 +1164,15 @@ function botView() {
   const TYPE_WORDS = { scout: "finds things out", scribe: "writes", maker: "builds code", keeper: "remembers and checks", counter: "works with numbers", spark: "comes up with ideas" };
   const type = h(
     "select",
-    { onchange: (e) => ((draft.type = e.target.value), drawPortrait()) },
+    {
+      onchange: (e) => {
+        if (draft.character.legend === LEGENDS[draft.type]) draft.character.legend = LEGENDS[e.target.value] ?? draft.character.legend;
+        if (draft.character.texture === TYPE_TEXTURES[draft.type]) draft.character.texture = TYPE_TEXTURES[e.target.value] ?? draft.character.texture;
+        draft.type = e.target.value;
+        legendInput.value = draft.character.legend;
+        drawPortrait();
+      },
+    },
     [...new Set([...types, draft.type])].map((t) => h("option", { value: t, selected: t === draft.type }, `${cap(t)}${TYPE_WORDS[t] ? ` · ${TYPE_WORDS[t]}` : ""}`)),
   );
   const instructions = h("textarea", { rows: 7, placeholder: "What this bot does and how. Plain sentences work best." }, draft.instructions);
