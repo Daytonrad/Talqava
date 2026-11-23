@@ -104,10 +104,14 @@ test("three bots run at once, each in its own quest with its own journal", async
 
 test("a bot only gets the tools its powers grant, plus the organization's: hand-offs, questions and shared memory", async () => {
   const pip = (await crew()).bots.find((b) => b.id === "pip")!;
+  // The first organization starts empty; the owner places the starter agents, each reporting to them.
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const first = orgs.active();
+  for (const b of (await crew()).bots) orgs.setMember(first.id, { bot: b.id, manager: null });
   const quest = await runner.quests.start({ bot: pip, text: "quest for tools" });
   await waitFor(() => runner.questStore.get(quest.id)!.status === "done");
   const request = mock.requests.filter((r) => /quest for tools/.test(JSON.stringify(r.body.messages))).at(-1)!;
-  // Everyone in the first organization reports to the owner, so nobody is below the analyst: it hands nothing out, and asks other groups' leads instead.
+  // Everyone placed reports to the owner, so nobody is below the analyst: it hands nothing out, and asks other groups' leads instead.
   assert.deepEqual(request.body.tools.map((t: { name: string }) => t.name), ["memory", "skill", "conversation_search", "request_work", "ask_colleague", "team_memory", "library", "web_search", "web_fetch"]);
 });
 

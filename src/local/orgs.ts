@@ -113,14 +113,14 @@ function read(): OrgFile {
     }
     return data;
   }
-  // The first organization holds every bot there is, each reporting to the person.
+  // The first organization starts with only the owner: positions are added by the owner, one at a time.
   const first: Org = {
     id: newId(),
     name: "My organization",
     mission: "",
     structure: "flat",
     industry: DEFAULT_INDUSTRY,
-    members: loadCrew().bots.map((bot) => ({ bot: bot.id, title: titleFor(bot), department: bot.group, manager: null })),
+    members: [],
     groups: [],
     model: ORG_MODEL,
     createdAt: new Date().toISOString(),

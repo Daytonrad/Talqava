@@ -224,9 +224,12 @@ test("an organization puts bots in roles on a chart, and a team joins with its r
   const { orgs, reportsOf, rolePrompt } = await import("../../src/local/orgs.ts");
   const market = await import("../../src/local/marketplace.ts");
   const crew = await import("../../src/local/crew.ts");
-  // The first organization holds every bot, each reporting to the person.
+  // The first organization starts with only the owner: nobody is placed on a chart the owner did not choose.
   const first = orgs.active();
-  assert.ok(first.members.some((m) => m.bot === "pip" && m.manager === null && m.department === "Research"));
+  assert.deepEqual(first.members, []);
+  // The owner places the starter agents, each reporting to them.
+  for (const b of crew.loadCrew().bots) orgs.setMember(first.id, { bot: b.id, manager: null });
+  assert.ok(orgs.active().members.some((m) => m.bot === "pip" && m.manager === null && m.department === "Research"));
 
   const acme = orgs.create("Acme", "Sell more umbrellas.");
   assert.equal(orgs.active().id, acme.id);
@@ -1389,4 +1392,46 @@ test("undo puts the whole chart back from a snapshot, refusing one with a loop o
   assert.throws(() => orgs.replaceChart(org.id, { members: [...before.members, { bot: "no-such-agent", title: "X", department: "Finance", manager: null }], groups: before.groups }), /no agent called/);
   assert.deepEqual(orgs.active().members.map((m) => m.bot).sort(), before.members.map((m) => m.bot).sort());
   orgs.remove(org.id);
+});
+
+test("suggested positions come from the mission and are only proposals; accepting one places it, nothing else", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const { suggestPositions, acceptSuggestion } = await import("../../src/local/suggest.ts");
+  const org = orgs.create("Blank Co", "", "custom");
+  try {
+    assert.deepEqual(orgs.active().members, []);
+    await assert.rejects(suggestPositions(org.id, ""), /Write the mission first/);
+
+    // The model's answer is checked against the catalog: unknown roles and repeats are dropped, and a specialist
+    // only reports to a suggestion that is offered too.
+    script.length = 0;
+    script.push(say(JSON.stringify({ intro: "A small shop needs sales and the books first.", positions: [
+      { id: "head-of-sales", group: "Sales", why: "Someone to win customers.", reportsTo: null },
+      { id: "no-such-role", group: "X", why: "x", reportsTo: null },
+      { id: "head-of-sales", group: "Sales", why: "again", reportsTo: null },
+      { id: "bookkeeper", group: "Money", why: "Keeps the books.", reportsTo: "head-of-finance" },
+    ] })));
+    const got = await suggestPositions(org.id, "We sell handmade furniture online.");
+    assert.equal(got.source, "model");
+    assert.deepEqual(got.positions.map((p) => [p.bot, p.group, p.reportsTo]), [["head-of-sales", "Sales", null], ["bookkeeper", "Money", null]]);
+    // Suggesting adds nobody.
+    assert.deepEqual(orgs.active().members, []);
+
+    // Accepting one places it in the suggested group, reporting to a suggested lead once that lead is on the chart.
+    await acceptSuggestion(org.id, { bot: "head-of-sales", group: "Sales", reportsTo: null });
+    await acceptSuggestion(org.id, { bot: "sales-operations", group: "Sales", reportsTo: "head-of-sales" });
+    const members = orgs.active().members;
+    assert.deepEqual(members.map((m) => [m.bot, m.manager, m.department]).sort(), [["head-of-sales", null, "Sales"], ["sales-operations", "head-of-sales", "Sales"]]);
+    await assert.rejects(acceptSuggestion(org.id, { bot: "no-such-role" }), /no such role/);
+
+    // Without a usable answer from the model, roles are matched to the mission's words, for free, never repeating a placed one.
+    script.push(say("I am not sure."));
+    const words = await suggestPositions(org.id, "We sell handmade furniture online.");
+    assert.equal(words.source, "words");
+    assert.equal(words.cost, 0);
+    assert.ok(words.positions.length > 0);
+    assert.ok(!words.positions.some((p) => p.bot === "head-of-sales"));
+  } finally {
+    orgs.remove(org.id);
+  }
 });

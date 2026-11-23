@@ -2324,6 +2324,79 @@ function renderOrg() {
     ...members.filter((m) => !groups.some((g) => g.name === m.department)).map((m) => [`${m.title} is not in a group.`, "Choose a group", () => select({ kind: "position", id: m.bot })]),
   ];
 
+  // ----- suggested positions: proposals from the mission, each accepted or skipped by the owner -----
+  const suggestNow = async (mission) => {
+    o.suggesting = true;
+    o.suggestOpen = true;
+    renderOrg();
+    try {
+      if (mission !== undefined && mission.trim() !== (org.mission ?? "")) {
+        await api("PATCH", `orgs/${org.id}`, { mission: mission.trim() });
+        await loadOrgs();
+      }
+      o.suggest = await api("POST", `orgs/${org.id}/suggest`, { mission: mission ?? org.mission });
+      o.suggestFor = org.id;
+    } catch (err) {
+      o.suggest = { error: err.message, positions: [] };
+    }
+    o.suggesting = false;
+    renderOrg();
+  };
+  const accept = (p) => orgChange(`Added ${p.title}${p.reportsTo ? `, reporting to ${nameOf(p.reportsTo)}` : ""}`, async () => {
+    await api("POST", `orgs/${org.id}/accept`, { bot: p.bot, group: p.group, reportsTo: p.reportsTo });
+    await loadCrew();
+    o.suggest.positions = o.suggest.positions.filter((x) => x !== p);
+  });
+  const skip = (p) => ((o.suggest.positions = o.suggest.positions.filter((x) => x !== p)), renderOrg());
+  const suggestions = () => {
+    if (!o.suggestOpen || o.suggestFor !== org.id && !o.suggesting) return null;
+    const sg = o.suggest;
+    const market = new Map((state.market ?? []).map((b) => [b.id, b]));
+    return h(
+      "section",
+      { class: "suggestbox" },
+      h("div", { class: "row" }, h("b", { class: "grow" }, "Suggested positions"), h("button", { class: "plain small", "aria-label": "Close suggestions", onclick: () => ((o.suggestOpen = false), renderOrg()) }, "✕")),
+      o.suggesting
+        ? h("p", { class: "note" }, h("i", { class: "dot", "aria-hidden": "true" }), " Reading your mission and the roles available…")
+        : sg?.error
+          ? h("div", { class: "banner error" }, sg.error)
+          : [
+              sg?.intro ? h("p", { class: "note" }, sg.intro) : null,
+              sg?.positions?.length
+                ? [
+                    h(
+                      "div",
+                      { class: "suggestlist" },
+                      sg.positions.map((p) => {
+                        const bot = market.get(p.bot) ?? byId.get(p.bot);
+                        return h(
+                          "div",
+                          { class: "suggestcard", style: bot ? botStyle(bot) : "" },
+                          bot ? keycap(bot.character, 30, "", bot.type) : null,
+                          h("span", { class: "posmain" }, h("b", {}, p.title), h("span", { class: "possub" }, [p.group, p.reportsTo ? `reports to ${sg.positions.find((x) => x.bot === p.reportsTo)?.title ?? nameOf(p.reportsTo)}` : "reports to you"].join(" · ")), h("span", { class: "suggestwhy" }, p.why)),
+                          h("div", { class: "suggestacts" }, h("button", { class: "primary small", onclick: () => accept(p) }, "Accept"), h("button", { class: "plain small", onclick: () => skip(p) }, "Skip")),
+                        );
+                      }),
+                    ),
+                    h("div", { class: "row" }, h("span", { class: "note small grow" }, `${sg.source === "model" ? `Suggested by your model${sg.cost ? ` for ${money(sg.cost)}` : ""}` : "Matched to the words in your mission"}. Nothing is added until you accept it.`), h("button", { class: "small", onclick: () => suggestNow() }, "Suggest others")),
+                  ]
+                : h("p", { class: "note" }, "That's every suggestion. Add more from the left whenever you need them."),
+            ],
+    );
+  };
+  // An empty organization: only the owner. The mission comes first, then positions, one at a time, by the owner's choice.
+  const startPanel = () => {
+    const mission = h("input", { value: org.mission ?? "", maxlength: 300, placeholder: "e.g. We sell handmade furniture online and deliver across the UK.", "aria-label": "Mission" });
+    mission.addEventListener("keydown", (e) => e.key === "Enter" && mission.value.trim() && suggestNow(mission.value));
+    return h(
+      "section",
+      { class: "startpanel", ...drop({ kind: "you" }) },
+      h("div", { class: "startyou" }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("div", {}, h("b", {}, "Right now it's just you."), h("p", { class: "note" }, "Build your organization one position at a time. Nothing is added unless you choose it."))),
+      h("div", { class: "startstep" }, h("span", { class: "wiznum" }, "1"), h("div", { class: "grow" }, h("b", {}, "What is your organization for?"), h("p", { class: "note small" }, "One sentence. Every agent is told it, and it shapes the suggestions."), h("div", { class: "row" }, mission, h("button", { class: "primary", onclick: () => (mission.value.trim() ? suggestNow(mission.value) : mission.focus()) }, "Suggest positions")))),
+      h("div", { class: "startstep" }, h("span", { class: "wiznum" }, "2"), h("div", { class: "grow" }, h("b", {}, "Add positions your way"), h("ul", { class: "startways" }, h("li", {}, "Accept or skip the suggestions"), h("li", {}, "Drag a role or a ready-made team from the left onto this panel"), h("li", {}, h("span", {}, "Or "), h("button", { class: "plain link", onclick: () => orgSettings() }, "copy an example"), h("span", {}, ", then make it yours"))))),
+    );
+  };
+
   const side = panel();
   const views = [["groups", "Groups"], ["chart", "Chart"], ["list", "List"], ["memory", "Memory"]];
   fill(
@@ -2342,6 +2415,7 @@ function renderOrg() {
       h("span", { title: "The monthly budgets set for each agent, added up" }, limits.length ? [h("b", {}, money(limits.reduce((a, b) => a + b, 0))), " a month at most"] : "No monthly limits set", unlimited && limits.length ? h("span", { class: "note small" }, ` (+${unlimited} without a limit)`) : null),
       h("span", { class: "grow" }),
       h("div", { class: "viewswitch", role: "group", "aria-label": "View" }, views.map(([id, label]) => h("button", { class: o.view === id ? "on" : "", "aria-pressed": String(o.view === id), onclick: () => ((o.view = id), renderOrg()) }, label))),
+      members.length ? h("button", { class: "small", title: "Positions that would help your mission, to accept or skip", onclick: () => (org.mission ? suggestNow() : orgSettings()) }, "Suggest positions") : null,
       h("button", { class: "small", disabled: !o.undo.length, title: o.undo.length ? `Undo: ${o.undo.at(-1).label} (Cmd-Z)` : "Nothing to undo", onclick: () => orgUndo() }, "Undo"),
       h("button", { class: "plain small", title: "Every change is recorded in the audit log", onclick: () => ((ui.audit = { kind: "organization", actor: "", since: "30", q: "" }), go("audit")) }, "History"),
     ),
@@ -2353,7 +2427,7 @@ function renderOrg() {
           "div",
           { class: `orgwork ${side ? "withpanel" : ""}` },
           h("aside", { class: "addbar" }, h("div", { class: "row" }, h("b", { class: "grow" }, "Add"), h("button", { class: "small", onclick: () => newGroup() }, "+ Group")), addFind, h("p", { class: "note small" }, "Drag onto a position to report to it, onto a group to join it, or onto You."), addList),
-          h("div", { class: "orgcanvas" }, members.length ? (o.view === "chart" ? chartView() : o.view === "list" ? listView() : groupsView()) : h("div", { class: "card quiet orgempty", ...drop({ kind: "you" }) }, h("b", {}, "Nobody is on the chart yet."), h("p", { class: "note" }, "Drag a role or a ready-made team from the left, or copy an example under Settings."))),
+          h("div", { class: "orgcanvas" }, suggestions(), members.length ? (o.view === "chart" ? chartView() : o.view === "list" ? listView() : groupsView()) : startPanel()),
           side,
         ),
   );
@@ -2405,7 +2479,7 @@ function renderOrg() {
     }
     if (choice === "clear") {
       if (!confirm(`Start ${org.name} over with an empty chart?\n\nEvery agent stays on your team; chats, tasks and memory are kept. You can undo this.`)) return;
-      return orgChange("Started over with an empty chart", async () => (await api("POST", `orgs/${org.id}/reset`, { mode: "empty" }), (o.sel = null)));
+      return orgChange("Started over with an empty chart", async () => (await api("POST", `orgs/${org.id}/reset`, { mode: "empty" }), (o.sel = null), (o.suggest = null), (o.suggestOpen = false)));
     }
     if (choice === "delete") {
       if (!confirm(`Delete the organization “${org.name}”?\n\nIts chart is deleted. The agents themselves are kept. This cannot be undone.`)) return;
@@ -2416,7 +2490,7 @@ function renderOrg() {
       const ms = h("input", { placeholder: "What it is for, in a sentence (optional)", maxlength: 300, "aria-label": "Mission" });
       const got = await libDialog("New organization", h("div", { class: "composeform" }, nm, ms, h("p", { class: "note small" }, "It starts with an empty chart: add positions and groups yourself, or copy an example under Settings.")), [["Create", () => ({ name: nm.value.trim(), mission: ms.value.trim() }), true]]);
       if (!got?.name) return;
-      return attempt(async () => (await api("POST", "orgs", { name: got.name, mission: got.mission, structure: "custom" }), await loadOrgs(), (o.sel = null), (o.undo = []), renderOrg()), col);
+      return attempt(async () => (await api("POST", "orgs", { name: got.name, mission: got.mission, structure: "custom" }), await loadOrgs(), (o.sel = null), (o.undo = []), (o.suggest = null), (o.suggestOpen = false), renderOrg()), col);
     }
   }
 }

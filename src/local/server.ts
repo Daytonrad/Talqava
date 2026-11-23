@@ -36,6 +36,7 @@ import { mcpIntegration, setClaudeDesktop } from "./mcpintegration.ts";
 import { EVERYONE, ensureFolders, library, libraryFolder, removeLibrary, syncLibrary } from "./library.ts";
 import { execFile } from "node:child_process";
 import { needsFor } from "./preflight.ts";
+import { acceptSuggestion, suggestPositions } from "./suggest.ts";
 import { audit, readAudit, redact } from "./audit.ts";
 import { finishOpenRouterSignIn, openrouterIntegration, openrouterModels, removeOpenRouter, saveOpenRouterKey, startOpenRouterSignIn, useOpenRouterModel } from "./openrouter.ts";
 import { autoSetupGit, cloneRepository, disconnectRepository, gitIntegration, githubAccounts, githubRepos, installGit, listIntegrations, pollGithubSignIn, removeGitIntegration, startGithubSignIn, testGithub } from "./integrations.ts";
@@ -1046,6 +1047,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     }
     // The app no longer redraws an owner's chart from a structure: lines are only ever drawn by the owner.
     if (route === "POST orgs" && sub === "arrange") throw new HttpError(410, "The chart is no longer redrawn from a structure. Drag positions to set who reports to whom.");
+    if (route === "POST orgs" && sub === "suggest") return send(res, 200, await attempt(() => suggestPositions(orgId, body.mission, Number(body.limit) || 6)));
+    if (route === "POST orgs" && sub === "accept") return send(res, 200, await attempt(() => acceptSuggestion(orgId, body)));
     if (route === "PUT orgs" && sub === "chart") return send(res, 200, await attempt(() => orgs.replaceChart(orgId, body)));
     if (route === "POST orgs" && sub === "groups") return send(res, 200, await attempt(() => orgs.addGroup(orgId, body)));
     if (route === "PATCH orgs" && sub === "groups" && memberId) return send(res, 200, await attempt(() => orgs.updateGroup(orgId, memberId, body)));
