@@ -64,10 +64,15 @@ export interface Secret {
   host: string;
 }
 
+/** A connector (MCP server): a web address, or a program on this computer. */
 export interface McpServer {
   name: string;
+  /** For a connector on the web. Empty for a program. */
   url: string;
   token?: string;
+  /** For a program on this computer: what to run, and its arguments. */
+  command?: string;
+  args?: string[];
 }
 
 // ---------- storage, as the core sees it ----------

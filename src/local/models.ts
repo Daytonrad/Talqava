@@ -25,5 +25,6 @@ export function resolveModel(cfg: Config = getConfig(), ref = cfg.model): Model 
     apiKey: provider.apiKey || undefined,
     model,
     prices: provider.prices,
+    contextTokens: provider.contextTokens,
   });
 }

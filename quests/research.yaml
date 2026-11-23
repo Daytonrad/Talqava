@@ -1,0 +1,17 @@
+# A core quest. Pip researches a question; it only counts as done when the
+# answer cites at least three different sources.
+name: Research with sources
+summary: An answer with links to every source, and what could not be confirmed.
+bot: pip
+repository: none
+inputs:
+  - id: question
+    label: Question
+    placeholder: Which job queue library should we use for Node, and why?
+    required: true
+prompt: |
+  Research this question: {{question}}
+  Read the sources themselves, not only search results. Start with a short answer, then the detail.
+  Cite every claim with a link to where you found it, and say plainly what you could not confirm.
+check:
+  links: 3

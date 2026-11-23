@@ -11,6 +11,7 @@ import {
   DATA,
   WORKSPACE,
   EFFORTS,
+  MODELS,
   initStore,
   getConfig,
   saveConfig,
@@ -22,8 +23,10 @@ import {
 } from "./store.ts";
 import type { Config, ProviderConfig } from "./store.ts";
 import { CAUTION_TOOLS, localRunSpec } from "./tools.ts";
+import { closeConnectors } from "./connectors.ts";
 import { resolveModel, splitRef } from "./models.ts";
 import { botId, loadCrew, removeBot, saveBot } from "./crew.ts";
+import { findTemplate, loadTemplates } from "./templates.ts";
 import { journal, questStore, quests } from "./quests.ts";
 import type { Quest } from "./quests.ts";
 import { currentBranch, repoRoot } from "./git.ts";
@@ -187,6 +190,11 @@ async function updateSettings(body: any) {
         // A blank key keeps the one already saved.
         apiKey: typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : existing?.apiKey,
       };
+      if (body.provider.contextTokens !== undefined && body.provider.contextTokens !== "") {
+        const size = Number(body.provider.contextTokens);
+        if (!Number.isInteger(size) || size < 2000 || size > 2_000_000) throw new HttpError(400, "The context size is a whole number of tokens, from 2,000 up.");
+        provider.contextTokens = size;
+      } else if (existing?.contextTokens) provider.contextTokens = existing.contextTokens;
       if (prices && prices.input !== "" && prices.output !== "") {
         const input = Number(prices.input);
         const output = Number(prices.output);
@@ -214,12 +222,30 @@ async function updateSettings(body: any) {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(name || "")) throw new HttpError(400, "Connector names use letters, digits, dashes and underscores.");
     const servers = cfg.mcpServers.filter((s) => s.name !== name);
     if (!remove) {
-      if (!/^https:\/\//.test(url || "")) throw new HttpError(400, "A connector needs an https:// address.");
-      servers.push({ name, url, token: token ? String(token) : "" });
+      const { command } = body.mcpServer;
+      if (typeof command === "string" && command.trim()) {
+        // A program on this computer, e.g. "npx -y some-mcp-server". Split like a shell would, without running one.
+        const parts = command.trim().match(/"[^"]*"|'[^']*'|\S+/g)!.map((p: string) => p.replace(/^["']|["']$/g, ""));
+        servers.push({ name, url: "", command: parts[0], args: parts.slice(1) });
+      } else {
+        let address: URL;
+        try {
+          address = new URL(String(url || ""));
+        } catch {
+          throw new HttpError(400, "A connector needs an address (https://…) or a program to run.");
+        }
+        const local = ["localhost", "127.0.0.1", "[::1]"].includes(address.hostname);
+        if (address.protocol !== "https:" && !(local && address.protocol === "http:")) {
+          throw new HttpError(400, "A connector on the web needs an https:// address (http:// only for this computer).");
+        }
+        servers.push({ name, url: address.href, token: token ? String(token) : "" });
+      }
     }
     patch.mcpServers = servers;
   }
   saveConfig(patch);
+  // New connector settings take effect on the next run.
+  if (body.mcpServer) await closeConnectors();
   return publicConfig();
 }
 
@@ -230,10 +256,10 @@ function projectOrNull(folder: string | null): string | null {
 }
 
 /** The model a bot will use, in words, or why it cannot run. */
-function botModel(bot: Bot) {
+function botModel(bot: Bot, override?: string) {
   const cfg = getConfig();
   try {
-    const model = resolveModel(cfg, bot.model ?? cfg.model);
+    const model = resolveModel(cfg, override ?? bot.model ?? cfg.model);
     return { ref: model.ref, label: model.label, kind: model.kind, free: model.prices?.input === 0 && model.prices?.output === 0 };
   } catch (err) {
     return { ref: bot.model ?? cfg.model, label: (err as Error).message, kind: null, free: false };
@@ -274,7 +300,11 @@ function questSummary(quest: Quest) {
     id: quest.id,
     title: quest.title,
     bot: { id: bot.id, name: bot.name, type: bot.type, character: bot.character, source: bot.source, powers: bot.powers },
-    model: botModel(bot),
+    model: botModel(bot, quest.modelOverride),
+    handedTo: quest.modelOverride ?? null,
+    template: quest.template ? { id: quest.template.id, name: quest.template.name, tries: quest.template.tries, maxTries: quest.template.maxTries } : null,
+    check: quest.check ?? null,
+    checking: Boolean(quest.checking),
     activity: lastActivity(conversation),
     readOutside: readOutside(conversation),
     approvals: live.approvals,
@@ -377,6 +407,32 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     }
   }
 
+  if (parts[0] === "providers" && parts[2] === "models" && req.method === "GET") {
+    // The models a provider has, so people choose from a list instead of typing names.
+    const provider = getConfig().providers.find((p) => p.id === parts[1]);
+    if (!provider) throw new HttpError(404, "No such provider.");
+    if (provider.kind === "anthropic") return send(res, 200, { models: MODELS.map((m) => m.id), reachable: true });
+    try {
+      const r = await fetch(`${String(provider.baseUrl).replace(/\/+$/, "")}/models`, {
+        headers: provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {},
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!r.ok) return send(res, 200, { models: [], reachable: true, note: `${provider.name} answered ${r.status}.` });
+      const data = (await r.json()) as { data?: { id: string }[] };
+      return send(res, 200, { models: (data.data ?? []).map((m) => m.id).sort(), reachable: true });
+    } catch {
+      return send(res, 200, { models: [], reachable: false, note: `${provider.name} is not answering at ${provider.baseUrl}. If it is a local model runner, start it.` });
+    }
+  }
+
+  if (route === "GET quest-templates") {
+    try {
+      return send(res, 200, loadTemplates());
+    } catch (err) {
+      throw new HttpError(500, (err as Error).message);
+    }
+  }
+
   if (parts[0] === "crew" && req.method === "GET") {
     const project = projectOrNull(url.searchParams.get("project"));
     const crew = loadCrew(project ?? undefined);
@@ -408,10 +464,23 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     const [, id, action] = parts;
     if (!id && req.method === "GET") return send(res, 200, questStore.list().map(questSummary));
     if (!id && req.method === "POST") {
-      const text = String(body.text || "").trim();
-      if (!text) throw new HttpError(400, "Say what the quest is.");
       const project = body.project ? projectOrNull(String(body.project)) : null;
       if (body.project && !project) throw new HttpError(400, "Add that repository under Settings first.");
+      if (body.template) {
+        // A core quest: its own bot unless another was chosen.
+        try {
+          const template = findTemplate(String(body.template));
+          const crew = loadCrew(project ?? undefined).bots;
+          const bot = crew.find((b) => b.id === (body.bot || template.bot));
+          if (!bot) throw new Error(`${template.name} needs the bot "${body.bot || template.bot}", which is not in the crew.`);
+          const given = body.inputs && typeof body.inputs === "object" ? body.inputs : {};
+          return send(res, 200, questSummary(await quests.startTemplate({ template, bot, given, project: project ?? undefined })));
+        } catch (err) {
+          throw new HttpError(400, (err as Error).message);
+        }
+      }
+      const text = String(body.text || "").trim();
+      if (!text) throw new HttpError(400, "Say what the quest is.");
       const bot = loadCrew(project ?? undefined).bots.find((b) => b.id === body.bot);
       if (!bot) throw new HttpError(400, "Choose a bot from the crew.");
       try {
@@ -433,6 +502,13 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (action === "stop" && req.method === "POST") {
       quests.stop(id);
       return send(res, 200, { ok: true });
+    }
+    if (action === "escalate" && req.method === "POST") {
+      const cfg = getConfig();
+      // Hand it to Claude: the default model if that is Claude, else Claude's strongest.
+      const model = typeof body.model === "string" && body.model ? body.model : cfg.model.startsWith("anthropic/") ? cfg.model : "anthropic/claude-opus-5-5";
+      if (model.startsWith("anthropic/") && !publicConfig().hasApiKey) throw new HttpError(400, "Add an Anthropic API key under Settings to hand quests to Claude.");
+      return send(res, 200, await attemptQuest(async () => (await quests.escalate(id, model), { ok: true, model })));
     }
     if (action === "changes" && req.method === "GET") return send(res, 200, await attemptQuest(() => quests.changes(id)));
     if (action === "accept" && req.method === "POST") return send(res, 200, await attemptQuest(() => quests.accept(id)));

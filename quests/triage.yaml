@@ -1,0 +1,20 @@
+# A core quest. The app fetches the open issues; Tally sorts them and the
+# quest only counts as done when every issue is covered in the report.
+name: Triage open issues
+summary: Every open issue sorted, with a suggested label and next step.
+bot: tally
+repository: optional
+inputs:
+  - id: repo
+    label: GitHub repository (owner/name)
+    placeholder: taken from the chosen repository
+gather: github-issues
+prompt: |
+  Triage the open issues of {{repo}} listed below.
+  For each one give: its number, a one-line summary, a suggested label (bug, feature, question, docs or duplicate), how urgent it is (now, soon, later) and the next step.
+  Group the issues by suggested label. Point out duplicates and issues that look already fixed.
+  Finish with the three issues you would look at first, and why.
+
+  {{gathered}}
+check:
+  covers: gathered

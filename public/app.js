@@ -126,7 +126,7 @@ async function boot() {
   document.title = "Talqava Agents";
   if (!state.config.projects.includes(state.project)) state.project = "";
   if (needsKey(state.config)) state.view = "settings";
-  await Promise.all([loadCrew(), loadQuests(), refreshList()]);
+  await Promise.all([loadCrew(), loadQuests(), refreshList(), loadTemplates()]);
   render();
   clearInterval(boot.timer);
   // One heartbeat keeps every part of the window current.
@@ -140,6 +140,14 @@ async function loadCrew() {
     state.crew ??= { bots: [], problems: [], branch: null };
   }
   if (!state.crew.bots.some((b) => b.id === state.selectedBot)) state.selectedBot = state.crew.bots[0]?.id ?? null;
+}
+
+async function loadTemplates() {
+  try {
+    state.templates = await api("GET", "quest-templates");
+  } catch {
+    state.templates = [];
+  }
 }
 
 async function loadQuests() {
@@ -170,7 +178,7 @@ async function tick() {
 }
 
 const questSignature = () =>
-  JSON.stringify(state.quests.map((q) => [q.id, q.status, q.steps, q.outcome, q.approvals.length, q.activity?.output?.length ?? 0]));
+  JSON.stringify(state.quests.map((q) => [q.id, q.status, q.steps, q.outcome, q.approvals.length, q.activity?.output?.length ?? 0, q.checking, q.check?.at, q.template?.tries]));
 
 /** Kept for the pages that call it after saving settings. */
 function renderSide() {
@@ -298,7 +306,11 @@ function paletteItems() {
     for (const bot of bots.filter((b) => b !== target).slice(0, 5)) items.push({ label: `Send ${bot.name} instead`, what: bot.type, bot, run: () => sendQuest(bot, task) });
   }
   const needle = text.toLowerCase();
-  const commands = [...COMMANDS, ...bots.map((b) => [`Edit ${b.name}`, () => go("bot", b.id)])];
+  const commands = [
+    ...COMMANDS,
+    ...(state.templates ?? []).map((t) => [`Core quest: ${t.name}`, () => (go("home"), openCoreQuest(t.id))]),
+    ...bots.map((b) => [`Edit ${b.name}`, () => go("bot", b.id)]),
+  ];
   for (const [label, run] of commands) if (!needle || label.toLowerCase().includes(needle)) items.push({ label, what: "", run });
   return items.slice(0, 12);
 }
@@ -641,16 +653,21 @@ function keycap(character, size = 40, mood = "", type = "") {
 }
 
 const isLive = (q) => q.status === "running" || q.status === "waiting";
-const mood = (q) => (q?.status === "waiting" ? "waiting" : q?.status === "running" ? "working" : q?.status === "failed" ? "stuck" : "");
+// "done" (the tick) only for a result that passed its check.
+const mood = (q) =>
+  q?.status === "waiting" ? "waiting" : q?.status === "running" || q?.checking ? "working" : q?.status === "failed" || (q?.check && !q.check.passed) ? "stuck" : q?.check?.passed ? "done" : "";
 
 /** How a quest stands: a glyph and a word or two, and whether it needs attention. */
 function standing(q) {
   if (q.status === "waiting") return ["◌ Waiting on you", "loud"];
-  if (q.status === "running") return ["● Working", "loud"];
-  if (q.branch && !q.outcome && q.status !== "failed") return ["→ Ready for review", "loud"];
+  if (q.status === "running") return q.template?.tries ? [`● Fixing · try ${q.template.tries} of ${q.template.maxTries}`, "loud"] : ["● Working", "loud"];
+  if (q.checking) return ["◌ Checking the result", "loud"];
+  if (q.check && !q.check.passed && q.status === "done") return ["✕ Check failed", "loud"];
+  if (q.branch && !q.outcome && q.status !== "failed") return [q.check?.passed ? "✓ Checked · ready for review" : "→ Ready for review", "loud"];
   if (q.outcome === "accepted") return ["✓ Changes kept", ""];
   if (q.outcome === "undone") return ["↶ Undone", ""];
   if (q.resumedAt && q.status === "done") return ["↺ Done after restart", ""];
+  if (q.check?.passed && q.status === "done") return ["✓ Checked", ""];
   return { done: ["✓ Done", ""], stopped: ["■ Stopped", ""], budget: ["■ Hit its budget", ""], failed: ["✕ Failed", "loud"] }[q.status] || [q.status, ""];
 }
 
@@ -755,6 +772,80 @@ function renderBoard() {
           h("p", {}, selected ? `Type a quest in the box at the top and ${selected.name} will go. Start it with @name to send someone else.` : "Type a quest in the box at the top."),
           h("button", { class: "primary", onclick: () => ui.palette?.focus() }, selected ? `Send ${selected.name} on a quest` : "Send a quest"),
         ),
+    coreQuests(),
+  );
+}
+
+/** The ready-made quests, each with the bot that goes and how its result is checked. */
+function coreQuests() {
+  const templates = state.templates ?? [];
+  if (!templates.length) return null;
+  const bots = state.crew?.bots ?? [];
+  const checkWords = (c) =>
+    [c.command && "runs the tests", c.changed && c.changed !== "any" && `${c.changed} changes`, c.covers && "covers everything", c.links && `${c.links}+ sources`].filter(Boolean).join(" · ");
+  return h(
+    "section",
+    { class: "core" },
+    h("div", { class: "board-head small-head" }, h("h2", {}, "Core quests"), h("span", { class: "note" }, "Ready-made, and checked before they count as done")),
+    h(
+      "div",
+      { class: "core-grid" },
+      templates.map((t) => {
+        const bot = bots.find((b) => b.id === t.bot);
+        return h(
+          "button",
+          { class: `core-card ${state.coreOpen === t.id ? "on" : ""}`, onclick: () => openCoreQuest(state.coreOpen === t.id ? null : t.id) },
+          h("span", { class: "row" }, bot ? keycap(bot.character, 28, "", bot.type) : null, h("b", {}, t.name)),
+          h("span", { class: "note small" }, t.summary),
+          h("span", { class: "mono small muted" }, `${bot ? bot.name.toLowerCase() : t.bot} · check: ${checkWords(t.check) || "your review"}`),
+        );
+      }),
+    ),
+    state.coreOpen ? coreForm(templates.find((t) => t.id === state.coreOpen)) : null,
+  );
+}
+
+function openCoreQuest(id) {
+  state.coreOpen = id;
+  renderHome();
+  setTimeout(() => ui.board?.querySelector(".core-form input, .core-form button.primary")?.focus(), 0);
+}
+
+function coreForm(t) {
+  if (!t) return null;
+  const fields = t.inputs.map((input) => [input, h("input", { id: `core-${input.id}`, placeholder: input.placeholder || "", value: input.default || "" })]);
+  const where =
+    t.repository === "none"
+      ? "Works without a repository."
+      : state.project
+        ? `On ${basename(state.project)}, in its own branch and copy.`
+        : t.repository === "required"
+          ? "Needs a repository: choose one in the box at the top left first."
+          : "No repository chosen: give the GitHub repository below.";
+  const start = h("button", { class: "primary" }, "Start");
+  start.addEventListener("click", () =>
+    attempt(async () => {
+      start.disabled = true;
+      start.textContent = "Gathering…";
+      try {
+        const inputs = Object.fromEntries(fields.map(([input, el]) => [input.id, el.value]));
+        const quest = await api("POST", "quests", { template: t.id, inputs, project: state.project || undefined });
+        state.coreOpen = null;
+        await loadQuests();
+        go("quest", quest.id);
+      } finally {
+        start.disabled = false;
+        start.textContent = "Start";
+      }
+    }, ui.board),
+  );
+  return h(
+    "div",
+    { class: "card core-form" },
+    h("b", {}, t.name),
+    h("p", { class: "note" }, where),
+    fields.map(([input, el]) => h("label", { class: "field", for: `core-${input.id}` }, `${input.label}${input.required ? "" : " (optional)"}`, el)),
+    h("div", { class: "row" }, start, h("button", { onclick: () => openCoreQuest(null) }, "Cancel")),
   );
 }
 
@@ -1030,11 +1121,42 @@ function stepTicks(used, total) {
   return h("div", { class: "ticks", role: "img", "aria-label": `${used} of ${total} steps used` }, Array.from({ length: count }, (_, i) => h("span", { class: i < filled ? "on" : "" })));
 }
 
+/** The quest's check: each item passed or failed, with what was found. */
+function checkBlock(q) {
+  if (!q.template) return null;
+  const handOver =
+    q.check && !q.check.passed && !q.checking && !isLive(q) && !q.outcome && q.model?.kind !== "anthropic"
+      ? h(
+          "button",
+          { class: "primary", onclick: () => attempt(async () => (await api("POST", `quests/${q.id}/escalate`, {}), await loadQuests(), refreshQuest(true)), ui.qright) },
+          "Hand to Claude",
+        )
+      : null;
+  return h(
+    "section",
+    { class: "panel-block" },
+    h("h2", { class: "label" }, "Check"),
+    q.checking
+      ? h("p", { class: "mono small" }, "◌ checking the result…")
+      : q.check
+        ? h(
+            "ul",
+            { class: "checks-list" },
+            q.check.items.map((item) => h("li", {}, h("span", { class: "mark" }, item.passed ? "✓" : "✕"), h("span", {}, item.label, item.detail && !item.passed ? h("pre", {}, item.detail) : null))),
+          )
+        : h("p", { class: "note" }, isLive(q) ? "Runs when the bot says it is done. A failed check goes back to the bot to fix." : "Not checked."),
+    q.template.tries ? h("p", { class: "note" }, `Sent back to fix ${q.template.tries} time${q.template.tries === 1 ? "" : "s"} (up to ${q.template.maxTries}).`) : null,
+    q.handedTo ? h("p", { class: "note" }, `Handed to ${q.handedTo}.`) : null,
+    handOver ? [h("p", { class: "note" }, "The check still fails. A stronger model can pick up where this one stopped."), handOver] : null,
+  );
+}
+
 function renderQuestRight(q) {
   const spend = q.budget?.spend;
   const share = spend ? Math.min(1, (q.cost || 0) / spend) : q.budget?.steps ? Math.min(1, q.steps / q.budget.steps) : 0;
   const bot = state.crew?.bots.find((b) => b.id === q.bot.id);
-  fill(ui.qright, 
+  fill(ui.qright,
+    checkBlock(q),
     h(
       "section",
       { class: "panel-block" },
@@ -1188,7 +1310,11 @@ function botView() {
     { onfocus: () => (useOwn.checked = true) },
     providers.map((p) => h("option", { value: p.id, selected: current ? current.slice(0, slash) === p.id : p.id !== "anthropic" }, p.name)),
   );
-  const modelName = h("input", { value: current ? current.slice(slash + 1) : "", placeholder: "Model name, e.g. qwen3:8b or claude-sonnet-5-5", onfocus: () => (useOwn.checked = true) });
+  const modelName = h("input", { value: current ? current.slice(slash + 1) : "", list: "bot-models", placeholder: "Model name, e.g. qwen3:8b or claude-sonnet-5-5", onfocus: () => (useOwn.checked = true) });
+  const botModels = h("datalist", { id: "bot-models" });
+  const listModels = () => api("GET", `providers/${encodeURIComponent(provider.value)}/models`).then((r) => fill(botModels, r.models.map((m) => h("option", { value: m })))).catch(() => {});
+  provider.addEventListener("change", listModels);
+  listModels();
   const checks = h("div");
   const showCheck = () => {
     const ref = useOwn.checked ? `${provider.value}/${modelName.value.trim()}` : state.config.model;
@@ -1260,7 +1386,7 @@ function botView() {
           { class: "card" },
           h("h3", {}, "Model"),
           h("label", { class: "choice" }, useDefault, h("span", {}, h("b", {}, "Default model"), h("div", { class: "note" }, `The one chosen in Settings: ${state.config.model}`))),
-          h("label", { class: "choice" }, useOwn, h("span", { class: "grow" }, h("b", {}, "A model of its own"), h("div", { class: "form" }, provider, modelName))),
+          h("label", { class: "choice" }, useOwn, h("span", { class: "grow" }, h("b", {}, "A model of its own"), h("div", { class: "form" }, provider, modelName, botModels))),
           checks,
         ),
         h(
@@ -1564,7 +1690,15 @@ function settingsView() {
   const modelName = h("input", { value: c.model.slice(slash + 1), placeholder: "Model name, e.g. llama3.1 or claude-opus-5-5", autocomplete: "off" });
   const claudeModels = h("datalist", { id: "claude-models" }, c.models.map((m) => h("option", { value: m.id }, m.label)));
   // Claude's names are suggested only when Anthropic is the provider.
-  const syncList = () => modelName.setAttribute("list", provider.value === "anthropic" ? "claude-models" : "");
+  const providerModels = h("datalist", { id: "provider-models" });
+  const modelNote = h("p", { class: "note small" });
+  // Suggest the models the chosen provider actually has.
+  const syncList = async () => {
+    modelName.setAttribute("list", "provider-models");
+    const listed = await api("GET", `providers/${encodeURIComponent(provider.value)}/models`).catch(() => ({ models: [] }));
+    fill(providerModels, listed.models.map((m) => h("option", { value: m })));
+    modelNote.textContent = listed.note || (listed.models.length ? `${listed.models.length} model${listed.models.length === 1 ? "" : "s"} available. Start typing to choose.` : "");
+  };
   provider.addEventListener("change", syncList);
   syncList();
   const ref = () => `${provider.value}/${modelName.value.trim()}`;
@@ -1623,7 +1757,8 @@ function settingsView() {
       },
       h("label", {}, "Name", name),
       h("label", {}, "Model comes from", provider),
-      h("label", {}, "Model", modelName, claudeModels),
+      h("label", {}, "Model", modelName, claudeModels, providerModels),
+      modelNote,
       h("p", { class: "note" }, "For a free local model, start a local model runner (Ollama, LM Studio, llama.cpp and others) and type the name of a model you have downloaded. Web search and connectors are Claude-only for now; other models read pages with the built-in page reader."),
       h("div", { class: "row" }, checkButton),
       checkBox,
@@ -1643,6 +1778,7 @@ function settingsView() {
   const pKey = h("input", { type: "password", placeholder: "API key (blank for local runners)", autocomplete: "off" });
   const pIn = h("input", { type: "number", min: 0, step: 0.01, placeholder: "$ per million input tokens (0 if free)" });
   const pOut = h("input", { type: "number", min: 0, step: 0.01, placeholder: "$ per million output tokens (0 if free)" });
+  const pContext = h("input", { type: "number", min: 2000, step: 1000, placeholder: "Context size in tokens (default 32000)" });
   const others = c.providers.filter((p) => p.kind !== "anthropic");
   col.append(
     h("h3", {}, "Model providers"),
@@ -1654,19 +1790,21 @@ function settingsView() {
         h(
           "div",
           { class: "row" },
-          h("div", { class: "grow" }, h("strong", {}, p.name), ` (${p.id}) ${p.baseUrl}`, h("div", { class: "note" }, `${p.hasKey ? "Key saved" : "No key"} · ${p.prices ? `$${p.prices.input} in / $${p.prices.output} out per million tokens` : "prices unknown"}`)),
+          h("div", { class: "grow" }, h("strong", {}, p.name), ` (${p.id}) ${p.baseUrl}`, h("div", { class: "note" }, `${p.hasKey ? "Key saved" : "No key"} · ${p.prices ? `$${p.prices.input} in / $${p.prices.output} out per million tokens` : "prices unknown"} · context ${(p.contextTokens ?? 32000).toLocaleString()} tokens`)),
           h("button", { class: "plain danger", onclick: () => save({ provider: { id: p.id, remove: true } }) }, "Remove"),
         ),
       ),
     ),
     h(
       "form",
-      { class: "form", onsubmit: (e) => (e.preventDefault(), save({ provider: { id: pId.value.trim(), name: pName.value.trim(), baseUrl: pUrl.value.trim(), apiKey: pKey.value, prices: { input: pIn.value, output: pOut.value } } })) },
+      { class: "form", onsubmit: (e) => (e.preventDefault(), save({ provider: { id: pId.value.trim(), name: pName.value.trim(), baseUrl: pUrl.value.trim(), apiKey: pKey.value, prices: { input: pIn.value, output: pOut.value }, contextTokens: pContext.value } })) },
       pId,
       pName,
       pUrl,
       pKey,
       h("div", { class: "row" }, pIn, pOut),
+      pContext,
+      h("p", { class: "note small" }, "Set the context size to what the model really holds. Long quests are shortened to fit it, so a small local model keeps the task in view instead of losing track."),
       h("div", {}, h("button", {}, "Add provider")),
     ),
   );
@@ -1692,11 +1830,26 @@ function settingsView() {
   const mName = h("input", { placeholder: "Name, e.g. notion" });
   const mUrl = h("input", { placeholder: "https://… (the connector's MCP address)" });
   const mToken = h("input", { type: "password", placeholder: "Access token (if it needs one)", autocomplete: "off" });
+  const mCommand = h("input", { placeholder: "Or a program to run, e.g. npx -y @some/mcp-server", class: "mono" });
   col.append(
     h("h3", {}, "Connectors (MCP servers)"),
-    h("p", { class: "note" }, "Remote MCP servers give the agent ready-made tools for other services."),
-    ...c.mcpServers.map((s) => h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("strong", {}, s.name), ` ${s.url}`), h("button", { class: "plain danger", onclick: () => save({ mcpServer: { name: s.name, remove: true } }) }, "Remove")))),
-    h("form", { class: "form", onsubmit: (e) => (e.preventDefault(), save({ mcpServer: { name: mName.value.trim(), url: mUrl.value.trim(), token: mToken.value } })) }, mName, mUrl, mToken, h("div", {}, h("button", {}, "Add connector"))),
+    h("p", { class: "note" }, "Connectors give agents ready-made tools for other services. The app connects to them from this computer, so they work with every model. A connector can be on the web, or a program this computer runs. Their tools ask before changing anything unless the connector marks them read-only, and agents give them only to bots with the connectors power."),
+    ...c.mcpServers.map((s) =>
+      h(
+        "div",
+        { class: "card" },
+        h("div", { class: "row" }, h("div", { class: "grow" }, h("strong", {}, s.name), " ", h("code", {}, s.command || s.url)), h("button", { class: "plain danger", onclick: () => save({ mcpServer: { name: s.name, remove: true } }) }, "Remove")),
+      ),
+    ),
+    h(
+      "form",
+      { class: "form", onsubmit: (e) => (e.preventDefault(), save({ mcpServer: { name: mName.value.trim(), url: mUrl.value.trim(), token: mToken.value, command: mCommand.value.trim() } })) },
+      mName,
+      mUrl,
+      mToken,
+      mCommand,
+      h("div", {}, h("button", {}, "Add connector")),
+    ),
   );
 }
 

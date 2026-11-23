@@ -22,6 +22,7 @@ import type { Bot, Conversation, JobBook, Power, RunSpec, Tool } from "../core/i
 import { questStore } from "./quests.ts";
 import { WORKSPACE, conversations, getConfig, memory, skills } from "./store.ts";
 import { resolveModel } from "./models.ts";
+import { connectorTools } from "./connectors.ts";
 import { browserAvailable, browserTool } from "./browser.ts";
 
 const BASH_TIMEOUT_MS = Number(setting("BASH_TIMEOUT_MS") || 120_000);
@@ -242,6 +243,15 @@ async function botTools(bot: Bot, root: string, jobs: JobBook, claude: boolean):
   return tools;
 }
 
+/** Connector tools for a run, and a line for the prompt about any connector that did not answer. */
+async function connectors(enabled: boolean) {
+  const cfg = getConfig();
+  if (!enabled || !cfg.mcpServers.length) return { tools: [] as Tool[], note: [] as string[], names: [] as string[] };
+  const { tools, problems } = await connectorTools(cfg.mcpServers);
+  const note = problems.length ? [`These connectors could not be reached, so their tools are missing: ${problems.join("; ")}.`] : [];
+  return { tools, note, names: tools.map((t) => t.name) };
+}
+
 /** Builds what the engine needs for one run, from the settings file and, for a quest, its bot. */
 export function localRunSpec(jobs: JobBook) {
   return async (conversation: Conversation): Promise<RunSpec> => {
@@ -249,35 +259,38 @@ export function localRunSpec(jobs: JobBook) {
     const quest = conversation.source === "quest" ? questStore.get(conversation.id) : null;
     if (quest) {
       const bot = limitProjectBot(quest.bot, cfg);
-      const model = resolveModel(cfg, bot.model ?? cfg.model);
+      const model = resolveModel(cfg, quest.modelOverride ?? bot.model ?? cfg.model);
       const claude = model.kind === "anthropic";
       const root = quest.copy?.worktree ?? WORKSPACE;
+      const linked = await connectors(bot.powers.includes("connectors"));
       const where = quest.copy
         ? [`You are working in your own copy of the repository ${quest.project}, on the branch ${quest.copy.branch}. The user reviews your changes before they keep them, so make the changes directly here; do not commit, push or switch branches.`]
         : [];
       return {
         model,
-        system: `${localPrompt(root, bot.name, where)}\n\n${botPrompt(bot)}`,
-        tools: await botTools(bot, root, jobs, claude),
+        system: `${localPrompt(root, bot.name, [...where, ...linked.note])}\n\n${botPrompt(bot)}`,
+        tools: [...(await botTools(bot, root, jobs, claude)), ...linked.tools],
         hostedTools: claude && bot.powers.includes("web") ? HOSTED_WEB : [],
-        mcpServers: claude && bot.powers.includes("connectors") ? cfg.mcpServers : [],
+        // Connectors are reached from this machine (see connectors.ts), so every model can use them.
+        mcpServers: [],
         approvalMode: bot.approvals,
         budget: { ...cfg.budget, ...bot.budget },
-        cautionAfter: CAUTION_TOOLS,
+        // What a connector returns is outside content too.
+        cautionAfter: [...CAUTION_TOOLS, ...linked.names],
       };
     }
 
     const model = resolveModel(cfg);
     const tools = await localTools(jobs);
     const claude = model.kind === "anthropic";
+    const linked = await connectors(true);
     return {
       model,
-      system: localPrompt(),
+      system: localPrompt(WORKSPACE, cfg.agentName, linked.note),
       // Other models read the web with our own page reader; Claude uses Anthropic's.
-      tools: claude ? tools : [...tools, pageTool()],
+      tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],
-      // Connectors are reached through Anthropic's connector service, so they are Claude-only for now.
-      mcpServers: claude ? cfg.mcpServers : [],
+      mcpServers: [],
       approvalMode: cfg.approvalMode,
       budget: cfg.budget,
     };

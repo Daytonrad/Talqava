@@ -73,6 +73,8 @@ export interface ProviderConfig {
   apiKey?: string;
   /** Prices per million tokens, when known. Local runners are free. */
   prices?: Prices;
+  /** How many tokens the model can hold; longer conversations are shortened to fit. */
+  contextTokens?: number;
 }
 
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
@@ -151,13 +153,14 @@ export function publicConfig() {
       name: p.name,
       baseUrl: p.baseUrl,
       prices: p.prices,
+      contextTokens: p.contextTokens ?? null,
       hasKey: p.kind === "anthropic" ? Boolean(apiKey(cfg)) : Boolean(p.apiKey),
     })),
     budget: cfg.budget,
     modelChecks: cfg.modelChecks,
     projects: cfg.projects,
     apiKeyFromEnv: !cfg.apiKey && Boolean(process.env.ANTHROPIC_API_KEY),
-    mcpServers: cfg.mcpServers.map((s) => ({ name: s.name, url: s.url, hasToken: Boolean(s.token) })),
+    mcpServers: cfg.mcpServers.map((s) => ({ name: s.name, url: s.url, command: s.command ? [s.command, ...(s.args ?? [])].join(" ") : null, hasToken: Boolean(s.token) })),
     secrets: Object.entries(cfg.secrets).map(([name, s]) => ({ name, host: s.host })),
     models: MODELS,
     efforts: EFFORTS,

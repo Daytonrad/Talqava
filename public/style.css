@@ -316,3 +316,20 @@ details .label { font-size: 11px; margin: 6px 0 0; }
 .yes { color: var(--text); } .no { color: var(--muted); }
 button.brand { color: var(--text); padding: 0; min-height: 0; }
 button.brand:hover { color: #fff; }
+
+/* ---------- core quests and checks ---------- */
+.core { margin-top: 30px; }
+.small-head h2 { margin: 0; font-size: 20px; letter-spacing: -0.02em; }
+.core-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.core-card {
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start; text-align: left;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-height: 0;
+}
+.core-card:hover { border-color: var(--line2); }
+.core-card.on { border-color: var(--text); }
+.core-card .note { margin: 0; }
+.core-form { margin-top: 12px; display: grid; gap: 10px; max-width: 640px; }
+.checks-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font: 13px var(--mono); }
+.checks-list li { display: flex; gap: 10px; align-items: baseline; }
+.checks-list .mark { flex: none; width: 14px; }
+.checks-list pre { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; font-size: 12px; white-space: pre-wrap; max-height: 220px; overflow: auto; color: var(--soft); }

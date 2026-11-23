@@ -11,10 +11,12 @@
     "start": "node src/local/main.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "eval": "node evals/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.136.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "yaml": "^2.9.1"
   },
   "devDependencies": {

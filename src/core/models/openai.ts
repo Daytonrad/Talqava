@@ -15,6 +15,8 @@ export interface OpenAICompatibleOptions {
   model: string;
   prices?: Prices;
   maxTokens?: number;
+  /** How many tokens the model can hold. Longer conversations are shortened to fit (default 32,000). */
+  contextTokens?: number;
   /** For tests: replaces the global fetch. */
   fetch?: typeof fetch;
 }
@@ -66,6 +68,35 @@ export function toChatMessages(system: string, messages: Message[]): ChatMessage
     if (!text && !calls.length) continue; // only thinking or Claude's own server-side steps
     out.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
   }
+  return out;
+}
+
+/** A rough token count: about 3.5 characters per token across code and prose. */
+const tokensIn = (messages: ChatMessage[]) => Math.ceil(messages.reduce((n, m) => n + (m.content?.length ?? 0) + ("tool_calls" in m && m.tool_calls ? JSON.stringify(m.tool_calls).length : 0), 0) / 3.5);
+
+/**
+ * Keeps a long conversation within what the model can hold, so it does not
+ * lose the task. The system prompt, the task (the first message) and the
+ * latest steps stay whole; older tool output is shortened first, then older
+ * replies. Nothing is dropped, so every tool call keeps its result.
+ */
+export function fitToContext(messages: ChatMessage[], budgetTokens: number): ChatMessage[] {
+  if (tokensIn(messages) <= budgetTokens) return messages;
+  const out = messages.map((m) => ({ ...m }));
+  const keepFrom = Math.max(2, out.length - 8); // the latest steps stay whole
+  const shorten = (i: number, keep: number) => {
+    const m = out[i];
+    if (!m.content || m.content.length <= keep + 200) return;
+    m.content = `${m.content.slice(0, keep)}\n[… ${m.content.length - keep} characters shortened to fit the model's memory. Run the step again if you need them.]`;
+  };
+  for (const keep of [400, 120]) {
+    for (let i = 2; i < keepFrom && tokensIn(out) > budgetTokens; i++) if (out[i].role === "tool") shorten(i, keep);
+    for (let i = 2; i < keepFrom && tokensIn(out) > budgetTokens; i++) if (out[i].role === "assistant" || out[i].role === "user") shorten(i, keep);
+  }
+  out[0] = {
+    role: "system",
+    content: `${out[0].content}\n\nThis is a long task, so earlier steps were shortened to fit. The task itself is the first message; keep to it.`,
+  };
   return out;
 }
 
@@ -127,7 +158,8 @@ export class OpenAICompatibleModel implements Model {
     const tools = toChatTools(request.tools);
     const body = {
       model,
-      messages: toChatMessages(request.system, request.messages),
+      // Room is left for the reply and the tool descriptions.
+      messages: fitToContext(toChatMessages(request.system, request.messages), (this.#options.contextTokens ?? 32_000) - (this.#options.maxTokens ?? 8192) - Math.ceil(JSON.stringify(tools).length / 3.5)),
       ...(tools.length ? { tools } : {}),
       stream: true,
       stream_options: { include_usage: true },

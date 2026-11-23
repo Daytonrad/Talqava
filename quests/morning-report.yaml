@@ -1,0 +1,24 @@
+# A core quest, good on a schedule. The app fetches failing builds and stale
+# pull requests; Dusk writes the report, and it only counts as done when every
+# one is mentioned.
+name: Morning report
+summary: Failing builds and pull requests that have gone quiet, every weekday morning.
+bot: dusk
+repository: optional
+inputs:
+  - id: repo
+    label: GitHub repository (owner/name)
+    placeholder: taken from the chosen repository
+  - id: days
+    label: A pull request is stale after (days)
+    default: "7"
+gather: github-report
+prompt: |
+  Write the morning report for {{repo}}.
+  Start with what needs attention today. Then list each failing build with what failed and since when,
+  and each pull request with no activity for {{days}} days or more, with who it is waiting on.
+  Keep it short enough to read in a minute. If nothing needs attention, say so in one line.
+
+  {{gathered}}
+check:
+  covers: gathered

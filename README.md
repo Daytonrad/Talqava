@@ -9,7 +9,7 @@ A self-hosted AI agent you run yourself. You talk to it on a private web page. I
 - **Remember** facts about you across every conversation, and search past chats
 - **Write itself skills**: procedures it saves after working out how to do something
 - **Work on a schedule**: "every weekday at 8, send me a digest" runs on its own
-- **Use connectors** (remote MCP servers) for ready-made tools
+- **Use connectors** (MCP servers, on the web or on your computer) for ready-made tools, with any model
 
 It runs on Claude with your own Anthropic API key, or free on your own computer with a local model (see [Models](#models)). Every run has a budget, so a run that goes in circles stops instead of running up a bill.
 
@@ -17,7 +17,17 @@ A map of how it is built is in [docs/architecture.html](docs/architecture.html) 
 
 The plan for turning this into a desktop app with a crew of bots, any model, and safe work on real code is in [docs/architecture-plan.md](docs/architecture-plan.md). Stages 0 (the engine), 1 (any model) and 2 (the crew) are built; the rest is a plan.
 
-## Run it on your computer
+## Install it (macOS and Linux)
+
+You need [git](https://git-scm.com) and [Node.js](https://nodejs.org) 22.18 or newer. Then one line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Talqava/Talqava/main/install.sh | sh
+```
+
+It puts the app in `~/.talqava`, adds a `talqava` command, and opens the app in your browser. Run the same line again to update; your data in `~/.talqava/data` is kept. On Windows, use WSL for now.
+
+## Run it from the source
 
 You need [Node.js](https://nodejs.org) 22.18 or newer.
 
@@ -29,7 +39,7 @@ npm install
 npm start
 ```
 
-Open <http://localhost:8787>. The first time, the Settings page asks for your Anthropic API key, or lets you choose a local model instead. Then start a chat.
+Open <http://localhost:8787> (or start it with `node src/local/main.ts --open` to open it for you). The first time, the Settings page asks for your Anthropic API key, or lets you choose a local model instead. Then start a chat.
 
 Everything the agent knows is in the `data/` folder: chats, memory, skills, schedules, settings, and `data/workspace/`, the folder it works in. Back that folder up and you have backed up the agent. Delete it and the agent starts fresh.
 
@@ -84,6 +94,32 @@ Several quests run at once. A bot only gets the tools its powers grant: Pip cann
 
 **Caution after the web.** Once a quest has read a web page or an API reply, every change it wants to make asks first, whatever the bot's approval setting. That limits what a page written to trick bots can make them do.
 
+## Core quests, and checks
+
+Five ready-made quests are on home base, each run by the bot that suits it, each checked by the app before it counts as done:
+
+| Quest | Bot | What the app gathers first | The check |
+| --- | --- | --- | --- |
+| Write the changelog | Margo | The commits since the last tag | `CHANGELOG.md` changed and covers every commit |
+| Add tests for a file | Rivet | | The test command passes in Rivet's copy of the repository |
+| Triage open issues | Tally | The open issues, from GitHub | Every issue is covered |
+| Morning report | Dusk | Failing builds and quiet pull requests, from GitHub | Every one is mentioned |
+| Research with sources | Pip | | At least three different sources are linked |
+
+**A bot does not get to declare victory.** When it says it is done, the app looks at what it actually did. If the check fails (a test still fails, a commit is missing, sources are not linked), the bot is told exactly what failed and sent back to fix it, up to two times. Only a passed check shows ✓. A quest that still fails on a local model can be **handed to Claude** with one click, continuing where it stopped.
+
+For quests that read GitHub, store a key named `GITHUB_TOKEN` for `api.github.com` under Settings (needed for private repositories, and to avoid GitHub's limits). The quests are files in [quests/](quests/).
+
+## The quest test suite
+
+Before a release, run the core quests against each model you support:
+
+```bash
+npm run eval -- --model local/qwen3:8b
+```
+
+It runs them on fixed tasks with known good outcomes (a small repository and a stand-in for GitHub), prints a score, and compares it with the saved baseline for that model in `evals/baselines/`. A run that scores worse exits with an error: that release should not ship. Add `--save` to make a run the new baseline, `--web` to include research (which needs the internet), and `--quests changelog,add-tests` to run only some. To use your own providers and keys, point `TALQAVA_EVAL_SETTINGS` at your `config.json`.
+
 ## Models
 
 The agent works with two kinds of model:
@@ -99,7 +135,11 @@ To use a local model:
 
 The **model check** runs three short tests: following a plain instruction, calling a tool, and chaining two tool calls where the second depends on the first. It shows which bot types the model is good for. Small local models often pass the first two and fail the third; they are fine for research, writing and memory, but not for multi-step work on code.
 
-Models other than Claude read the web with the built-in page reader (`read_page`). It reads public pages only: it refuses addresses on your computer or private network, including after a redirect. Web search and connectors are Claude-only for now.
+Models other than Claude read the web with the built-in page reader (`read_page`). It reads public pages only: it refuses addresses on your computer or private network, including after a redirect. Web search is Claude-only for now.
+
+**Long quests on small models.** Each provider has a context size (32,000 tokens unless you set it). When a quest grows past it, the app keeps the task and the latest steps whole and shortens older tool output, so the model keeps the task in view instead of losing track. Set it to what your model really holds. In Settings, the model box lists the models your runner actually has, so you pick instead of typing names.
+
+**Connectors** (MCP servers) are reached from your computer, so they work with every model. Add one under Settings as a web address, or as a program to run (for example `npx -y some-mcp-server`). A connector's tools ask before changing anything unless the connector marks them read-only, what they return counts as outside content, and bots only get them with the `connectors` power. A connector that does not answer within 10 seconds is skipped, and the bot is told.
 
 **Budgets.** Each run stops before it goes over a number of steps (model calls, 40 by default) or an estimated spend in dollars ($1 by default). Spend is estimated from list prices: Claude's are built in, local models are free, and for other services you can enter prices when you add them. Without prices only the step budget applies, and the run says so. When a run stops at its budget, say "continue" to keep going.
 
@@ -152,6 +192,8 @@ Restart, and the agent gains a `browser` tool. Without it, it still searches and
 | `src/local` | This edition: JSON file storage, the shell and file tools, the quest runner and journal (`quests.ts`), a branch per quest (`git.ts`), and the web server. |
 | `crew` | The six starter bots. |
 | `public` | The chat page. |
+| `quests` | The five core quests. |
+| `evals` | The quest test suite and its saved baselines. |
 | `test` | Tests for the core (against in-memory storage) and for the local edition. |
 
 The code is TypeScript. Node runs it directly, so there is no build step.

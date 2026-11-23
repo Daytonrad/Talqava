@@ -100,13 +100,15 @@ test("a local model gets the page reader instead of Claude's hosted tools, and o
   assert.deepEqual(claude.hostedTools.map((t) => (t as { name: string }).name), ["web_search", "web_fetch"]);
   assert.ok(!claude.tools.some((t) => t.name === "read_page"));
 
-  store.saveConfig({ model: "local/llama3.1", mcpServers: [{ name: "x", url: "https://example.com/mcp" }] });
+  // A connector that cannot be reached is mentioned to the model, not allowed to stop the run.
+  store.saveConfig({ model: "local/llama3.1", mcpServers: [{ name: "x", url: "http://127.0.0.1:65530/mcp" }] });
   const spec = await tools.localRunSpec(app.jobs)({} as Conversation);
   assert.equal(spec.model.kind, "openai");
   assert.equal(spec.model.label, "llama3.1 on Local model runner");
   assert.deepEqual(spec.model.prices, { input: 0, output: 0 });
   assert.deepEqual(spec.hostedTools, []);
   assert.deepEqual(spec.mcpServers, []);
+  assert.match(spec.system, /These connectors could not be reached[^\n]*x:/);
   assert.deepEqual(spec.budget, { steps: 40, spend: 1 });
   assert.ok(spec.tools.some((t) => t.name === "read_page"));
   // Every tool can be described to a model other than Claude.
