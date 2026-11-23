@@ -2048,8 +2048,8 @@ async function teamView() {
     const missing = (industry.seats?.[x.id] ?? []).filter((id) => !byId.has(id)).length;
     const layers = { hierarchical: "a general manager, then department heads, then their specialists", functional: "department heads reporting to you, with their specialists beneath them", matrix: "departments under a general manager, with a project lead on dotted lines", team: "teams that each own an outcome, a lead with its mix of specialists", flat: "one small level: a specialist from each department, all reporting to you, and no managers" }[x.id];
     const size = industry.sizes?.[x.id];
-    const leaving = members.filter((m) => !(industry.seats?.[x.id] ?? []).includes(m.bot)).length;
-    return `Set up ${org.name} as “${x.name}” for ${industry.name.toLowerCase()}?\n\nThe chart is redrawn as ${layers}. It will have exactly ${size?.agents ?? 0} agents in ${size?.departments ?? 0} ${x.id === "team" ? "teams" : "departments"}.${missing ? ` ${missing} ${missing === 1 ? "is" : "are"} added from the marketplace.` : ""}${leaving ? ` ${leaving} agent${leaving === 1 ? "" : "s"} now on the chart ${leaving === 1 ? "is" : "are"} not part of this set-up and leave${leaving === 1 ? "s" : ""} it; ${leaving === 1 ? "it stays" : "they stay"} on your team and can be added back.` : ""}`;
+    const adding = (industry.seats?.[x.id] ?? []).filter((id) => !members.some((m) => m.bot === id)).length;
+    return `Copy the “${x.name}” example onto ${org.name}?\n\nThe example is ${layers}. ${adding ? `${adding} position${adding === 1 ? "" : "s"} from it that you don't have yet ${adding === 1 ? "is" : "are"} added, with the example's reporting lines.` : "You already have every position in it."}${missing ? ` ${missing} of them come${missing === 1 ? "s" : ""} from the marketplace.` : ""} Nothing on your chart is removed, moved or redrawn. To begin from a clean chart, use Start over first.`;
   };
   const structureCard = (x) => {
     const current = x.id === org.structure;
@@ -2578,7 +2578,7 @@ async function teamView() {
     const go = h("button", { class: "primary big" }, picked === "custom" ? "Start with an empty board" : size?.agents ? `Set up my team · ${size.agents} agents` : "Set up my team");
     go.addEventListener("click", () => {
       const replacing = members.length && !fresh;
-      if (replacing && !confirm(`Set ${org.name} up again as “${PLAIN[picked][0]}”?\n\n${picked === "custom" ? "Your board stays as it is; only the rules change." : `The board is redrawn with exactly ${size?.agents ?? "the"} agents for this choice. Agents that are not part of it leave the board; they stay available under “Add agents or a team”.`}`)) return;
+      if (replacing && !confirm(`Copy “${PLAIN[picked][0]}” onto ${org.name}?\n\n${picked === "custom" ? "Your board stays as it is." : "Positions from this example that you don't have yet are added, with its reporting lines. Nothing on your board is removed, moved or redrawn. To begin from a clean board, use Start over first."}`)) return;
       go.disabled = true;
       go.textContent = "Setting up…";
       ui.orgOpen = "";
@@ -2586,7 +2586,7 @@ async function teamView() {
       ui.orgSel = null;
       save(async () => {
         if (picked === "custom") await api("PATCH", `orgs/${org.id}`, { structure: "custom" });
-        else await api("POST", `orgs/${org.id}/build`, { structure: picked, industry: industry.id, exact: true });
+        else await api("POST", `orgs/${org.id}/build`, { structure: picked, industry: industry.id });
         await loadCrew();
       });
     });
@@ -2601,7 +2601,7 @@ async function teamView() {
         h("div", { class: "wiznum" }, "2"),
         h("div", { class: "grow" }, h("b", {}, "How do you want to run it?"), h("div", { class: "waychoices" }, basic.map(choice), showMore ? more.map(choice) : null), h("div", { class: "row" }, showMore ? h("button", { class: "plain link", onclick: () => ((ui.orgCompare = !ui.orgCompare), again()) }, ui.orgCompare ? "Hide the full comparison" : "Compare all of them in detail") : h("button", { class: "plain link", onclick: () => ((ui.wizMore = true), again()) }, "Not sure, or want something else? Show more ways"))),
       ),
-      h("div", { class: "wizgo" }, go, h("span", { class: "note" }, picked === "custom" ? "Nobody is added. Drag agents and teams onto the board yourself." : size?.agents ? `Your board will have exactly ${size.agents} agents in ${size.departments} ${picked === "team" ? "teams" : "departments"} for ${industry.name.toLowerCase()}, each already reporting to the right lead.` : "")),
+      h("div", { class: "wizgo" }, go, h("span", { class: "note" }, picked === "custom" ? "Nobody is added. Drag agents and teams onto the board yourself." : size?.agents ? `This example has ${size.agents} agents in ${size.departments} ${picked === "team" ? "teams" : "departments"} for ${industry.name.toLowerCase()}. It is copied onto your board once; after that the board is yours to change.` : "")),
       ui.orgCompare ? h("div", { class: "sgrid" }, [...structures].map(structureCard)) : null,
     );
   };

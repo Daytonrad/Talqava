@@ -519,7 +519,7 @@ function orgOverview(): string[] {
     return `  - ${crew.get(m.bot)!.name} (${m.title}, ${m.department}${leads ? `, leads ${leads}` : ""}): ${oneLine(crew.get(m.bot)!)}`;
   });
   return [
-    `The user runs an organization of agents called ${org.name}${org.mission ? ` (mission: ${org.mission})` : ""}, structured as ${structureOf(org.structure).name.toLowerCase()}. When a job fits one of them better than doing it yourself, or the user asks for an agent, hand it over with assign_task; a job for a whole department or team goes to the agent that leads it, which hands the parts to its own reports. Use ask_colleague for a quick question. Their reports and answers come back here as messages. The agents:\n${lines.join("\n")}`,
+    `The user runs an organization of agents called ${org.name}${org.mission ? ` (mission: ${org.mission})` : ""}, with a chart its owner drew. When a job fits one of them better than doing it yourself, or the user asks for an agent, hand it over with assign_task; a job for a whole department or team goes to the agent that leads it, which hands the parts to its own reports. Use ask_colleague for a quick question. Their reports and answers come back here as messages. The agents:\n${lines.join("\n")}`,
   ];
 }
 

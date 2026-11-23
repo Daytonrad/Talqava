@@ -249,7 +249,8 @@ test("an organization puts bots in roles on a chart, and a team joins with its r
 
   // Each bot is told its place: who it answers to, and who it may hand work to.
   const head = rolePrompt(crew.findBot("head-of-marketing"));
-  assert.match(head, /Head of Marketing in the Marketing department of Acme/);
+  assert.match(head, /Head of Marketing in the Marketing group of Acme/);
+  assert.match(head, /You lead the Marketing group/);
   assert.match(head, /Sell more umbrellas/);
   assert.match(head, /- Content Writer: /);
   assert.match(head, /assign_task/);
@@ -355,40 +356,68 @@ test("a structure sets who may hand work to whom; anyone may ask anyone; the org
   assert.equal(of("lead-developer").manager, null);
   for (const id of ["frontend-developer", "backend-developer", "mobile-developer", "functional-analyst", "qa-tester"]) assert.equal(of(id).manager, "lead-developer", id);
 
-  // Cross-functional teams: the lead hands work down, and teammates hand work to each other.
-  assert.equal(assignRule(org), "team");
+  // Work follows the lines: a lead hands work to everyone below it; a specialist with nobody below hands nothing out.
+  const { requestableBy, groupOf } = await import("../../src/local/orgs.ts");
+  assert.equal(assignRule(org), "reports");
   const names = (id: string) => assignableBy(orgs.active(), id).map((m) => m.bot).sort();
   assert.deepEqual(names("lead-developer"), ["backend-developer", "frontend-developer", "functional-analyst", "mobile-developer", "qa-tester"]);
-  assert.ok(names("frontend-developer").includes("backend-developer"));
-  assert.match(rolePrompt(crew.findBot("frontend-developer")), /outcome teams/);
-  assert.match(rolePrompt(crew.findBot("frontend-developer")), /ask_colleague/);
-
-  // A traditional hierarchy: only a lead hands out work.
-  orgs.update(org.id, { structure: "hierarchical" });
   assert.deepEqual(names("frontend-developer"), []);
-  assert.equal(names("lead-developer").length, 5);
-  assert.match(rolePrompt(crew.findBot("frontend-developer")), /chain of command/);
-
-  // A matrix adds a second, dotted line: a project lead may hand tasks too.
-  orgs.update(org.id, { structure: "matrix" });
-  orgs.setMember(org.id, { bot: "backend-developer", also: "functional-analyst" });
-  assert.deepEqual(names("functional-analyst"), ["backend-developer"]);
-  assert.match(rolePrompt(crew.findBot("backend-developer")), /Your project lead is the Requirements Analyst/);
-
-  // Flat: redrawn so everyone reports to the person, and anyone may hand work to anyone.
-  org = orgs.arrange(org.id, "flat");
-  assert.ok(org.members.every((m) => m.manager === null && !m.also));
-  assert.equal(names("qa-tester").length, org.members.length - 1);
-  // Functional departments: redrawn with the department's lead on top.
-  org = orgs.arrange(org.id, "functional");
-  assert.equal(org.members.find((m) => m.bot === "frontend-developer")!.manager, "lead-developer");
-  // Dragging is setMember with a new manager; the chart must stay a tree.
+  assert.match(rolePrompt(crew.findBot("frontend-developer")), /work follows its lines/);
+  assert.match(rolePrompt(crew.findBot("frontend-developer")), /ask_colleague/);
+  // Everyone below, not only direct reports: put the tester under the back-end developer.
+  orgs.setMember(org.id, { bot: "qa-tester", manager: "backend-developer" });
+  assert.ok(names("lead-developer").includes("qa-tester"));
+  assert.deepEqual(names("backend-developer"), ["qa-tester"]);
+  // The structure's name changes no rule and moves no line.
+  for (const structure of ["hierarchical", "flat", "matrix", "functional"]) {
+    orgs.update(org.id, { structure });
+    assert.deepEqual(names("backend-developer"), ["qa-tester"], structure);
+    assert.equal(orgs.active().members.find((m) => m.bot === "frontend-developer")!.manager, "lead-developer", structure);
+  }
+  // A dotted line: someone on it may hand work too.
+  orgs.setMember(org.id, { bot: "frontend-developer", also: "functional-analyst" });
+  assert.deepEqual(names("functional-analyst"), ["frontend-developer"]);
+  assert.match(rolePrompt(crew.findBot("frontend-developer")), /Your project lead is the Requirements Analyst/);
+  // The chart must stay a tree.
   assert.throws(() => orgs.setMember(org.id, { bot: "lead-developer", manager: "frontend-developer" }), /above that bot/);
 
-  // Your own structure: the person's philosophy is told to every agent.
-  orgs.update(org.id, { structure: "custom", philosophy: "Whoever is closest to the customer decides.", assign: "anyone" });
+  // Groups: the team's department is a group led by its lead; a new group, its lead, renaming and removing it.
+  org = orgs.active();
+  const engineering = groupOf(org, "frontend-developer")!;
+  assert.equal(engineering.lead, "lead-developer");
+  org = orgs.addGroup(org.id, { name: "Mobile", lead: "mobile-developer", goal: "Ship the app", budget: 40 });
+  const mobile = org.groups.find((g) => g.name === "Mobile")!;
+  assert.equal(org.members.find((m) => m.bot === "mobile-developer")!.department, "Mobile");
+  assert.equal(mobile.budget, 40);
+  assert.match(rolePrompt(crew.findBot("mobile-developer")), /You lead the Mobile group/);
+  assert.match(rolePrompt(crew.findBot("mobile-developer")), /Ship the app/);
+  // Another group's lead takes requests; the lead's own reports are handed work instead.
+  assert.ok(requestableBy(org, "frontend-developer").some((m) => m.bot === "mobile-developer"));
+  assert.ok(!requestableBy(org, "lead-developer").some((m) => m.bot === "mobile-developer"));
+  org = orgs.updateGroup(org.id, mobile.id, { name: "Apps" });
+  assert.equal(org.members.find((m) => m.bot === "mobile-developer")!.department, "Apps");
+  assert.throws(() => orgs.removeGroup(org.id, mobile.id), /Choose the group to move it to/);
+  org = orgs.removeGroup(org.id, mobile.id, engineering.id);
+  assert.equal(org.members.find((m) => m.bot === "mobile-developer")!.department, engineering.name);
+  assert.ok(!org.groups.some((g) => g.id === mobile.id));
+  assert.throws(() => orgs.addGroup(org.id, { name: engineering.name }), /already a group/);
+
+  // A position is separate from its agent: another agent takes the job, and every line and the group stay.
+  orgs.setMember(org.id, { bot: "backend-developer", responsibilities: "The orders API and its database." });
+  if (!market.onTeam("technical-writer")) market.addMarketBot("technical-writer");
+  if (orgs.active().members.some((m) => m.bot === "technical-writer")) orgs.removeMember(org.id, "technical-writer");
+  org = orgs.swapAgent(org.id, "backend-developer", "technical-writer");
+  const swapped = org.members.find((m) => m.bot === "technical-writer")!;
+  assert.equal(swapped.manager, "lead-developer");
+  assert.equal(swapped.responsibilities, "The orders API and its database.");
+  assert.equal(org.members.find((m) => m.bot === "qa-tester")!.manager, "technical-writer");
+  assert.ok(!org.members.some((m) => m.bot === "backend-developer"));
+  assert.match(rolePrompt(crew.findBot("technical-writer")), /responsible for, in the owner's words: The orders API/);
+  org = orgs.swapAgent(org.id, "technical-writer", "backend-developer");
+
+  // The owner's philosophy is told to every agent.
+  orgs.update(org.id, { philosophy: "Whoever is closest to the customer decides." });
   assert.match(rolePrompt(crew.findBot("qa-tester")), /Whoever is closest to the customer decides/);
-  assert.equal(names("qa-tester").length, org.members.length - 1);
 
   // Memory: the organization's shelf is seen by all, a department's by its members, an agent's by itself.
   orgMemory.add({ org: org.id, shelf: "org", text: "The fiscal year starts in April.", by: "You" });
@@ -412,7 +441,6 @@ test("a structure sets who may hand work to whom; anyone may ask anyone; the org
 test("an agent's question to a colleague is answered on a small budget, and the answer comes back", { timeout: 20_000 }, async () => {
   const { orgs } = await import("../../src/local/orgs.ts");
   const quests = await import("../../src/local/quests.ts");
-  orgs.arrange(orgs.active().id, "hierarchical");
   const chat = store.conversations.create();
   script.push(call("ask_colleague", { to: "QA Engineer", question: "Which test command does the team use for the orders service?" }), say("Asked."), say("We use npm test."), say("The team uses npm test."));
   await (await app.engine.startRun(chat.id, "find out which test command the team uses")).done;
@@ -440,8 +468,8 @@ test("an agent's question to a colleague is answered on a small budget, and the 
   assert.match(String(listed), /Lead Developer/);
 });
 
-test("setting a structure up staffs the chart for the kind of business, layers deep", async () => {
-  const { orgs, requestableBy, rolePrompt } = await import("../../src/local/orgs.ts");
+test("an example is copied onto the chart for the kind of business, layers deep, and never redraws it", async () => {
+  const { orgs, requestableBy, rolePrompt, groupOf } = await import("../../src/local/orgs.ts");
   const market = await import("../../src/local/marketplace.ts");
   const crew = await import("../../src/local/crew.ts");
   const { INDUSTRIES, STRUCTURES, seatsFor } = await import("../../src/local/structures.ts");
@@ -483,64 +511,52 @@ test("setting a structure up staffs the chart for the kind of business, layers d
   };
   const of = (bot: string) => orgs.active().members.find((m) => m.bot === bot)!;
 
-  // A hierarchy: a general manager holds the line; the chief of staff is staff to the owner, with no reports.
+  // Copying the hierarchy example: a general manager holds the line, the chief of staff is staff to the owner, and the agent the person had stays.
   market.buildStructure(org.id, "hierarchical", "general");
   assert.equal(of("general-manager").manager, null);
   assert.equal(of("chief-of-staff").manager, null);
   assert.ok(!orgs.active().members.some((m) => m.manager === "chief-of-staff"));
   assert.equal(of("head-of-finance").manager, "general-manager");
   assert.equal(depthOf(orgs.active(), "bookkeeper"), 3);
-  // The set-up is exact: the chart holds what the structure calls for and nothing else, so its numbers match.
-  assert.equal(orgs.active().members.length, seatsFor("hierarchical", general).length);
-  assert.ok(!orgs.active().members.some((m) => m.bot === "margo")); // the agent that was there before is not part of it, and stays on the team
-  assert.ok(crew.loadCrew().bots.some((b) => b.id === "margo"));
-  // With exact off, an agent the person put on the chart is kept and joins its department's head.
-  orgs.setMember(org.id, { bot: "margo" });
-  market.buildStructure(org.id, "hierarchical", "general", false);
-  assert.equal(of("margo").manager, "head-of-marketing");
-  market.buildStructure(org.id, "hierarchical", "general");
-  // In a hierarchy only heads who share a boss request work from each other; a specialist goes through its lead.
-  assert.ok(requestableBy(orgs.active(), "head-of-sales").some((m) => m.bot === "head-of-finance"));
-  assert.deepEqual(requestableBy(orgs.active(), "bookkeeper"), []);
-  const asBookkeeper = (await tools.localRunSpec(app.jobs)({ id: "2".repeat(16), bot: "bookkeeper", messages: [] } as unknown as Conversation)).tools.map((t) => t.name);
-  assert.ok(asBookkeeper.includes("escalate") && !asBookkeeper.includes("request_work") && !asBookkeeper.includes("assign_task"));
-  assert.match(rolePrompt(crew.findBot("bookkeeper")), /general manager settles disagreements/i);
-
-  // Functional departments: heads report to the owner, and anyone may request work from another department's head.
+  assert.equal(orgs.active().members.length, seatsFor("hierarchical", general).length + 1);
+  assert.ok(of("margo"));
+  // Copying another example adds what is missing and redraws nothing: the heads keep their general manager.
+  const before = orgs.active().members.length;
   market.buildStructure(org.id, "functional");
-  assert.equal(of("head-of-finance").manager, null);
-  // The general manager and chief of staff the hierarchy brought in have no seat here, so they leave the chart; the agent the person added stays.
-  assert.ok(!orgs.active().members.some((m) => m.bot === "general-manager" || m.bot === "chief-of-staff"));
-  assert.ok(crew.loadCrew().bots.some((b) => b.id === "general-manager"));
-  assert.equal(orgs.active().members.length, seatsFor("functional", general).length);
-  assert.deepEqual(requestableBy(orgs.active(), "bookkeeper").map((m) => m.bot).includes("head-of-sales"), true);
+  assert.equal(of("head-of-finance").manager, "general-manager");
+  assert.equal(orgs.active().members.length, before);
+  // Requests go to the leads of other groups; a specialist may request too, but hands nothing out.
+  assert.ok(requestableBy(orgs.active(), "head-of-sales").some((m) => m.bot === "head-of-finance"));
+  assert.ok(requestableBy(orgs.active(), "bookkeeper").some((m) => m.bot === "head-of-sales"));
   assert.ok(!requestableBy(orgs.active(), "bookkeeper").some((m) => m.bot === "account-executive" || m.bot === "head-of-finance"));
+  const asBookkeeper = (await tools.localRunSpec(app.jobs)({ id: "2".repeat(16), bot: "bookkeeper", messages: [] } as unknown as Conversation)).tools.map((t) => t.name);
+  assert.ok(asBookkeeper.includes("escalate") && asBookkeeper.includes("request_work") && !asBookkeeper.includes("assign_task"));
+  assert.match(rolePrompt(crew.findBot("bookkeeper")), /your manager decides/i);
 
-  // A matrix: a project manager leads specialists in other departments on a dotted line, under a general manager who breaks ties.
-  market.buildStructure(org.id, "matrix");
+  // On an empty chart, an example is copied exactly: a matrix's project lead on dotted lines.
+  const matrix = orgs.create("Matrix Inc", "", "flat");
+  market.buildStructure(matrix.id, "matrix", "general");
+  assert.equal(orgs.active().members.length, seatsFor("matrix", general).length);
   assert.equal(of("content-writer").manager, "head-of-marketing");
   assert.equal(of("content-writer").also, "project-manager");
-  assert.match(rolePrompt(crew.findBot("content-writer")), /the general manager decides/);
-
   // Outcome teams mix specialties: winning customers takes a writer, a researcher and an account executive.
-  market.buildStructure(org.id, "team");
+  const teams = orgs.create("Teams Inc", "", "flat");
+  market.buildStructure(teams.id, "team", "general");
   assert.equal(of("account-executive").manager, "head-of-marketing");
   assert.equal(of("account-executive").department, "Win customers");
   assert.equal(of("invoice-chaser").department, "Keep customers");
-
+  assert.equal(groupOf(orgs.active(), "account-executive")!.lead, "head-of-marketing");
   // Another kind of business is staffed differently: a restaurant group gets scheduling and purchasing.
-  market.buildStructure(org.id, "hierarchical", "hospitality");
+  const food = orgs.create("Food Inc", "", "flat");
+  market.buildStructure(food.id, "hierarchical", "hospitality");
   assert.equal(orgs.active().industry, "hospitality");
   assert.equal(of("scheduling-coordinator").manager, "head-of-operations");
   assert.equal(of("food-safety-coordinator").manager, "head-of-operations");
-  assert.equal(of("menu-analyst").department, "Finance"); // back in its own department, not a team's
-  assert.ok(!orgs.active().members.some((m) => m.bot === "account-executive")); // a restaurant chart has no seat for it
-
-  market.buildStructure(org.id, "flat");
-  assert.ok(orgs.active().members.every((m) => !m.manager && !m.also));
+  assert.equal(of("menu-analyst").department, "Finance");
+  assert.ok(!orgs.active().members.some((m) => m.bot === "account-executive"));
 
   // The approval limit is told to every agent.
-  orgs.update(org.id, { approvalLimit: 500 });
+  orgs.update(food.id, { approvalLimit: 500 });
   assert.match(rolePrompt(crew.findBot("menu-analyst")), /above \$500 needs the owner's approval/);
   // A role is told what it is measured on and what it must escalate.
   const { botPrompt } = await import("../../src/core/index.ts");
@@ -572,7 +588,7 @@ test("work is requested across departments and a decision is escalated to a lead
   for (let i = 0; i < 100 && quests.questStore.list().some((q) => q.parent?.id === chat.id && (q.status === "running" || !q.parent.delivered)); i++) await new Promise((r) => setTimeout(r, 50));
 });
 
-test("each structure is a different size, and Git reports its repositories", async () => {
+test("examples differ in size, copying never shrinks a chart, and Git reports its repositories", async () => {
   const { orgs } = await import("../../src/local/orgs.ts");
   const market = await import("../../src/local/marketplace.ts");
   const { INDUSTRIES, seatsFor } = await import("../../src/local/structures.ts");
@@ -586,18 +602,17 @@ test("each structure is a different size, and Git reports its repositories", asy
   const count = () => orgs.active().members.length;
   market.buildStructure(org.id, "hierarchical", "general");
   const big = count();
+  // Copying a smaller example removes nothing.
   market.buildStructure(org.id, "flat");
-  assert.ok(count() < big / 2); // the managers the hierarchy brought in have left the chart
-  assert.ok(!orgs.active().members.some((m) => m.bot === "general-manager" || m.bot === "head-of-finance"));
-  market.buildStructure(org.id, "functional");
-  assert.ok(count() > 15);
-
-  // Starting over makes the chart exactly the recipe: an agent the person added leaves it, and the count matches.
+  assert.equal(count(), big);
+  assert.ok(orgs.active().members.some((m) => m.bot === "general-manager"));
+  // Starting over is the owner's choice: clear the chart, then copy an example, and the count is exactly the example's.
   orgs.setMember(org.id, { bot: "pip" });
-  market.buildStructure(org.id, "functional", undefined, true);
+  orgs.clear(org.id);
+  market.buildStructure(org.id, "functional");
   assert.equal(count(), seatsFor("functional", INDUSTRIES[0]).length);
   assert.ok(!orgs.active().members.some((m) => m.bot === "pip"));
-  // Or it clears the chart; the agents stay on the team.
+  // Clearing keeps the agents on the team.
   assert.equal(orgs.clear(org.id).members.length, 0);
   assert.ok((await import("../../src/local/crew.ts")).loadCrew().bots.some((b) => b.id === "head-of-finance"));
   market.buildStructure(org.id, "functional");
@@ -743,35 +758,42 @@ test("GitHub is connected through the web with a code; a connected repository ca
   assert.throws(() => disconnectRepository("/somewhere/else"), /not connected/);
 });
 
-test("whatever was on the chart before, setting a structure up or starting over leaves exactly its recipe", async () => {
-  const { orgs } = await import("../../src/local/orgs.ts");
+test("whatever the owner built, copying examples never removes or redraws it, and an old organization converts with groups", async () => {
+  const { orgs, groupOf } = await import("../../src/local/orgs.ts");
   const market = await import("../../src/local/marketplace.ts");
-  const { INDUSTRIES, STRUCTURES, seatsFor, industryOf } = await import("../../src/local/structures.ts");
-  // A chart as an earlier version left it: the standard six, a team dragged in, and nothing marked as placed.
-  const org = orgs.create("Legacy Co", "", "functional");
+  const { INDUSTRIES, STRUCTURES } = await import("../../src/local/structures.ts");
+  const org = orgs.create("Owner Co", "", "functional");
   for (const bot of ["dusk", "ember", "margo", "pip", "rivet", "tally"]) orgs.setMember(org.id, { bot });
   for (const bot of ["lead-developer", "frontend-developer", "backend-developer", "qa-tester", "head-of-finance", "bookkeeper", "competitor-watch"]) {
     if (!market.onTeam(bot)) market.addMarketBot(bot);
     orgs.setMember(org.id, { bot, manager: bot === "frontend-developer" || bot === "backend-developer" || bot === "qa-tester" ? "lead-developer" : bot === "bookkeeper" ? "head-of-finance" : null });
   }
-  assert.equal(orgs.active().members.length, 13);
-  assert.ok(orgs.active().members.every((m) => !m.placed));
-  const check = (label: string) => {
-    const now = orgs.active();
-    const want = seatsFor(now.structure, industryOf(now.industry)).map((seat) => seat.bot).sort();
-    assert.deepEqual(now.members.map((m) => m.bot).sort(), want, label);
-  };
-  // Every structure, one after another, for every kind of business: the counts always match.
+  // The owner's own lines, including one no example would draw.
+  orgs.setMember(org.id, { bot: "pip", manager: "qa-tester" });
+  const lines = () => new Map(orgs.active().members.map((m) => [m.bot, m.manager]));
+  const mine = lines();
   for (const industry of INDUSTRIES) {
-    for (const s of STRUCTURES.filter((x) => x.id !== "custom")) {
-      market.buildStructure(org.id, s.id, industry.id);
-      check(`${industry.id}/${s.id}`);
+    for (const st of STRUCTURES.filter((x) => x.id !== "custom")) {
+      market.buildStructure(org.id, st.id, industry.id);
+      const now = lines();
+      for (const [bot, manager] of mine) assert.equal(now.get(bot), manager, `${industry.id}/${st.id}: ${bot} kept its line`);
     }
   }
-  // Adding one by hand and starting over brings it back to the recipe.
-  orgs.setMember(org.id, { bot: "pip" });
-  market.buildStructure(org.id, orgs.active().structure, undefined, true);
-  check("after starting over");
+  // An organization stored the old way (no groups) is converted once: departments become groups, led by their heads.
+  const fs2 = await import("node:fs");
+  const path2 = await import("node:path");
+  const file = path2.join(store.DATA, "orgs.json");
+  const stored = JSON.parse(fs2.readFileSync(file, "utf8"));
+  const old = stored.orgs.find((o: { id: string }) => o.id === org.id);
+  delete old.groups;
+  delete old.model;
+  fs2.writeFileSync(file, JSON.stringify(stored));
+  const converted = orgs.list().orgs.find((o) => o.id === org.id)!;
+  assert.equal(converted.model, 2);
+  assert.ok(converted.groups.length > 0);
+  for (const m of converted.members) assert.ok(converted.groups.some((g) => g.name === m.department), m.bot);
+  assert.equal(groupOf(converted, "bookkeeper")!.lead, "head-of-finance");
+  for (const [bot, manager] of mine) assert.equal(converted.members.find((m) => m.bot === bot)!.manager, manager, bot);
 });
 
 test("Talqava is an MCP server: another AI app can see the team, assign a task and read memory", { timeout: 30_000 }, async () => {

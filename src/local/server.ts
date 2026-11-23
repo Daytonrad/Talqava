@@ -1035,15 +1035,21 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (route === "POST orgs" && !orgId) return send(res, 200, await attempt(() => orgs.create(body.name, body.mission, body.structure)));
     if (route === "POST orgs" && sub === "build") return send(res, 200, await attempt(() => buildStructure(orgId, String(body.structure ?? ""), body.industry === undefined ? undefined : String(body.industry), body.exact !== false)));
     if (route === "POST orgs" && sub === "reset") {
-      // Start over: an empty chart, or exactly the chart the organization's structure and kind of business call for.
+      // Start over, at the owner's request: an empty chart, or an empty chart with the organization's example copied onto it.
       return send(res, 200, await attempt(() => {
-        if (body.mode === "empty") return orgs.clear(orgId);
         const org = orgs.list().orgs.find((o) => o.id === orgId);
         if (!org) throw new Error("No such organization.");
-        return buildStructure(orgId, org.structure, undefined, true);
+        orgs.clear(orgId);
+        if (body.mode === "empty") return orgs.active();
+        return buildStructure(orgId, org.structure);
       }));
     }
-    if (route === "POST orgs" && sub === "arrange") return send(res, 200, await attempt(() => orgs.arrange(orgId, String(body.structure ?? ""))));
+    // The app no longer redraws an owner's chart from a structure: lines are only ever drawn by the owner.
+    if (route === "POST orgs" && sub === "arrange") throw new HttpError(410, "The chart is no longer redrawn from a structure. Drag positions to set who reports to whom.");
+    if (route === "POST orgs" && sub === "groups") return send(res, 200, await attempt(() => orgs.addGroup(orgId, body)));
+    if (route === "PATCH orgs" && sub === "groups" && memberId) return send(res, 200, await attempt(() => orgs.updateGroup(orgId, memberId, body)));
+    if (route === "DELETE orgs" && sub === "groups" && memberId) return send(res, 200, await attempt(() => orgs.removeGroup(orgId, memberId, url.searchParams.get("moveTo") ?? body.moveTo)));
+    if (route === "POST orgs" && sub === "members" && memberId && parts[4] === "agent") return send(res, 200, await attempt(() => orgs.swapAgent(orgId, memberId, body.to)));
     if (route === "GET orgs" && sub === "memory") return send(res, 200, orgMemory.list(orgId));
     if (route === "POST orgs" && sub === "memory") {
       return send(res, 200, await attempt(() => {

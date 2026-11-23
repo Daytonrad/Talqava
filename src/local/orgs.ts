@@ -20,9 +20,30 @@ export interface Member {
   manager: string | null;
   /** A second lead (a project lead, the dotted line of a matrix) who may also hand it tasks. */
   also?: string | null;
-  /** Seated by setting a structure up, rather than added by the person. Such a member leaves the chart when a later structure has no seat for it. */
+  /** Seated by copying an example, rather than added by the person one at a time. Kept for history; nothing removes it for that. */
   placed?: boolean;
+  /** What this position is responsible for, in the owner's words. Every agent in it is told. */
+  responsibilities?: string;
 }
+
+/**
+ * A group: a team or department. Positions belong to one group (by its name, in `department`); the group has a
+ * lead, who receives the group's work and the requests other groups send it, and may have a goal and a budget.
+ */
+export interface Group {
+  id: string;
+  name: string;
+  /** The position (an agent's id) that leads the group, or null when nobody does yet. */
+  lead: string | null;
+  /** True when the owner chose the lead. A lead the app picked is picked again as the group changes. */
+  leadChosen?: boolean;
+  goal?: string;
+  /** Dollars a month the group's positions may spend together. None means no limit of its own. */
+  budget?: number | null;
+}
+
+/** The version of the organization model: 2 is positions, groups and the lines the owner draws. */
+export const ORG_MODEL = 2;
 
 export interface Org {
   id: string;
@@ -39,6 +60,10 @@ export interface Org {
   /** Spending or commitments above this many dollars need the person's approval. None means every one does. */
   approvalLimit?: number | null;
   members: Member[];
+  /** Teams and departments, each with a lead. Every department a member names has one. */
+  groups: Group[];
+  /** Which version of the model this organization is stored in (see ORG_MODEL). */
+  model?: number;
   createdAt: string;
 }
 
@@ -51,9 +76,43 @@ const file = () => path.join(DATA, "orgs.json");
 const clean = (text: unknown, max: number) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 const titleFor = (bot: Bot) => bot.title;
 
+/** Whether a member heads its group: nobody in the same group is above it. */
+const headsWithin = (members: Member[], m: Member) => !m.manager || members.find((x) => x.bot === m.manager)?.department !== m.department;
+
+/**
+ * Makes sure every department a member names is a group, with a lead: the member who heads it (the one with most
+ * reports when several do). Existing groups keep their lead while it is still in the group.
+ */
+function withGroups(org: Org): Org {
+  const groups = [...(org.groups ?? [])];
+  // The head with most reports leads; among heads with none, a role marked as a lead in its file.
+  const marked = new Set(loadCrew().bots.filter((b) => b.lead).map((b) => b.id));
+  const pick = (name: string): string | null => {
+    const inIt = org.members.filter((m) => m.department === name);
+    const reports = (bot: string) => org.members.filter((x) => x.manager === bot).length;
+    const heads = inIt.filter((m) => headsWithin(org.members, m)).sort((a, b) => reports(b.bot) - reports(a.bot) || Number(marked.has(b.bot)) - Number(marked.has(a.bot)));
+    const sure = heads.length === 1 || inIt.length === 1 || reports(heads[0]?.bot ?? "") > 0 || (marked.has(heads[0]?.bot ?? "") && !marked.has(heads[1]?.bot ?? ""));
+    return sure ? (heads[0]?.bot ?? null) : null;
+  };
+  for (const name of new Set(org.members.map((m) => m.department).filter(Boolean))) {
+    if (groups.some((g) => g.name.toLowerCase() === name.toLowerCase())) continue;
+    groups.push({ id: newId(), name, lead: pick(name) });
+  }
+  for (const g of groups) if (!g.leadChosen) g.lead = pick(g.name);
+  const here = new Set(org.members.map((m) => m.bot));
+  return { ...org, groups: groups.map((g) => ({ ...g, lead: g.lead && here.has(g.lead) && org.members.find((m) => m.bot === g.lead)?.department === g.name ? g.lead : null })) };
+}
+
 function read(): OrgFile {
   const data = readJson<OrgFile | null>(file(), null);
-  if (data?.orgs?.length) return data;
+  if (data?.orgs?.length) {
+    // An organization stored before groups existed is converted once: its departments become groups, led by their heads.
+    if (data.orgs.some((o) => o.model !== ORG_MODEL)) {
+      data.orgs = data.orgs.map((o) => (o.model === ORG_MODEL ? o : { ...withGroups(o), model: ORG_MODEL }));
+      writeJson(file(), data);
+    }
+    return data;
+  }
   // The first organization holds every bot there is, each reporting to the person.
   const first: Org = {
     id: newId(),
@@ -62,14 +121,24 @@ function read(): OrgFile {
     structure: "flat",
     industry: DEFAULT_INDUSTRY,
     members: loadCrew().bots.map((bot) => ({ bot: bot.id, title: titleFor(bot), department: bot.group, manager: null })),
+    groups: [],
+    model: ORG_MODEL,
     createdAt: new Date().toISOString(),
   };
-  const made = { active: first.id, orgs: [first] };
+  const made = { active: first.id, orgs: [withGroups(first)] };
   writeJson(file(), made);
   return made;
 }
 
 const save = (data: OrgFile) => writeJson(file(), data);
+/** A monthly budget in dollars from what the person typed; empty means none. */
+function budgetOf(value: unknown): { budget?: number | null } {
+  if (value === undefined) return {};
+  if (value === null || value === "") return { budget: null };
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0 || amount > 100_000) throw new Error("A budget is dollars a month, from 0 to 100000.");
+  return { budget: amount };
+}
 
 function find(data: OrgFile, id: string): Org {
   const org = data.orgs.find((o) => o.id === id);
@@ -94,12 +163,12 @@ function tidy(org: Org): Org {
       return { ...m, title: bot.title, department: RETIRED_DEPARTMENTS.has(m.department.toLowerCase()) ? bot.group : m.department };
     });
   const here = new Set(members.map((m) => m.bot));
-  return {
+  return withGroups({
     ...org,
     structure: structureOf(org.structure ?? "flat").id,
     industry: industryOf(org.industry).id,
     members: members.map((m) => ({ ...m, manager: m.manager && here.has(m.manager) ? m.manager : null, also: m.also && here.has(m.also) && m.also !== m.manager ? m.also : null })),
-  };
+  });
 }
 
 export const orgs = {
@@ -125,7 +194,7 @@ export const orgs = {
     const named = clean(name, 50);
     if (!named) throw new Error("An organization needs a name.");
     if (data.orgs.some((o) => o.name.toLowerCase() === named.toLowerCase())) throw new Error(`There is already an organization called "${named}".`);
-    const org: Org = { id: newId(), name: named, mission: clean(mission, 300), structure: structureOf(String(structure ?? "")).id, industry: DEFAULT_INDUSTRY, members: [], createdAt: new Date().toISOString() };
+    const org: Org = { id: newId(), name: named, mission: clean(mission, 300), structure: structureOf(String(structure ?? "")).id, industry: DEFAULT_INDUSTRY, members: [], groups: [], model: ORG_MODEL, createdAt: new Date().toISOString() };
     data.orgs.push(org);
     data.active = org.id;
     save(data);
@@ -177,7 +246,7 @@ export const orgs = {
    * Puts a bot in a role, or changes its role. The manager must be a member,
    * and the chart must stay a tree: nobody may end up above its own manager.
    */
-  setMember(id: string, input: { bot: unknown; title?: unknown; department?: unknown; manager?: unknown; also?: unknown; placed?: boolean }): Org {
+  setMember(id: string, input: { bot: unknown; title?: unknown; department?: unknown; manager?: unknown; also?: unknown; placed?: boolean; responsibilities?: unknown }): Org {
     const data = read();
     const org = find(data, id);
     const bot = loadCrew().bots.find((b) => b.id === input.bot);
@@ -205,8 +274,88 @@ export const orgs = {
       manager,
       also: also && also !== manager ? also : null,
       ...((input.placed ?? existing?.placed) ? { placed: true } : {}),
+      ...((input.responsibilities ?? existing?.responsibilities) ? { responsibilities: String(input.responsibilities ?? existing?.responsibilities ?? "").replace(/\s+/g, " ").trim().slice(0, 400) } : {}),
     };
+    if (!member.responsibilities) delete member.responsibilities;
     org.members = existing ? org.members.map((m) => (m.bot === bot.id ? member : m)) : [...org.members, member];
+    // Moving out of a group it led leaves that group without a lead; naming a new group makes it.
+    Object.assign(org, withGroups(org));
+    save(data);
+    return tidy(org);
+  },
+
+  /** A new group (team or department), with a lead if one is given. */
+  addGroup(id: string, input: { name: unknown; lead?: unknown; goal?: unknown; budget?: unknown }): Org {
+    const data = read();
+    const org = find(data, id);
+    const name = clean(input.name, 30);
+    if (!name) throw new Error("A group needs a name.");
+    if (org.groups.some((g) => g.name.toLowerCase() === name.toLowerCase())) throw new Error(`There is already a group called "${name}".`);
+    const group: Group = { id: newId(), name, lead: null, leadChosen: false, ...(input.goal ? { goal: clean(input.goal, 300) } : {}), ...budgetOf(input.budget) };
+    org.groups.push(group);
+    save(data);
+    return input.lead ? this.updateGroup(id, group.id, { lead: input.lead }) : tidy(org);
+  },
+
+  /** Renames a group (its positions follow), or changes its lead, goal or budget. The lead joins the group. */
+  updateGroup(id: string, groupId: string, input: { name?: unknown; lead?: unknown; goal?: unknown; budget?: unknown }): Org {
+    const data = read();
+    const org = find(data, id);
+    const group = org.groups.find((g) => g.id === groupId);
+    if (!group) throw new Error("There is no such group.");
+    if (input.name !== undefined) {
+      const name = clean(input.name, 30);
+      if (!name) throw new Error("A group needs a name.");
+      if (org.groups.some((g) => g !== group && g.name.toLowerCase() === name.toLowerCase())) throw new Error(`There is already a group called "${name}".`);
+      for (const m of org.members) if (m.department === group.name) m.department = name;
+      group.name = name;
+    }
+    if (input.lead !== undefined) {
+      const lead = input.lead ? String(input.lead) : null;
+      const member = lead ? org.members.find((m) => m.bot === lead) : null;
+      if (lead && !member) throw new Error("The lead must be a position in this organization.");
+      if (member) member.department = group.name;
+      group.lead = lead;
+      group.leadChosen = Boolean(lead);
+    }
+    if (input.goal !== undefined) group.goal = clean(input.goal, 300) || undefined;
+    if (input.budget !== undefined) Object.assign(group, { budget: budgetOf(input.budget).budget ?? null });
+    save(data);
+    return tidy(org);
+  },
+
+  /** Removes a group. Its positions move to another group, which must be named if it has any. */
+  removeGroup(id: string, groupId: string, moveTo?: unknown): Org {
+    const data = read();
+    const org = find(data, id);
+    const group = org.groups.find((g) => g.id === groupId);
+    if (!group) throw new Error("There is no such group.");
+    const inIt = org.members.filter((m) => m.department === group.name);
+    const target = moveTo ? org.groups.find((g) => g.id === moveTo && g !== group) : null;
+    if (inIt.length && !target) throw new Error(`${inIt.length} position${inIt.length === 1 ? " is" : "s are"} in ${group.name}. Choose the group to move ${inIt.length === 1 ? "it" : "them"} to.`);
+    for (const m of inIt) m.department = target!.name;
+    org.groups = org.groups.filter((g) => g !== group);
+    save(data);
+    return tidy(org);
+  },
+
+  /**
+   * Puts another agent in a position: the title, responsibilities, group and every line stay where they are;
+   * only who does the job changes. The agent leaving stays on the owner's team.
+   */
+  swapAgent(id: string, fromBot: string, toBot: unknown): Org {
+    const data = read();
+    const org = find(data, id);
+    const to = loadCrew().bots.find((b) => b.id === toBot);
+    if (!to) throw new Error("There is no such agent.");
+    if (!org.members.some((m) => m.bot === fromBot)) throw new Error("That position is not in this organization.");
+    if (org.members.some((m) => m.bot === to.id)) throw new Error(`${to.name} already has a position here.`);
+    for (const m of org.members) {
+      if (m.bot === fromBot) m.bot = to.id;
+      if (m.manager === fromBot) m.manager = to.id;
+      if (m.also === fromBot) m.also = to.id;
+    }
+    for (const g of org.groups) if (g.lead === fromBot) g.lead = to.id;
     save(data);
     return tidy(org);
   },
@@ -218,6 +367,7 @@ export const orgs = {
     const leaving = org.members.find((m) => m.bot === botId);
     if (!leaving) throw new Error("That bot is not a member.");
     org.members = org.members.filter((m) => m.bot !== botId).map((m) => ({ ...m, manager: m.manager === botId ? leaving.manager : m.manager, also: m.also === botId ? null : m.also }));
+    for (const g of org.groups ?? []) if (g.lead === botId) g.lead = null;
     save(data);
     return tidy(org);
   },
@@ -246,45 +396,6 @@ export const orgs = {
     return tidy(org);
   },
 
-  /**
-   * Redraws the chart the way a structure is usually drawn. Flat: everyone
-   * reports to the person. Otherwise each department gets one lead (a member
-   * whose title says so, else the one who already leads the most), the rest of
-   * the department reports to it, and the leads report to the top: a chief of
-   * staff or chief executive if there is one, else the person.
-   */
-  arrange(id: string, structure: string): Org {
-    const data = read();
-    const org = find(data, id);
-    if (!STRUCTURES.some((s) => s.id === structure)) throw new Error("There is no such structure.");
-    org.structure = structure;
-    if (structure === "flat") {
-      org.members = org.members.map((m) => ({ ...m, manager: null, also: null }));
-    } else if (structure !== "custom") {
-      // A role that is marked as a lead in its file leads its department; failing that, whoever already leads the most.
-      const crew = new Map(loadCrew().bots.map((b) => [b.id, b]));
-      const isLead = (m: Member) => crew.get(m.bot)?.lead === true;
-      const leadsNow = (bot: string) => org.members.filter((m) => m.manager === bot).length;
-      const top = org.members.find((m) => /^(general manager|chief executive|ceo|president|chief operating officer)\b/i.test(m.title)) ?? null;
-      const departments = new Map<string, Member[]>();
-      for (const m of org.members) if (m !== top) departments.set(m.department, [...(departments.get(m.department) ?? []), m]);
-      for (const members of departments.values()) {
-        const lead = [...members].sort((a, b) => Number(isLead(b)) - Number(isLead(a)) || leadsNow(b.bot) - leadsNow(a.bot))[0];
-        const hasLead = members.length > 1 && (isLead(lead) || leadsNow(lead.bot) > 0);
-        // A second lead in the same department (a lead developer under a head of engineering) keeps its own reports.
-        const subLeads = new Set(members.filter((m) => m !== lead && isLead(m) && leadsNow(m.bot) > 0).map((m) => m.bot));
-        for (const m of members) {
-          if (m.manager && subLeads.has(m.manager) && m.bot !== lead.bot) continue;
-          m.manager = hasLead && m !== lead ? lead.bot : (top?.bot ?? null);
-        }
-      }
-      if (top) top.manager = null;
-      if (structure !== "matrix") for (const m of org.members) m.also = null;
-    }
-    save(data);
-    return tidy(org);
-  },
-
   /** A new bot joins the active organization, reporting to the person, unless told where it goes. */
   welcome(bot: Bot, role: { title?: string; department?: string; manager?: string | null } = {}) {
     const org = this.active();
@@ -300,43 +411,46 @@ export const reportsOf = (org: Org, botId: string | null) => org.members.filter(
 /** One line on what a bot does, for telling others who can help with what. */
 export const oneLine = (bot: Bot) => (bot.instructions.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 160);
 
-/** Who may hand work to whom in this organization. */
-export const assignRule = (org: Org): AssignRule => (org.structure === "custom" ? (org.assign ?? "reports") : structureOf(org.structure).assign);
+/** Kept for the pages that show it: work now always follows the lines the owner drew. */
+export const assignRule = (_org: Org): AssignRule => "reports";
+export const requestRule = (_org: Org): RequestRule => "heads";
 
-/** The members an agent may hand a task to: its reports (direct and dotted-line), and more where the structure allows. */
-export function assignableBy(org: Org, botId: string): Member[] {
-  const rule = assignRule(org);
-  if (rule === "anyone") return org.members.filter((m) => m.bot !== botId);
-  const me = memberOf(org, botId);
-  const mine = org.members.filter((m) => m.manager === botId || m.also === botId);
-  if (rule !== "team" || !me) return mine;
-  // Teammates: the others under the same lead (not the owner's whole top row, which is not a team).
-  const mates = me.manager ? org.members.filter((m) => m.manager === me.manager && m.bot !== botId) : [];
-  return [...new Set([...mine, ...mates])];
+/** Everyone below a position: its reports, their reports and so on. */
+function below(org: Org, botId: string): Member[] {
+  const out: Member[] = [];
+  const seen = new Set([botId]);
+  for (let wave = org.members.filter((m) => m.manager === botId); wave.length; ) {
+    out.push(...wave);
+    wave.forEach((m) => seen.add(m.bot));
+    wave = org.members.filter((m) => m.manager && wave.some((w) => w.bot === m.manager) && !seen.has(m.bot));
+  }
+  return out;
 }
 
-/** How work is requested across the chart in this organization. */
-export const requestRule = (org: Org): RequestRule => (org.structure === "custom" ? "heads" : structureOf(org.structure).request);
+/** The positions an agent may hand a task to: everyone below it on the chart, and anyone on a dotted line to it. */
+export function assignableBy(org: Org, botId: string): Member[] {
+  const dotted = org.members.filter((m) => m.also === botId);
+  return [...new Set([...below(org, botId), ...dotted])];
+}
 
-/** Whether a member heads its department or team: nobody in the same department is above it. */
-export const headsItsDepartment = (org: Org, m: Member) => !m.manager || memberOf(org, m.manager)?.department !== m.department;
+/** The group a position is in. */
+export const groupOf = (org: Org, botId: string) => ((m) => (m ? (org.groups ?? []).find((g) => g.name === m.department) : undefined))(memberOf(org, botId));
+
+/** Whether a member leads its group (or, in a group without a named lead, heads it). */
+export const headsItsDepartment = (org: Org, m: Member) => {
+  const group = (org.groups ?? []).find((g) => g.name === m.department);
+  return group?.lead ? group.lead === m.bot : !m.manager || memberOf(org, m.manager)?.department !== m.department;
+};
 
 /**
- * The members an agent may request work from, outside its own reports. They
- * accept or decline: a request is not an order. In a hierarchy only leads who
- * share a boss ask each other; elsewhere anyone asks the head of another
- * department or team; in a flat organization anyone asks anyone.
+ * The positions an agent may request work from: the leads of the other groups. They accept or decline; a request
+ * is not an order. Work for a group goes to its lead, never around it.
  */
 export function requestableBy(org: Org, botId: string): Member[] {
   const me = memberOf(org, botId);
   if (!me) return [];
-  const rule = requestRule(org);
-  // Where anyone may hand work to anyone, there is nothing left to request.
-  if (assignRule(org) === "anyone") return [];
-  const others = org.members.filter((m) => m.bot !== botId && m.manager !== botId && m.also !== botId);
-  if (rule === "anyone") return others;
-  if (rule === "chain") return reportsOf(org, botId).length ? others.filter((m) => (m.manager ?? null) === (me.manager ?? null)) : [];
-  return others.filter((m) => m.department !== me.department && headsItsDepartment(org, m));
+  const mine = new Set(assignableBy(org, botId).map((m) => m.bot));
+  return org.members.filter((m) => m.bot !== botId && !mine.has(m.bot) && m.department !== me.department && headsItsDepartment(org, m));
 }
 
 /** What the organization says about spending and commitments. */
@@ -345,11 +459,10 @@ export const approvalWords = (org: Org) =>
     ? `Any spending, payment, order or commitment above $${org.approvalLimit} needs the owner's approval; say so and stop. Below that, your lead may approve it within its own decision rights. Nothing is ever paid, sent or signed by an agent.`
     : "Any spending, payment, order or commitment needs the owner's approval; say so and stop. Nothing is ever paid, sent or signed by an agent.";
 
-/** The philosophy an organization runs by, as told to its agents. */
+/** How the organization works, as told to its agents: by the lines its owner drew, and the owner's own philosophy if written. */
 export function guidanceOf(org: Org): string {
-  if (org.structure !== "custom") return structureOf(org.structure).guidance;
   const own = (org.philosophy ?? "").trim();
-  return `${own ? `This organization runs by its own philosophy, written by its owner: ${own}` : "This organization has a structure of its owner's own design."} ${ASSIGN_RULES[assignRule(org)]} ${REQUEST_RULES[requestRule(org)]}`;
+  return `${own ? `The owner runs this organization by this philosophy: ${own} ` : ""}The owner drew this organization's chart, and work follows its lines: you may hand work to anyone below you, and to anyone on a dotted line to you; work for another group goes to that group's lead as a request; and decisions above you go up your line.`;
 }
 
 /** How many colleagues are named one by one before the rest are given as departments. Keeps the prompt small in a large organization. */
@@ -374,9 +487,13 @@ export function rolePrompt(bot: Bot, org = orgs.active()): string {
   const canAssign = assignableBy(org, bot.id);
   const reports = org.members.filter((m) => m.manager === bot.id || m.also === bot.id);
   const mates = me.manager ? org.members.filter((m) => m.manager === me.manager && m.bot !== bot.id) : [];
+  const group = groupOf(org, bot.id);
+  const groupLead = group?.lead && group.lead !== bot.id ? memberOf(org, group.lead) : null;
   const lines = [
     "# Your place in the organization",
-    `You are the ${me.title} in the ${me.department} department of ${org.name}.${org.mission ? ` Its mission: ${org.mission}` : ""}`,
+    `You are the ${me.title}${me.department ? ` in the ${me.department} group` : ""} of ${org.name}.${org.mission ? ` Its mission: ${org.mission}` : ""}`,
+    me.responsibilities ? `What you are responsible for, in the owner's words: ${me.responsibilities}` : "",
+    group ? `${group.lead === bot.id ? `You lead the ${group.name} group: work the owner gives the group, and requests from other groups, come to you to share out.` : groupLead ? `Your group's lead is ${the(groupLead)}.` : ""}${group.goal ? ` The group's goal: ${group.goal}` : ""}` : "",
     guidanceOf(org),
     `${boss ? `You report to ${the(boss)}. Your reports go to them.` : "You report directly to the user, who owns the organization."}${projectLead ? ` Your project lead is ${the(projectLead)}, who may also give you tasks.` : ""}`,
   ];
@@ -391,7 +508,7 @@ export function rolePrompt(bot: Bot, org = orgs.active()): string {
   if (canAssign.length) {
     lines.push("Give each task everything the agent needs to know: it does not see this conversation. After assigning, finish any work that does not depend on the result, then end your turn; each report arrives as a message. When all the reports are in, check them, put them together and report upward.");
   } else {
-    lines.push("Nobody takes tasks from you, so you do the work yourself. If a task belongs to another department, say so in your report rather than doing it badly.");
+    lines.push("Nobody takes tasks from you, so you do the work yourself. If a task belongs to another group, say so in your report rather than doing it badly.");
   }
   const rest = org.members.filter((m) => m.bot !== bot.id && m !== boss && m !== projectLead && !reports.includes(m) && !mates.includes(m));
   if (rest.length) {
@@ -402,9 +519,9 @@ export function rolePrompt(bot: Bot, org = orgs.active()): string {
     lines.push(`Other colleagues you can ask: ${directory}.`);
   }
   const peers = requestableBy(org, bot.id);
-  if (peers.length) lines.push(`For work that belongs to another ${org.structure === "team" ? "team" : "department"}, use request_work: you may request it from ${peers.length > NAMED_COLLEAGUES ? "the head of that department" : peers.map(named).join(", ")}. They accept or decline; a request is not an order.`);
-  lines.push(`${boss ? `When something is not yours to decide, or two leads want different things from you, use escalate to put it to ${the(boss)} with the options and your recommendation.` : "You report to the owner: when something is not yours to decide, stop and put it to the owner in your report under “Needs your decision”, with the options and your recommendation."} ${structureOf(org.structure).tieBreak}`);
+  if (peers.length) lines.push(`For work that belongs to another group, use request_work: you may request it from ${peers.length > NAMED_COLLEAGUES ? "the lead of that group" : peers.map(named).join(", ")}. They accept or decline; a request is not an order.`);
+  lines.push(`${boss ? `When something is not yours to decide, or two leads want different things from you, use escalate to put it to ${the(boss)} with the options and your recommendation.` : "You report to the owner: when something is not yours to decide, stop and put it to the owner in your report under “Needs your decision”, with the options and your recommendation."} When two leads want different things from you, your manager decides; above them, the owner does.`);
   lines.push(approvalWords(org));
   if (org.members.length > 1) lines.push("You can put a short question to any colleague with ask_colleague and the answer comes back as a message. Ask when a colleague knows something you need; do not ask what you could look up in the organization's memory.");
-  return lines.join("\n\n");
+  return lines.filter(Boolean).join("\n\n");
 }
