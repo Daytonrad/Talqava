@@ -7,7 +7,8 @@
     "requires": "Node.js 22.18+",
     "dependencies": [
       "@anthropic-ai/sdk",
-      "yaml"
+      "yaml",
+      "@modelcontextprotocol/sdk"
     ],
     "optional": [
       "playwright (adds the browser tool)"
@@ -176,7 +177,7 @@
     },
     {
       "file": "src/core/types.ts",
-      "lines": 176,
+      "lines": 181,
       "role": "Shared shapes (core)",
       "does": "Defines what a conversation, tool, job and run look like, and the storage interfaces each edition must provide.",
       "uses": []
@@ -243,7 +244,7 @@
     },
     {
       "file": "src/core/models/openai.ts",
-      "lines": 212,
+      "lines": 244,
       "role": "Chat completions adapter (core)",
       "does": "Calls local model runners and other services that offer the common chat completions format. Translates the conversation and tools on the way out and the streamed reply, tool calls included, on the way back.",
       "uses": [
@@ -277,7 +278,7 @@
     },
     {
       "file": "src/core/crew.ts",
-      "lines": 113,
+      "lines": 133,
       "role": "Bot files (core)",
       "does": "Reads and checks a bot's YAML file: name, type, character, instructions, powers, model, approvals and budget. Bots from a repository are capped at the user's own settings.",
       "uses": [
@@ -287,7 +288,7 @@
     },
     {
       "file": "src/local/server.ts",
-      "lines": 453,
+      "lines": 593,
       "role": "Web server (local)",
       "does": "Serves the chat page and a small JSON API. Handles sign-in, refuses cross-site requests, streams live events to the page, and wires the core to local storage and tools.",
       "uses": [
@@ -298,7 +299,7 @@
     },
     {
       "file": "src/local/store.ts",
-      "lines": 311,
+      "lines": 314,
       "role": "Store (local)",
       "does": "Keeps settings, chats, memory, skills and jobs as JSON files, behind the core's storage interfaces.",
       "uses": [
@@ -307,7 +308,7 @@
     },
     {
       "file": "src/local/tools.ts",
-      "lines": 285,
+      "lines": 298,
       "role": "Local tools",
       "does": "The shell and the file editor, confined to the workspace, plus the list of tools and the prompt for a local run.",
       "uses": [
@@ -317,7 +318,7 @@
     },
     {
       "file": "src/local/models.ts",
-      "lines": 29,
+      "lines": 30,
       "role": "Model choice (local)",
       "does": "Turns the model named in the settings (provider/model) into a Claude or chat completions model.",
       "uses": [
@@ -327,7 +328,7 @@
     },
     {
       "file": "src/local/crew.ts",
-      "lines": 52,
+      "lines": 89,
       "role": "The crew (local)",
       "does": "Finds the bots: the starters in crew/, a project's .crew/ folder, and the user's own in the data folder, later ones replacing earlier ones by name.",
       "uses": [
@@ -336,9 +337,9 @@
     },
     {
       "file": "src/local/quests.ts",
-      "lines": 239,
+      "lines": 332,
       "role": "Quest runner and journal (local)",
-      "does": "Starts quests, keeps several going at once, writes every step to a journal on disk, resumes quests that were under way when the app closed, and accepts or undoes a quest's changes.",
+      "does": "Starts quests, keeps several going at once, writes every step to a journal on disk, resumes quests that were under way when the app closed, and accepts or undoes a quest's changes. Starts core quests, checks their results, sends a failed check back to the bot to fix, and hands a quest to another model.",
       "uses": [
         "src/core/engine.ts",
         "src/local/git.ts"
@@ -351,6 +352,43 @@
       "does": "Gives each quest that may change code its own branch and working copy, shows what it changed, keeps the changes as one commit, or removes every trace.",
       "uses": [
         "git"
+      ]
+    },
+    {
+      "file": "src/local/connectors.ts",
+      "lines": 153,
+      "role": "Connectors (local)",
+      "does": "The app's own MCP client: connects to connectors on the web or as programs on this computer, so their tools work with every model. Read-only tools run freely, the rest ask; a connector that does not answer is skipped.",
+      "uses": [
+        "@modelcontextprotocol/sdk"
+      ]
+    },
+    {
+      "file": "src/local/templates.ts",
+      "lines": 88,
+      "role": "Core quests (local)",
+      "does": "Reads the ready-made quests in quests/: the bot that goes, the inputs, what to gather and how the result is checked.",
+      "uses": [
+        "yaml"
+      ]
+    },
+    {
+      "file": "src/local/gather.ts",
+      "lines": 86,
+      "role": "Gathering (local)",
+      "does": "Collects what a core quest needs before it starts: commits since the last tag, open issues, failing builds and quiet pull requests.",
+      "uses": [
+        "git",
+        "GitHub API"
+      ]
+    },
+    {
+      "file": "src/local/checks.ts",
+      "lines": 147,
+      "role": "Checks (local)",
+      "does": "Checks a quest's result (a file changed, a command passes, everything gathered is covered, sources are linked) and writes what the bot is told when a check fails.",
+      "uses": [
+        "src/local/git.ts"
       ]
     },
     {
@@ -373,7 +411,7 @@
     },
     {
       "file": "public/app.js",
-      "lines": 1620,
+      "lines": 1856,
       "role": "Chat page",
       "does": "The desktop window: a top bar with the repository, a command box and today's spending; home base with the crew, quests under way and the quest log; a page per quest with its steps, changes, conversation and budget; the bot editor; chats, memory, skills, schedules and settings.",
       "uses": [
@@ -636,6 +674,26 @@
       "method": "DELETE",
       "path": "/api/crew/:id",
       "does": "Remove the user's own version of a bot; a starter of the same name comes back."
+    },
+    {
+      "method": "GET",
+      "path": "/api/quest-templates",
+      "does": "The core quests: name, bot, inputs and check."
+    },
+    {
+      "method": "POST",
+      "path": "/api/quests (template)",
+      "does": "Start a core quest with its inputs; the app gathers what it needs first."
+    },
+    {
+      "method": "POST",
+      "path": "/api/quests/:id/escalate",
+      "does": "Hand a quest to another model (Claude by default), continuing where it stopped."
+    },
+    {
+      "method": "GET",
+      "path": "/api/providers/:id/models",
+      "does": "The models a provider actually has, for picking from a list."
     }
   ],
   "events": [
@@ -759,6 +817,14 @@
     {
       "name": "Bots from a repository",
       "what": "Never get 'run everything' unless the user chose it, and their budget is capped at the user's."
+    },
+    {
+      "name": "Checked results",
+      "what": "A core quest counts as done only when the app's check passes; a failed check goes back to the bot to fix."
+    },
+    {
+      "name": "Connector tools",
+      "what": "Ask before changing anything unless the connector marks them read-only; what they return counts as outside content."
     }
   ],
   "deployment": [
@@ -775,7 +841,7 @@
   ],
   "tests": {
     "command": "npm run check",
-    "count": 46,
+    "count": 56,
     "covers": [
       "agent loop against a stand-in API and in-memory storage",
       "approvals: deny, always allow, stop",
@@ -792,7 +858,11 @@
       "three quests at once",
       "a branch per quest: preview, keep, undo",
       "a real restart mid-quest",
-      "caution after reading outside content"
+      "caution after reading outside content",
+      "core quests: checks, fixing after a failed check, handing to Claude",
+      "connectors from this machine",
+      "shortening long conversations for small models",
+      "the quest test suite and its baseline"
     ]
   }
 }

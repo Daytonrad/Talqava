@@ -1,0 +1,23 @@
+# A core quest. The app gathers the commits since the last release, Margo
+# writes the entry, and the quest only counts as done when CHANGELOG.md changed
+# and every commit is covered.
+name: Write the changelog
+summary: A changelog entry for everything merged since the last release.
+bot: margo
+repository: required
+inputs:
+  - id: since
+    label: Since (a tag, branch or commit)
+    placeholder: the last tag
+gather: git-log
+prompt: |
+  Write the changelog entry for the work below, which is everything merged since {{since}}.
+  Add it to the top of CHANGELOG.md (create the file if it does not exist), under a heading for the new version.
+  Group related changes, lead with what users will notice, and write each item as one plain sentence.
+  Mention the short commit id after each item, like (a1b2c3d), so readers can find the change.
+  Do not invent changes that are not in the list.
+
+  {{gathered}}
+check:
+  changed: CHANGELOG.md
+  covers: gathered

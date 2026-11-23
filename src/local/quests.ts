@@ -4,7 +4,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Bot, Engine, RunEvent } from "../core/index.ts";
-import { DATA, conversations, readJson, writeJson } from "./store.ts";
+import { DATA, WORKSPACE, conversations, readJson, writeJson } from "./store.ts";
+import { feedback, runChecks } from "./checks.ts";
+import { budgetBlock, recordSpend } from "./spend.ts";
+import { loadCrew } from "./crew.ts";
+import type { CheckResult } from "./checks.ts";
+import type { QuestCheck, QuestTemplate } from "./templates.ts";
+import { fill, resolveInputs } from "./templates.ts";
+import { gitLog, githubIssues, githubReport, githubSlug } from "./gather.ts";
 import { acceptCopy, changes, prepareCopy, undoCopy } from "./git.ts";
 import type { Changes, QuestCopy } from "./git.ts";
 
@@ -25,9 +32,28 @@ export interface Quest {
   steps: number;
   resumedAt?: string;
   note?: string;
+  /** For a core quest: what it is, what it was given, and how its result is checked. */
+  template?: { id: string; name: string; check: QuestCheck; inputs: Record<string, string>; mustMention: string[]; tries: number; maxTries: number };
+  /** The latest check of the result, and whether one is running now. */
+  check?: CheckResult;
+  checking?: boolean;
+  /** A model chosen for this quest after it started, e.g. when handed to Claude. */
+  modelOverride?: string;
+  /** How many files a finished code quest changed, so a quest with none is not shown as waiting for review. */
+  changedFiles?: number;
+  /** For a task handed down the org chart: the conversation (a manager's quest, or a chat) its report goes back to. */
+  parent?: { id: string; by: string; delivered: boolean };
+  /** How many hand-offs deep this quest is: 0 for one the person sent. */
+  depth?: number;
   createdAt: string;
   updatedAt: string;
 }
+
+/** How a report from a hand-off starts, so the window can show it as a report rather than something the person typed. */
+export const REPORT_MARK = "[Report from ";
+/** Hand-offs may go this many levels down the chart, and a conversation may have this many open at once. */
+export const MAX_DEPTH = 3;
+export const MAX_OPEN_HANDOFFS = 5;
 
 /** Quests that may run at the same time. */
 export const MAX_RUNNING = 6;
@@ -103,6 +129,9 @@ export const journal = {
 
 export const questStore = new QuestStore();
 
+/** The bot as its file says today (a quest keeps the bot as it was at the start), so a raised budget counts at once. */
+const asItIsNow = (bot: Bot): Bot => loadCrew().bots.find((b) => b.id === bot.id) ?? bot;
+
 export class QuestRunner {
   #engine!: Engine;
   /** Why each running quest will end, learned from its events. */
@@ -117,11 +146,18 @@ export class QuestRunner {
     return questStore.list().filter((q) => q.status === "running" || q.status === "waiting");
   }
 
-  async start({ bot, text, project }: { bot: Bot; text: string; project?: string }): Promise<Quest> {
+  async start({ bot, text, project, title, template, parent }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string } }): Promise<Quest> {
     if (this.running().length >= MAX_RUNNING) throw new Error(`${MAX_RUNNING} quests are already under way. Wait for one to finish, or stop one.`);
-    const conversation = await conversations.create({ title: text.replace(/\s+/g, " ").slice(0, 80), source: "quest" });
+    // A bot that has used its month's budget starts nothing new.
+    const blocked = budgetBlock(bot);
+    if (blocked) throw new Error(blocked);
+    const conversation = await conversations.create({ title: (title ?? text).replace(/\s+/g, " ").slice(0, 80), source: "quest" });
     const now = new Date().toISOString();
-    const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now };
+    const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now, ...(template ? { template } : {}) };
+    if (parent) {
+      quest.parent = { ...parent, delivered: false };
+      quest.depth = (questStore.get(parent.id)?.depth ?? 0) + 1;
+    }
     if (project) {
       quest.project = project;
       // Only bots that can change files get a branch and working copy of their own.
@@ -138,16 +174,131 @@ export class QuestRunner {
     return questStore.get(quest.id)!;
   }
 
+  /**
+   * Starts a core quest: fills in its inputs, gathers what it needs (commits,
+   * issues, builds), and remembers what its result must cover for the check.
+   */
+  async startTemplate({ template, bot, given, project }: { template: QuestTemplate; bot: Bot; given: Record<string, unknown>; project?: string }): Promise<Quest> {
+    if (template.repository === "required" && !project) throw new Error(`${template.name} works on a repository. Choose one at the top first.`);
+    const inputs = resolveInputs(template, given);
+    let gathered = { text: "", mustMention: [] as string[] };
+    if (template.gather === "git-log") {
+      const log = await gitLog(project!, inputs.since);
+      inputs.since = log.since;
+      gathered = log;
+    } else if (template.gather === "github-issues" || template.gather === "github-report") {
+      const slug = inputs.repo || (await githubSlug(project)) || "";
+      inputs.repo = slug;
+      gathered = template.gather === "github-issues" ? await githubIssues(slug) : await githubReport(slug, Math.max(1, Number(inputs.days) || 7));
+    }
+    const text = fill(template.prompt, { ...inputs, gathered: gathered.text }).trim();
+    const first = template.inputs.map((i) => inputs[i.id]).find(Boolean);
+    return this.start({
+      bot,
+      text,
+      project,
+      title: first ? `${template.name}: ${first}` : template.name,
+      template: { id: template.id, name: template.name, check: template.check, inputs, mustMention: gathered.mustMention, tries: 0, maxTries: 2 },
+    });
+  }
+
+  /** Checks a finished core quest. A failed check goes back to the bot while it has tries left. */
+  async #check(id: string) {
+    const quest = questStore.get(id);
+    const conversation = quest?.template ? await conversations.get(id) : null;
+    if (!quest?.template || !conversation) return;
+    this.#set(id, { checking: true });
+    let result: CheckResult;
+    try {
+      result = await runChecks({
+        check: quest.template.check,
+        conversation,
+        copy: quest.outcome ? undefined : quest.copy,
+        workspace: WORKSPACE,
+        inputs: quest.template.inputs,
+        mustMention: quest.template.mustMention,
+      });
+    } catch (err) {
+      result = { passed: false, items: [{ label: "Check", passed: false, detail: (err as Error).message }], at: new Date().toISOString() };
+    }
+    journal.append(id, { type: "check", passed: result.passed, items: result.items });
+    const { tries, maxTries } = quest.template;
+    if (!result.passed && tries < maxTries) {
+      // Not done: tell the bot what failed and let it fix it.
+      this.#set(id, { checking: false, check: result, template: { ...quest.template, tries: tries + 1 } });
+      await this.#engine.startRun(id, feedback(result, maxTries - tries), { keepTitle: true }).catch((err) => this.#set(id, { note: (err as Error).message }));
+      return;
+    }
+    this.#set(id, { checking: false, check: result });
+  }
+
+  /** Hands a quest to another model (usually Claude), continuing where it stopped, with fresh tries. */
+  async escalate(id: string, model: string) {
+    const quest = questStore.get(id);
+    if (!quest) throw new Error("Quest not found.");
+    if (quest.status === "running" || quest.status === "waiting" || quest.checking) throw new Error("The quest is still under way.");
+    if (quest.outcome) throw new Error("This quest's changes were already dealt with.");
+    const failed = quest.check?.items.filter((i) => !i.passed) ?? [];
+    this.#set(id, { modelOverride: model, ...(quest.template ? { template: { ...quest.template, tries: 0 } } : {}) });
+    journal.append(id, { type: "escalate", model });
+    const message = [
+      `[This quest is now handed to ${model}, a stronger model, to finish.]`,
+      failed.length ? `The last check failed:\n${failed.map((i) => `- ${i.label}${i.detail ? `: ${i.detail}` : ""}`).join("\n")}` : "",
+      "Read what has been done so far, then finish the quest properly.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    await this.#engine.startRun(id, message, { keepTitle: true });
+  }
+
   stop(id: string) {
     this.#stopping.add(id);
     this.#engine.stop(id);
   }
 
   /** Called by the engine for every event: keeps the journal and the quest's status. */
+  /**
+   * Sends the reports of finished hand-offs back to the conversation that
+   * assigned them, as one message, once all of its hand-offs have stopped and
+   * it is not busy itself. The manager (or the chat's agent) then carries on.
+   */
+  async deliverReports(parentId: string) {
+    if (this.#engine.isRunning(parentId)) return; // it gets them when its own turn ends
+    const children = questStore.list().filter((q) => q.parent?.id === parentId && !q.parent.delivered);
+    if (!children.length || children.some((q) => q.status === "running" || q.status === "waiting")) return;
+    for (const child of children) this.#set(child.id, { parent: { ...child.parent!, delivered: true } });
+    const reports = children.reverse().map((child) => {
+      const said = [...(conversations.get(child.id)?.messages ?? [])].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text.trim()));
+      const text = said && Array.isArray(said.content) ? said.content.map((b) => (b.type === "text" ? b.text : "")).join("\n").trim() : "";
+      const how = { done: "finished", stopped: "was stopped", failed: `failed${child.note ? `: ${child.note}` : ""}`, budget: "stopped at its budget" }[child.status as string] ?? child.status;
+      return `${REPORT_MARK}${child.bot.name} · ${child.title} · ${how}]\n${text || "(It left no report.)"}`;
+    });
+    const parentQuest = questStore.get(parentId);
+    const next = parentQuest
+      ? "Check these reports against what you asked for. Then assign follow-up work if something is missing, or put them together and give your own report."
+      : "Tell the user what came back, in your own words, and say plainly if a report failed or left something out.";
+    try {
+      await this.#engine.startRun(parentId, `${reports.join("\n\n")}\n\n[${next}]`, { keepTitle: true });
+    } catch (err) {
+      for (const child of children) this.#set(child.id, { note: `Its report could not be delivered: ${(err as Error).message}` });
+    }
+  }
+
   onEvent(id: string, event: RunEvent) {
+    // When any conversation stops, reports that were waiting for it can go in.
+    if (event.type === "status" && !event.running) setTimeout(() => this.deliverReports(id).catch(() => {}), 50);
     const quest = questStore.get(id);
     if (!quest) return;
     journal.append(id, event);
+    // What the quest has cost so far counts towards its bot's month. A bot that
+    // reaches its monthly budget part-way is stopped; its work so far is kept.
+    if (event.type === "assistant" || event.type === "status") {
+      recordSpend(id, quest.bot.id, conversations.get(id)?.usage.cost ?? 0);
+      if (event.type === "assistant" && budgetBlock(asItIsNow(quest.bot))) {
+        this.#ending.set(id, "budget");
+        this.#engine.stop(id);
+      }
+    }
     switch (event.type) {
       case "status":
         if (event.running) {
@@ -159,6 +310,17 @@ export class QuestRunner {
           this.#ending.delete(id);
           this.#stopping.delete(id);
           this.#set(id, { status });
+          // A task handed down the chart reports back to whoever assigned it.
+          if (quest.parent && !quest.parent.delivered) setTimeout(() => this.deliverReports(quest.parent!.id).catch(() => {}), 80);
+          if (quest.copy && !quest.outcome) {
+            changes(quest.copy)
+              .then((c) => this.#set(id, { changedFiles: c.files.length }))
+              .catch(() => {});
+          }
+          // A core quest that finished is checked before it counts as done.
+          if (status === "done" && quest.template) {
+            this.#check(id).catch((err) => this.#set(id, { checking: false, note: `Could not check the result: ${(err as Error).message}` }));
+          }
         }
         break;
       case "approval":

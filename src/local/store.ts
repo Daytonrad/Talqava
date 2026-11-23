@@ -22,8 +22,12 @@ import type {
   Budget,
   CheckResult,
   Prices,
+  SearchScope,
+  Space,
+  SummaryCache,
+  ConversationSummary,
 } from "../core/index.ts";
-import { BRAND, setting } from "../core/index.ts";
+import { BRAND, MEMORY_ENTRY_LIMIT, excerpt, rank, setting } from "../core/index.ts";
 
 export { ROOT };
 export const DATA = path.resolve(setting("DATA_DIR") || path.join(ROOT, "data"));
@@ -38,7 +42,6 @@ export const MODELS = [
   { id: "claude-haiku-5-5", label: "Claude Haiku 5.5 (fastest, cheapest)" },
 ];
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh"];
-export const MEMORY_LIMIT = 8000; // characters across all memory entries
 
 export function initStore() {
   for (const dir of [DATA, WORKSPACE, CONV_DIR]) fs.mkdirSync(dir, { recursive: true });
@@ -73,6 +76,8 @@ export interface ProviderConfig {
   apiKey?: string;
   /** Prices per million tokens, when known. Local runners are free. */
   prices?: Prices;
+  /** How many tokens the model can hold; longer conversations are shortened to fit. */
+  contextTokens?: number;
 }
 
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
@@ -91,6 +96,8 @@ export interface Config {
   providers: ProviderConfig[];
   /** Limits on each run: model calls, and estimated US dollars. */
   budget: Budget;
+  /** The most all bots together may spend in a calendar month, in US dollars. None means no limit. */
+  monthlyBudget?: number;
   /** The last model check of each model, by ref. */
   modelChecks: Record<string, CheckResult>;
   /** Repositories bots may work on, by their top folder. */
@@ -151,13 +158,15 @@ export function publicConfig() {
       name: p.name,
       baseUrl: p.baseUrl,
       prices: p.prices,
+      contextTokens: p.contextTokens ?? null,
       hasKey: p.kind === "anthropic" ? Boolean(apiKey(cfg)) : Boolean(p.apiKey),
     })),
     budget: cfg.budget,
+    monthlyBudget: cfg.monthlyBudget ?? null,
     modelChecks: cfg.modelChecks,
     projects: cfg.projects,
     apiKeyFromEnv: !cfg.apiKey && Boolean(process.env.ANTHROPIC_API_KEY),
-    mcpServers: cfg.mcpServers.map((s) => ({ name: s.name, url: s.url, hasToken: Boolean(s.token) })),
+    mcpServers: cfg.mcpServers.map((s) => ({ name: s.name, url: s.url, command: s.command ? [s.command, ...(s.args ?? [])].join(" ") : null, hasToken: Boolean(s.token) })),
     secrets: Object.entries(cfg.secrets).map(([name, s]) => ({ name, host: s.host })),
     models: MODELS,
     efforts: EFFORTS,
@@ -183,8 +192,8 @@ class FileConversations implements ConversationStore {
     return readJson<Conversation | null>(convFile(id), null);
   }
 
-  save(conversation: Conversation) {
-    conversation.updatedAt = new Date().toISOString();
+  save(conversation: Conversation, { touch = true } = {}) {
+    if (touch) conversation.updatedAt = new Date().toISOString();
     writeJson(convFile(conversation.id), conversation);
   }
 
@@ -215,30 +224,114 @@ class FileConversations implements ConversationStore {
       .filter((f) => f.endsWith(".json"))
       .map((f) => readJson<Conversation | null>(path.join(CONV_DIR, f), null))
       .filter((c): c is Conversation => Boolean(c))
-      .map(({ id, title, createdAt, updatedAt, source }) => ({ id, title, createdAt, updatedAt, source }))
+      .map(({ id, title, createdAt, updatedAt, source, space, pinned, bot }) => ({ id, title, createdAt, updatedAt, source, space, pinned: Boolean(pinned), bot }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  search(query: string, limit = 8): SearchHit[] {
-    const needle = query.toLowerCase();
-    const hits: SearchHit[] = [];
-    for (const meta of this.list()) {
-      const conversation = this.get(meta.id);
-      if (!conversation) continue;
-      for (const message of conversation.messages) {
-        const text = messageText(message);
-        const at = text.toLowerCase().indexOf(needle);
-        if (at === -1) continue;
-        hits.push({
-          conversation: conversation.title,
-          date: conversation.updatedAt.slice(0, 10),
-          role: message.role,
-          excerpt: text.slice(Math.max(0, at - 200), at + 400),
-        });
-        if (hits.length >= limit) return hits;
+  /** Message texts of each conversation, kept while its file is unchanged, so searching many chats stays quick. */
+  #texts = new Map<string, { stamp: number; title: string; date: string; space?: string; messages: { role: string; text: string }[] }>();
+
+  #indexed(id: string) {
+    const file = convFile(id);
+    const stamp = fs.statSync(file).mtimeMs;
+    const cached = this.#texts.get(id);
+    if (cached?.stamp === stamp) return cached;
+    const conversation = this.get(id);
+    if (!conversation) return null;
+    const entry = {
+      stamp,
+      title: conversation.title,
+      date: conversation.updatedAt.slice(0, 10),
+      space: conversation.space,
+      messages: conversation.messages.map((m) => ({ role: m.role, text: messageText(m) })).filter((m) => m.text.trim()),
+    };
+    this.#texts.set(id, entry);
+    return entry;
+  }
+
+  /**
+   * Finds the passages that best match the query's words, in any order and
+   * form. A conversation in a space looks in that space and in General;
+   * a General conversation looks everywhere.
+   */
+  search(query: string, limit = 8, scope: SearchScope = {}): SearchHit[] {
+    const passages: { conversation: string; date: string; role: string; text: string }[] = [];
+    for (const file of fs.readdirSync(CONV_DIR)) {
+      if (!file.endsWith(".json")) continue;
+      const id = file.slice(0, -5);
+      if (id === scope.exclude) continue;
+      let entry;
+      try {
+        entry = this.#indexed(id);
+      } catch {
+        continue;
       }
+      if (!entry || (scope.space && entry.space && entry.space !== scope.space)) continue;
+      for (const m of entry.messages) passages.push({ conversation: entry.title, date: entry.date, role: m.role, text: m.text });
+    }
+    const hits: SearchHit[] = [];
+    const perConversation = new Map<string, number>();
+    for (const { item } of rank(query, passages, (p) => p.text)) {
+      // A few passages from one conversation are enough; leave room for others.
+      const key = `${item.conversation}|${item.date}`;
+      if ((perConversation.get(key) ?? 0) >= 3) continue;
+      perConversation.set(key, (perConversation.get(key) ?? 0) + 1);
+      hits.push({ conversation: item.conversation, date: item.date, role: item.role, excerpt: excerpt(item.text, query) });
+      if (hits.length >= limit) break;
     }
     return hits;
+  }
+}
+
+// ---------- spaces ----------
+/** Spaces keep one client's or project's memory and chats apart. General is the absence of a space. */
+class FileSpaces {
+  #file = () => path.join(DATA, "spaces.json");
+
+  list(): Space[] {
+    return readJson<Space[]>(this.#file(), []);
+  }
+
+  get(id?: string): Space | undefined {
+    return id ? this.list().find((s) => s.id === id) : undefined;
+  }
+
+  #checked(name: unknown, except?: string): string {
+    const clean = String(name ?? "").replace(/\s+/g, " ").trim();
+    if (!clean || clean.length > 40) throw new Error("A project needs a name of up to 40 characters.");
+    if (clean.toLowerCase() === "general") throw new Error("General is already there: it is where everything outside a project lives.");
+    if (this.list().some((s) => s.id !== except && s.name.toLowerCase() === clean.toLowerCase())) throw new Error(`There is already a project called "${clean}".`);
+    return clean;
+  }
+
+  create(name: unknown): Space {
+    const space = { id: newId(), name: this.#checked(name), createdAt: new Date().toISOString() };
+    writeJson(this.#file(), [...this.list(), space]);
+    return space;
+  }
+
+  rename(id: string, name: unknown): Space {
+    const spaces = this.list();
+    const space = spaces.find((s) => s.id === id);
+    if (!space) throw new Error("No such project.");
+    space.name = this.#checked(name, id);
+    writeJson(this.#file(), spaces);
+    return space;
+  }
+
+  /** Removes a space. Its memories are deleted; its conversations move to General. */
+  remove(id: string) {
+    const spaces = this.list();
+    if (!spaces.some((s) => s.id === id)) throw new Error("No such project.");
+    writeJson(this.#file(), spaces.filter((s) => s.id !== id));
+    memory.dropSpace(id);
+    for (const meta of conversations.list()) {
+      if (meta.space !== id) continue;
+      const conversation = conversations.get(meta.id);
+      if (!conversation) continue;
+      delete conversation.space;
+      conversations.save(conversation, { touch: false });
+    }
   }
 }
 
@@ -250,16 +343,43 @@ class FileMemory implements MemoryStore {
     return readJson<MemoryEntry[]>(this.#file(), []);
   }
 
-  add(text: string): MemoryEntry {
+  #checked(text: unknown): string {
+    const clean = String(text ?? "").trim();
+    if (!clean) throw new Error("Nothing to remember.");
+    if (clean.length > MEMORY_ENTRY_LIMIT) throw new Error(`That is too long for one memory (${MEMORY_ENTRY_LIMIT} characters at most). Save the key facts as separate short entries.`);
+    return clean;
+  }
+
+  #space(space?: string | null): string | undefined {
+    if (!space) return undefined;
+    if (!spaces.get(space)) throw new Error("No such project.");
+    return space;
+  }
+
+  /** There is no cap on how much is remembered: each conversation is shown what fits it (see selectMemory). */
+  add(text: string, space?: string): MemoryEntry {
     const entries = this.list();
-    text = String(text ?? "").trim();
-    if (!text) throw new Error("Nothing to remember.");
-    const used = entries.reduce((n, e) => n + e.text.length, 0);
-    if (used + text.length > MEMORY_LIMIT) {
-      throw new Error(`Memory is full (${MEMORY_LIMIT} characters). Remove or merge older entries first, then try again.`);
-    }
-    const entry = { id: newId(), text, createdAt: new Date().toISOString() };
+    const clean = this.#checked(text);
+    const inSpace = this.#space(space);
+    const same = entries.find((e) => e.text === clean && e.space === inSpace);
+    if (same) return same;
+    const entry: MemoryEntry = { id: newId(), text: clean, createdAt: new Date().toISOString(), ...(inSpace ? { space: inSpace } : {}) };
     writeJson(this.#file(), [...entries, entry]);
+    return entry;
+  }
+
+  update(id: string, patch: { text?: string; space?: string | null }): MemoryEntry {
+    const entries = this.list();
+    const entry = entries.find((e) => e.id === id);
+    if (!entry) throw new Error(`No memory entry with id ${id}.`);
+    if (patch.text !== undefined) entry.text = this.#checked(patch.text);
+    if (patch.space !== undefined) {
+      const inSpace = this.#space(patch.space);
+      if (inSpace) entry.space = inSpace;
+      else delete entry.space;
+    }
+    entry.updatedAt = new Date().toISOString();
+    writeJson(this.#file(), entries);
     return entry;
   }
 
@@ -268,6 +388,15 @@ class FileMemory implements MemoryStore {
     const rest = entries.filter((e) => e.id !== id);
     if (rest.length === entries.length) throw new Error(`No memory entry with id ${id}.`);
     writeJson(this.#file(), rest);
+  }
+
+  /** Deletes every entry of a space (when the space itself is removed). */
+  dropSpace(space: string) {
+    writeJson(this.#file(), this.list().filter((e) => e.space !== space));
+  }
+
+  spaceName(id: string) {
+    return spaces.get(id)?.name;
   }
 }
 
@@ -305,7 +434,19 @@ class FileJobs implements JobStore {
   }
 }
 
+/** Summaries of long conversations for local models, kept so a restart does not have to write them again. */
+export const summaries: SummaryCache = {
+  get: (key) => readJson<Record<string, ConversationSummary>>(path.join(DATA, "summaries.json"), {})[key],
+  set(key, value) {
+    const file = path.join(DATA, "summaries.json");
+    const all = Object.entries({ ...readJson<Record<string, ConversationSummary>>(file, {}), [key]: value });
+    // Only the latest few hundred are kept.
+    writeJson(file, Object.fromEntries(all.slice(-300)));
+  },
+};
+
 export const conversations = new FileConversations();
 export const memory = new FileMemory();
+export const spaces = new FileSpaces();
 export const skills = new FileSkills();
 export const jobStore = new FileJobs();

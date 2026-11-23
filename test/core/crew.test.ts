@@ -17,8 +17,12 @@ test("the six starter bots are valid bot files", () => {
   assert.equal(pip.name, "Pip");
   assert.equal(pip.approvals, "ask");
   assert.equal(pip.model, undefined);
-  assert.deepEqual(pip.character, { legend: "?", texture: "dots" });
+  assert.deepEqual(pip.character, { legend: "?", texture: "dots", color: "cyan", shape: "round", eyes: "wide", top: "antenna" });
+  // No two starter bots look alike: each has its own mix of body, eyes and what it wears on top.
+  assert.equal(new Set(bots.map((b) => `${b.character.shape}/${b.character.eyes}/${b.character.top}`)).size, bots.length);
   assert.deepEqual(bots.map((b) => b.character.texture).sort(), ["dots", "grid", "hatch", "lines", "solid", "zigzag"]);
+  // Every starter bot glows in a colour of its own.
+  assert.equal(new Set(bots.map((b) => b.character.color)).size, bots.length);
   assert.deepEqual(bots.map((b) => b.character.legend).sort(), ["!", "#", "</>", "?", "Aa", "zz"]);
   // A scout cannot touch files.
   assert.ok(!pip.powers.includes("files") && !pip.powers.includes("shell"));
@@ -34,8 +38,18 @@ test("a bad bot file is refused with a plain reason", () => {
   // A file with no legend gets its type's; an old file that names a hat still loads.
   assert.equal(parseBot("bo", good, "personal").character.legend, "?");
   assert.equal(parseBot("bo", good.replace("type: scout", "type: gardener"), "personal").character.legend, "B");
-  // Older files that name a hat or a colour still load; both are ignored.
-  assert.deepEqual(parseBot("bo", `${good}character: { hat: hardhat, colour: "#ff9f45" }\n`, "personal").character, { legend: "?", texture: "dots" });
+  // Older files that name a hat or a colour code still load; both are ignored.
+  const old = parseBot("bo", `${good}character: { hat: hardhat, colour: "#ff9f45" }\n`, "personal").character;
+  assert.deepEqual([old.legend, old.texture, old.color], ["?", "dots", "cyan"]);
+  // A bot that names no looks gets them from its file name: always the same, and a file can choose its own.
+  assert.deepEqual(parseBot("bo", good, "personal").character, old);
+  assert.equal(parseBot("bo", `${good}character: { shape: tall, eyes: visor, top: horns }\n`, "personal").character.shape, "tall");
+  assert.equal(parseBot("bo", `${good}character: { shape: blob }\n`, "personal").character.shape, old.shape);
+  assert.equal(parseBot("bo", `${good}character: { color: "#ff9f45" }\n`, "personal").character.color, "cyan");
+  // A neon colour by name is kept; a type of one's own gets the same colour every time.
+  assert.equal(parseBot("bo", `${good}character: { color: pink }\n`, "personal").character.color, "pink");
+  const gardener = good.replace("type: scout", "type: gardener");
+  assert.equal(parseBot("bo", gardener, "personal").character.color, parseBot("bo", gardener, "personal").character.color);
   assert.equal(parseBot("bo", good.replace("type: scout", "type: gardener"), "personal").character.texture, "plain");
   assert.throws(() => parseBot("bo", `${good}character: { texture: plaid }\n`, "personal"), /texture must be one of/);
   assert.equal(parseBot("bo", `${good}character: { legend: "¶" }\n`, "personal").character.legend, "¶");
@@ -183,4 +197,15 @@ test("a change does not count as outside content for itself, only for what comes
   await (await engine.startRun(id, "go")).done;
   assert.deepEqual(asked, ["second"]);
   assert.deepEqual(ran, ["first", "second"]);
+});
+
+test("only outside content that was really read counts: a denied or failed request read nothing", async () => {
+  const { outsideContentRead } = await import("../../src/core/index.ts");
+  const asked = { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "http_request", input: {} }] } as Conversation["messages"][number];
+  const denied = { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "The user declined this action." }] } as Conversation["messages"][number];
+  const answered = { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "HTTP 200" }] } as Conversation["messages"][number];
+  assert.equal(outsideContentRead([asked, denied], ["http_request"]), false);
+  assert.equal(outsideContentRead([asked, answered], ["http_request"]), true);
+  const searched = { role: "assistant", content: [{ type: "server_tool_use", id: "s1", name: "web_search", input: {} }] } as Conversation["messages"][number];
+  assert.equal(outsideContentRead([searched], ["web_search"]), true);
 });

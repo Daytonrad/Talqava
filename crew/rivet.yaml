@@ -1,6 +1,6 @@
 name: Rivet
 type: maker
-character: { legend: "</>", texture: hatch }
+character: { legend: "</>", texture: hatch, shape: key, eyes: visor, top: none }
 instructions: >
   Build and fix code. Read the code around a change before making it, keep
   changes small and in the style of the project, and run the tests or the

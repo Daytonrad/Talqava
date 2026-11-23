@@ -54,17 +54,40 @@ export function describeError(err: unknown): string {
 function readOutsideContent(conversation: Conversation, spec: RunSpec, callId: string): boolean {
   const names = spec.cautionAfter;
   if (!names?.length) return false;
-  const reads = (block: { type: string; name?: string }) => (block.type === "tool_use" || block.type === "server_tool_use") && names.includes(block.name ?? "");
   const messages = conversation.messages;
   const current = messages.at(-1);
   const earlier = current?.role === "assistant" ? messages.slice(0, -1) : messages;
-  if (earlier.some((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => reads(b as { type: string; name?: string })))) return true;
+  if (outsideContentRead(earlier, names)) return true;
   if (current?.role !== "assistant" || !Array.isArray(current.content)) return false;
+  // Calls ahead of this one in the same reply have run but their results are not saved yet, so they count.
   for (const block of current.content as { type: string; id?: string; name?: string }[]) {
     if (block.type === "tool_use" && block.id === callId) return false;
-    if (reads(block)) return true;
+    if ((block.type === "tool_use" || block.type === "server_tool_use") && names.includes(block.name ?? "")) return true;
   }
   return false;
+}
+
+/**
+ * Did any of these tools actually bring outside content into the conversation?
+ * A call counts only if it ran and came back without an error: a request the
+ * user denied, or one that failed, read nothing. Anthropic's own web steps
+ * (server_tool_use) count whenever they ran.
+ */
+export function outsideContentRead(messages: Conversation["messages"], names: string[]): boolean {
+  const ok = new Set<string>();
+  for (const m of messages) {
+    if (m.role === "user" && Array.isArray(m.content)) {
+      for (const b of m.content as { type: string; tool_use_id?: string; is_error?: boolean }[]) if (b.type === "tool_result" && !b.is_error) ok.add(b.tool_use_id!);
+    }
+  }
+  return messages.some(
+    (m) =>
+      m.role === "assistant" &&
+      Array.isArray(m.content) &&
+      (m.content as { type: string; id?: string; name?: string }[]).some(
+        (b) => names.includes(b.name ?? "") && (b.type === "server_tool_use" || (b.type === "tool_use" && ok.has(b.id!))),
+      ),
+  );
 }
 
 const dollars = (n: number) => `$${n < 0.1 ? n.toFixed(3) : n.toFixed(2)}`;

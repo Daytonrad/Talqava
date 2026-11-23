@@ -1,24 +1,38 @@
 // Tools every edition has. Each is built from the store it works on, so the
 // same tool runs against files locally and a database when hosted.
+import { visibleMemory } from "../memory.ts";
+import { rank } from "../rank.ts";
 import { defineTool } from "../tooling.ts";
 import type { JobBook } from "../schedule.ts";
 import type { ConversationStore, MemoryStore, SkillStore, Tool } from "../types.ts";
 
 export function memoryTool(memory: MemoryStore): Tool {
-  return defineTool<{ action: "add" | "remove"; text?: string; id?: string }>({
+  return defineTool<{ action: "add" | "update" | "remove" | "search"; text?: string; id?: string; scope?: "space" | "general"; query?: string }>({
     name: "memory",
     description:
-      "Long-term memory that carries across every conversation. Save durable facts about the user, their preferences, their projects and lessons learned. Everything saved is shown to you at the start of each conversation, so keep entries short and remove ones that are out of date.",
+      "Long-term memory that carries across conversations. Save durable facts about the user, their preferences, their projects and lessons learned, one fact per entry, in a sentence or two. When a fact changes, update its entry instead of adding another; remove entries that are no longer true. In a project (a set of conversations kept apart, such as one client's), entries are kept to that project unless scope is \"general\". Search looks through everything saved, including entries not listed at the start of the conversation: the words can come in any order and in other forms.",
     properties: {
-      action: { type: "string", enum: ["add", "remove"] },
-      text: { type: "string", description: "For add: the fact to remember, one or two sentences." },
-      id: { type: "string", description: "For remove: the id of the entry." },
+      action: { type: "string", enum: ["add", "update", "remove", "search"] },
+      text: { type: "string", description: "For add and update: the fact to remember, one or two sentences." },
+      id: { type: "string", description: "For update and remove: the id of the entry." },
+      scope: { type: "string", enum: ["space", "general"], description: "For add, in a project: \"space\" (the default) keeps it to this project; \"general\" carries it into every conversation." },
+      query: { type: "string", description: "For search: a few words about what you are looking for." },
     },
     required: ["action"],
-    async run(input) {
+    async run(input, { conversation }) {
+      const space = conversation?.space;
+      const named = async (id?: string) => (id ? ((await memory.spaceName?.(id)) ?? "this project") : "General");
       if (input.action === "add") {
-        const entry = await memory.add(input.text ?? "");
-        return `Remembered (id ${entry.id}).`;
+        const entry = await memory.add(input.text ?? "", input.scope === "general" ? undefined : space);
+        return `Remembered (id ${entry.id}) in ${await named(entry.space)}.`;
+      }
+      if (input.action === "update") {
+        const entry = await memory.update(input.id ?? "", { text: input.text ?? "" });
+        return `Updated (id ${entry.id}) in ${await named(entry.space)}.`;
+      }
+      if (input.action === "search") {
+        const found = rank(input.query ?? "", visibleMemory(await memory.list(), space), (e) => e.text).slice(0, 12);
+        return found.length ? found.map(({ item }) => `- [${item.id}] ${item.text}`).join("\n") : "Nothing saved matches that.";
       }
       await memory.remove(input.id ?? "");
       return "Removed.";
@@ -30,12 +44,12 @@ export function conversationSearchTool(conversations: ConversationStore): Tool {
   return defineTool<{ query: string }>({
     name: "conversation_search",
     description:
-      "Search the text of past conversations for a word or phrase. Use it when the user refers to something discussed before that is not in memory.",
+      "Search past conversations. Give a few words about what you are looking for: they can come in any order and in other forms (\"pricing\" also finds \"price\" and \"prices\"), and the best matches come first. If nothing comes back, try other words for the same thing. Use it when the user refers to something discussed before that is not in memory. In a project, only that project's conversations and General's are searched.",
     properties: { query: { type: "string" } },
     required: ["query"],
-    async run(input) {
-      const hits = await conversations.search(input.query);
-      return hits.length ? JSON.stringify(hits, null, 2) : "Nothing found.";
+    async run(input, { conversation }) {
+      const hits = await conversations.search(input.query, 8, { space: conversation?.space, exclude: conversation?.id });
+      return hits.length ? JSON.stringify(hits, null, 2) : "Nothing found. Try other words for the same thing.";
     },
   });
 }

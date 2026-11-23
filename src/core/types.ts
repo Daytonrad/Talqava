@@ -19,11 +19,32 @@ export interface Conversation {
   updatedAt: string;
   source: "chat" | "schedule" | "quest";
   jobId?: string;
+  /** The space (shown to people as a project) this conversation belongs to. None means General. */
+  space?: string;
+  /** Pinned chats stay at the top of the list. */
+  pinned?: boolean;
+  /** For a chat with one bot in its role: that bot's id. None means the general agent. */
+  bot?: string;
   messages: Message[];
   /** Tools the user chose "always allow" for in this conversation. */
   allowed: string[];
   /** Tokens used, and the estimated cost in US dollars when the model's prices are known. */
   usage: { input: number; output: number; cost?: number };
+}
+
+/** A space keeps one client's or project's memory and chats apart from the rest. */
+export interface Space {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+/** Which conversations a search may look in. */
+export interface SearchScope {
+  /** The space of the conversation asking. None means General, which may look everywhere. */
+  space?: string;
+  /** A conversation to leave out (the one asking). */
+  exclude?: string;
 }
 
 export interface SearchHit {
@@ -37,6 +58,9 @@ export interface MemoryEntry {
   id: string;
   text: string;
   createdAt: string;
+  updatedAt?: string;
+  /** The space this entry belongs to. None means General: carried into every conversation. */
+  space?: string;
 }
 
 export interface Skill {
@@ -64,10 +88,15 @@ export interface Secret {
   host: string;
 }
 
+/** A connector (MCP server): a web address, or a program on this computer. */
 export interface McpServer {
   name: string;
+  /** For a connector on the web. Empty for a program. */
   url: string;
   token?: string;
+  /** For a program on this computer: what to run, and its arguments. */
+  command?: string;
+  args?: string[];
 }
 
 // ---------- storage, as the core sees it ----------
@@ -75,13 +104,18 @@ export interface ConversationStore {
   get(id: string): MaybePromise<Conversation | null>;
   save(conversation: Conversation): MaybePromise<void>;
   create(extra?: Partial<Conversation>): MaybePromise<Conversation>;
-  search(query: string, limit?: number): MaybePromise<SearchHit[]>;
+  search(query: string, limit?: number, scope?: SearchScope): MaybePromise<SearchHit[]>;
 }
 
 export interface MemoryStore {
   list(): MaybePromise<MemoryEntry[]>;
-  add(text: string): MaybePromise<MemoryEntry>;
+  /** Saves an entry in a space, or in General when no space is given. */
+  add(text: string, space?: string): MaybePromise<MemoryEntry>;
+  /** Changes an entry's text, or moves it (space: null moves it to General). */
+  update(id: string, patch: { text?: string; space?: string | null }): MaybePromise<MemoryEntry>;
   remove(id: string): MaybePromise<void>;
+  /** The name of a space, for telling the agent and the user where something was saved. */
+  spaceName?(id: string): MaybePromise<string | undefined>;
 }
 
 export interface SkillStore {

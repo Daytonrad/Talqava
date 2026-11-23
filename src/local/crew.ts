@@ -73,6 +73,8 @@ export function saveBot(id: string, input: Record<string, unknown>): Bot {
     approvals: input.approvals === "auto" || input.approvals === "run-everything" ? "run-everything" : "ask-before-changes",
   };
   if (input.budget && typeof input.budget === "object") file.budget = input.budget;
+  if (typeof input.group === "string" && input.group.trim()) file.group = input.group.trim();
+  if (typeof input.monthly === "number") file.monthly_budget = input.monthly;
   const text = `# Your own bot. It replaces any starter or project bot called "${id}".\n${stringify(file)}`;
   const bot = parseBot(id, text, "personal");
   fs.mkdirSync(personalDir(), { recursive: true });

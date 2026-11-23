@@ -1,0 +1,23 @@
+# A core quest. Rivet writes tests for one file; the quest only counts as done
+# when the test command passes in Rivet's own copy of the repository.
+name: Add tests for a file
+summary: Tests for one file, checked by running the test command.
+bot: rivet
+repository: required
+inputs:
+  - id: file
+    label: File to test
+    placeholder: src/parser.ts
+    required: true
+  - id: command
+    label: Test command
+    placeholder: npm test
+    default: npm test
+prompt: |
+  Add tests for {{file}}.
+  Read the file and the tests that already exist, then cover what it does: the normal cases, the edge cases and the errors.
+  Follow the project's test style and put the tests where the project keeps them.
+  Run `{{command}}` and make it pass. If a test fails because of a real bug in {{file}}, do not hide it: say so in your report.
+check:
+  changed: any
+  command: "{{command}}"

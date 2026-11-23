@@ -1,0 +1,36 @@
+# Ready-made teams: a lead and the bots that report to it, added to the organization together.
+- id: starter-company
+  name: Starter company
+  department: Leadership
+  summary: A chief of staff over four department heads (marketing, sales, research and finance). Give the chief of staff a goal and it is split across them.
+  bots: [chief-of-staff, head-of-marketing, head-of-sales, head-of-research, head-of-finance]
+- id: marketing-team
+  name: Marketing team
+  department: Marketing
+  summary: A head of marketing with a content writer, an SEO researcher and a social drafter. Ask for a campaign and get the plan, the article and the posts.
+  bots: [head-of-marketing, content-writer, seo-researcher, social-drafter]
+- id: sales-team
+  name: Sales team
+  department: Sales
+  summary: A head of sales with a prospect researcher and an outreach writer. Describe your ideal customer and get a researched list with a first message for each.
+  bots: [head-of-sales, lead-finder, outreach-drafter]
+- id: engineering-team
+  name: Engineering team
+  department: Engineering
+  summary: A head of engineering with a software engineer and a QA tester. One builds, the other checks, and nothing is called done without a test.
+  bots: [head-of-engineering, builder, qa-tester]
+- id: research-team
+  name: Research team
+  department: Research
+  summary: A head of research with a fact checker, a market analyst and a briefing writer. Ask a question and get a checked answer with its confidence stated.
+  bots: [head-of-research, fact-checker, competitor-watch, morning-brief]
+- id: finance-team
+  name: Finance team
+  department: Money
+  summary: A head of finance with accounts receivable and a financial analyst. Share your invoices and exports and get where the money stands.
+  bots: [head-of-finance, invoice-chaser, monthly-numbers]
+- id: support-team
+  name: Support team
+  department: Support
+  summary: A head of support with a support agent. Paste customer questions and get sorted, checked draft replies.
+  bots: [head-of-support, support-replier]
