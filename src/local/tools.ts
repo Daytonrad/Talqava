@@ -11,6 +11,7 @@ import {
   memoryTool,
   scheduleTool,
   skillTool,
+  selectMemory,
   systemPrompt,
   BRAND,
   botPrompt,
@@ -20,7 +21,7 @@ import {
 } from "../core/index.ts";
 import type { Bot, Conversation, JobBook, Power, RunSpec, Tool } from "../core/index.ts";
 import { questStore } from "./quests.ts";
-import { WORKSPACE, conversations, getConfig, memory, skills } from "./store.ts";
+import { WORKSPACE, conversations, getConfig, memory, skills, spaces } from "./store.ts";
 import { resolveModel } from "./models.ts";
 import { connectorTools } from "./connectors.ts";
 import { browserAvailable, browserTool } from "./browser.ts";
@@ -206,7 +207,16 @@ export async function localTools(jobs: JobBook): Promise<Tool[]> {
   return tools;
 }
 
-export function localPrompt(root = WORKSPACE, agentName = getConfig().agentName, extra: string[] = []): string {
+/** What the person is asking about now: the latest thing they said, and the chat's title. */
+function topicOf(conversation?: Conversation): string {
+  const said = [...(conversation?.messages ?? [])].reverse().find((m) => m.role === "user" && typeof m.content === "string");
+  return `${typeof said?.content === "string" ? said.content.slice(0, 2000) : ""} ${conversation?.title ?? ""}`;
+}
+
+export function localPrompt(root = WORKSPACE, agentName = getConfig().agentName, extra: string[] = [], conversation?: Conversation): string {
+  // General memory, plus the memory of the conversation's space; what fits this conversation is shown.
+  const space = spaces.get(conversation?.space);
+  const { shown, hidden } = selectMemory(memory.list(), space?.id, topicOf(conversation));
   return systemPrompt({
     agentName,
     setting: "running on the user's own machine",
@@ -214,7 +224,9 @@ export function localPrompt(root = WORKSPACE, agentName = getConfig().agentName,
       `Your working folder is ${root}. File paths are relative to it and files cannot leave it. Each shell command starts in a fresh shell in that folder, so chain steps that depend on each other in one command.`,
       ...extra,
     ],
-    memory: memory.list(),
+    memory: shown,
+    hiddenMemory: hidden,
+    space: space ? { id: space.id, name: space.name } : undefined,
     skills: skills.list(),
   });
 }
@@ -268,7 +280,7 @@ export function localRunSpec(jobs: JobBook) {
         : [];
       return {
         model,
-        system: `${localPrompt(root, bot.name, [...where, ...linked.note])}\n\n${botPrompt(bot)}`,
+        system: `${localPrompt(root, bot.name, [...where, ...linked.note], conversation)}\n\n${botPrompt(bot)}`,
         tools: [...(await botTools(bot, root, jobs, claude)), ...linked.tools],
         hostedTools: claude && bot.powers.includes("web") ? HOSTED_WEB : [],
         // Connectors are reached from this machine (see connectors.ts), so every model can use them.
@@ -286,7 +298,7 @@ export function localRunSpec(jobs: JobBook) {
     const linked = await connectors(true);
     return {
       model,
-      system: localPrompt(WORKSPACE, cfg.agentName, linked.note),
+      system: localPrompt(WORKSPACE, cfg.agentName, linked.note, conversation),
       // Other models read the web with our own page reader; Claude uses Anthropic's.
       tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],

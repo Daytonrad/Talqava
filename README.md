@@ -45,6 +45,14 @@ Everything the agent knows is in the `data/` folder: chats, memory, skills, sche
 
 Scheduled jobs run only while the agent is running. A job that came due while it was off runs once when it next starts.
 
+## Memory and long chats
+
+- **Memory carries across chats.** The agent saves lasting facts as it learns them, and says so in the chat: a "Remembered" note you can **Edit** or **Undo** on the spot. The **Memory** page lists everything, where you can add, edit, move and forget entries.
+- **Spaces keep clients and projects apart.** Pick a space above the chat list (or add one). A chat in a space uses that space's memory together with your General memory, saves what it learns to that space, and searches only that space's chats and General's. Nothing from one space reaches another. Deleting a space deletes its memory and moves its chats to General.
+- **No memory limit.** When there is more than fits in the model's view, each chat is given the entries that match what is being discussed, plus the newest, and the agent searches the rest when it needs to.
+- **Finding past chats.** The agent's search matches words in any order and form ("pricing" finds "price" and "prices") and puts the best matches first. It matches words, not meaning: "what we charge" will not find a chat that only says "pricing".
+- **Long chats.** When a chat outgrows the model, Claude summarises the older part itself. For local models the app asks the model for a running summary of the older part and keeps the latest messages whole; the summary is saved and extended as the chat grows.
+
 ## Run it on a server (always on)
 
 On any small Linux server with Docker:

@@ -7,12 +7,24 @@ export interface PromptInput {
   setting: string;
   /** Extra "How you work" lines that only apply to this edition. */
   environment: string[];
+  /** The memory entries shown in this conversation (see selectMemory). */
   memory: MemoryEntry[];
+  /** How many entries this conversation may see that are not shown, because there are too many to list. */
+  hiddenMemory?: number;
+  /** The space this conversation is in, if any. */
+  space?: { id: string; name: string };
   skills: Skill[];
   today?: Date;
 }
 
-export function systemPrompt({ agentName, setting, environment, memory, skills, today = new Date() }: PromptInput): string {
+export function systemPrompt({ agentName, setting, environment, memory, hiddenMemory = 0, space, skills, today = new Date() }: PromptInput): string {
+  const line = (m: MemoryEntry) => `- [${m.id}]${space ? (m.space ? ` (${space.name})` : " (general)") : ""} ${m.text}`;
+  const where = space
+    ? `This conversation is in the space "${space.name}", which keeps one client's or project's work apart. Entries marked (${space.name}) belong to it and are seen only here; entries marked (general) go into every conversation. What you save here goes to this space unless it is about the user in general (then save it with scope "general"). Never carry details from one space into another.`
+    : "This conversation is in General, so what you save is carried into every conversation.";
+  const more = hiddenMemory
+    ? `\n\n${hiddenMemory} more ${hiddenMemory === 1 ? "entry is" : "entries are"} saved but not listed, because only the ones that fit this conversation are shown. Use the memory tool with action "search" before saying you do not know something about the user or their work.`
+    : "";
   const how = [
     "You can act, not only answer: run code, work with files, search and read the web, call HTTP APIs, and schedule jobs for yourself. When the user asks for something you can do with your tools, do it and report what happened.",
     ...environment,
@@ -27,9 +39,10 @@ export function systemPrompt({ agentName, setting, environment, memory, skills, 
 ${how.map((line) => `- ${line}`).join("\n")}
 
 # Memory
-You do not remember earlier conversations on your own. What you have chosen to remember is listed below. Use the memory tool to save lasting facts and preferences as you learn them, without being asked, and to remove entries that are no longer true. Use conversation_search to look up earlier conversations.
+You do not remember earlier conversations on your own. What you have chosen to remember is listed below. Use the memory tool to save lasting facts and preferences as you learn them, without being asked; to update an entry when the fact changes (rather than adding a second one); and to remove entries that are no longer true. The user sees each thing you save and can edit or undo it. Use conversation_search to look up earlier conversations.
+${where}
 
-${memory.length ? memory.map((m) => `- [${m.id}] ${m.text}`).join("\n") : "(nothing saved yet)"}
+${memory.length ? memory.map(line).join("\n") : "(nothing saved yet)"}${more}
 
 # Skills
 Procedures you wrote down earlier. Read one with the skill tool before doing a task it covers.
