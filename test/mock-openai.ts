@@ -6,7 +6,7 @@ export interface ChatReply {
   text?: string;
   calls?: { name: string; args: unknown }[];
   finish?: string;
-  usage?: { prompt_tokens: number; completion_tokens: number };
+  usage?: { prompt_tokens: number; completion_tokens: number; cost?: number };
   /** Answer with this HTTP status instead of a stream. */
   status?: number;
 }

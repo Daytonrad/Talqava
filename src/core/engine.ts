@@ -241,7 +241,7 @@ export class Engine {
         emit({ type: "notice", text: `Stopped at its budget: ${steps} steps. Say "continue" to keep going.` });
         return;
       }
-      if (spendLimit !== undefined && prices && spent >= spendLimit) {
+      if (spendLimit !== undefined && (prices || spent > 0) && spent >= spendLimit) {
         emit({ type: "notice", text: `Stopped at its budget: about ${dollars(spent)} spent of ${dollars(spendLimit)}. Say "continue" to keep going.` });
         return;
       }
@@ -274,8 +274,9 @@ export class Engine {
 
       conversation.usage.input += reply.usage.input + (reply.usage.cacheRead ?? 0) + (reply.usage.cacheWrite ?? 0);
       conversation.usage.output += reply.usage.output;
-      if (prices) {
-        const cost = costOf(prices, reply.usage);
+      // The cost the service reported, or else an estimate from the model's list prices.
+      const cost = reply.usage.cost ?? (prices ? costOf(prices, reply.usage) : undefined);
+      if (cost !== undefined) {
         spent += cost;
         conversation.usage.cost = (conversation.usage.cost ?? 0) + cost;
       }

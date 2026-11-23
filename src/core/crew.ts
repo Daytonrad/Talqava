@@ -214,5 +214,6 @@ export function botPrompt(bot: Bot): string {
     `You are ${bot.name === bot.title ? `the ${bot.title}` : `${bot.name}, the ${bot.title},`} in the user's organization, and you have been given a task. ${bot.instructions}`,
     ...governancePrompt(bot),
     "You only have the tools listed for you. If the task needs something you cannot do, say so plainly and suggest which role could do it. When the task is done, end with a short report: what you did, how you checked it, and anything that needs the user.",
+    "Every step costs the owner money. If you are missing something the task cannot start without (a file, a repository, access, a decision), stop at once and ask the owner for it in one short message: do not hand out side work, search around or ask colleagues in the meantime. Do the task that was asked, not a larger one. Look something up once, not three ways. Keep reports short.",
   ].join("\n\n");
 }

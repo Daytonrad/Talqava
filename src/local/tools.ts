@@ -21,11 +21,11 @@ import {
   setting,
 } from "../core/index.ts";
 import type { Bot, Conversation, JobBook, Power, RunSpec, Tool } from "../core/index.ts";
-import { MAX_DEPTH, MAX_OPEN_HANDOFFS, questStore, quests } from "./quests.ts";
+import { MAX_DEPTH, MAX_OPEN_HANDOFFS, chainBudget, chainOver, questStore, quests, rootOf } from "./quests.ts";
 import { loadCrew } from "./crew.ts";
 import { assignableBy, memberOf, oneLine, orgs, reportsOf, requestableBy, rolePrompt } from "./orgs.ts";
 import { orgMemoryPrompt, teamMemoryTool } from "./orgmemory.ts";
-import { libraryPrompt, libraryTool } from "./library.ts";
+import { libraryPrompt, libraryTool, GENERAL_AGENT } from "./library.ts";
 import { structureOf } from "./structures.ts";
 import { WORKSPACE, conversations, getConfig, memory, skills, spaces } from "./store.ts";
 import { resolveModel } from "./models.ts";
@@ -292,12 +292,22 @@ export const assignTool: Tool = defineTool<{ to: string; task: string }>({
     if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error(`Tasks can be handed down ${MAX_DEPTH} levels at most. Do this one yourself.`);
     const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
     if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks you assigned are still open. Wait for their reports before assigning more.`);
+    withinChainBudget(quest);
     const by = caller?.name ?? getConfig().agentName;
     const text = `${task}\n\n[Assigned by ${by}${caller ? `, the ${memberOf(org, caller.id)?.title ?? caller.title}` : ", on the user's behalf"}. You cannot see their conversation, so work from this task alone. End with a short report of what you did and what you found: it is sent back to ${by}.]`;
     await quests.start({ bot: target, text, title: task, project: quest?.project, parent: { id: conversation.id, by } });
     return `Assigned to ${target.name} (${memberOf(org, target.id)?.title ?? target.title}). Its report will arrive here as a message when it is done. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
   },
 });
+
+/** Questions one task may put to colleagues. Asking around is the most expensive way to learn that nobody knows. */
+const MAX_QUESTIONS = 3;
+
+/** Refuses a hand-off when the task it belongs to has used the budget it shares with everything handed on from it. */
+function withinChainBudget(quest: ReturnType<typeof questStore.get>) {
+  const root = quest ? rootOf(quest) : null;
+  if (root && chainOver(root)) throw new Error("This task and what was handed on from it have used the whole budget for one task ($" + chainBudget().toFixed(2) + "). Hand on nothing more: finish with what you have, and say plainly what is not done and what it would take.");
+}
 
 /** A colleague by its file name, its name or its title in this organization. */
 function findColleague(among: Bot[], org: ReturnType<typeof orgs.active>, wanted: string): Bot | undefined {
@@ -319,7 +329,7 @@ function agentOf(conversationId: string): Bot | undefined {
 export const askTool: Tool = defineTool<{ to: string; question: string }>({
   name: "ask_colleague",
   description:
-    "Ask another agent in the organization a question. Use it when a colleague knows something you need: a fact from their department, their view on your plan, what they decided earlier. They answer briefly from what they know and the answer arrives here as a message, so finish anything that does not depend on it and end your turn. It is for questions, not for handing over work (use assign_task for that). Leave the name out to see who you can ask.",
+    "Ask one colleague a question. Use it only when that colleague's own job means they hold something you need: a fact from their department, a decision they made. Each question costs money, and a task may ask at most three. Never put the same question to several colleagues, and never ask around to see who knows: a colleague knows only what is in the organization's memory and library, which you can search yourself, plus their own notes. They answer briefly and the answer arrives here as a message, so finish anything that does not depend on it and end your turn. It is for questions, not for handing over work (use assign_task for that). Leave the name out to see who you can ask.",
   properties: {
     to: { type: "string", description: "The colleague's name or job title." },
     question: { type: "string", description: "The question, with the context needed to answer it. They cannot see this conversation." },
@@ -342,6 +352,11 @@ export const askTool: Tool = defineTool<{ to: string; question: string }>({
     if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error("This task is already several hand-offs deep. Work from what you have, and say what you could not confirm.");
     const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
     if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks and questions of yours are still open. Wait for them before asking more.`);
+    const asked = questStore.list().filter((q) => q.parent?.id === conversation.id && q.kind === "question");
+    if (asked.length >= MAX_QUESTIONS) throw new Error("You have already asked " + MAX_QUESTIONS + " colleagues in this task, which is the most one task may ask. Work from what you have and what the organization's memory and library hold; if something essential is still missing, say so in your report and name who the owner should ask.");
+    const sameAs = (title: string) => title.replace(/^Question: /, "").slice(0, 60) === question.replace(/\s+/g, " ").slice(0, 60);
+    if (asked.some((q) => sameAs(q.title))) throw new Error("You have already put this same question to a colleague. Do not poll several colleagues with one question: ask the one whose job it is, once.");
+    withinChainBudget(quest);
     const by = caller?.name ?? getConfig().agentName;
     const text = `${question}\n\n[A question from ${by}${caller ? `, the ${memberOf(org, caller.id)?.title ?? caller.title}` : ", on the user's behalf"}. Answer it in a few sentences from what you know, the organization's memory and a quick look if one is needed. Do not start a piece of work or change anything. If you do not know, say so and say who might. Your answer is sent back to ${by}.]`;
     await quests.start({ bot: target, text, title: `Question: ${question}`, parent: { id: conversation.id, by }, kind: "question" });
@@ -382,6 +397,7 @@ export const requestTool: Tool = defineTool<{ to: string; request: string; why?:
     if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error("This task is already several hand-offs deep. Say in your report what is needed from the other department.");
     const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
     if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks and requests of yours are still open. Wait for them before making more.`);
+    withinChainBudget(quest);
     const why = String(input.why ?? "").trim();
     const text = `${request}${why ? `\n\nWhy and by when: ${why}` : ""}\n\n[A request from ${caller.name}, the ${memberOf(org, caller.id)?.title ?? caller.title} in ${memberOf(org, caller.id)?.department ?? "another department"}. This is a request from a colleague, not an order from your lead. Weigh it against your own priorities and decision rights. If you accept, do it or hand its parts to your team, and end with a short report. If you decline, say so in one line with the reason and what would change your answer. You cannot see their conversation. Your reply is sent back to ${caller.name}.]`;
     await quests.start({ bot: target, text, title: `Request: ${request}`, project: quest?.project, parent: { id: conversation.id, by: caller.name } });
@@ -441,10 +457,33 @@ function teamworkTools(org: ReturnType<typeof orgs.active>, botId: string): Tool
 }
 
 /** The organization's library of documents, for whoever is running in a conversation. */
-const libraryForAgents = libraryTool((conversationId) => agentOf(conversationId)?.id ?? null);
+const libraryForAgents = libraryTool((conversationId) => agentOf(conversationId)?.id ?? GENERAL_AGENT);
+
+/**
+ * Which model an agent's run uses, and how hard it thinks. An agent with a
+ * model of its own keeps it. Otherwise, with cost saving on and one of
+ * Claude's larger models as the main model, the work is matched to a model
+ * that fits it: a manager who plans and checks keeps the main model, a team
+ * member doing its part uses the mid-size model, and a quick question or a
+ * decision uses the small one. That alone cuts the cost of a team task
+ * several times over. Which model the owner's money runs on is the owner's
+ * choice, so cost saving is off until they switch it on under Settings; with
+ * it off, everything uses the main model.
+ */
+export function costModel(cfg: ReturnType<typeof getConfig>, bot: Bot, work: "manager" | "member" | "question", override?: string): { ref: string; effort: ReturnType<typeof getConfig>["effort"] } {
+  if (override) return { ref: override, effort: cfg.effort };
+  if (bot.model) return { ref: bot.model, effort: work === "question" ? "low" : cfg.effort };
+  const slash = cfg.model.indexOf("/");
+  const provider = cfg.providers.find((p) => p.id === cfg.model.slice(0, slash));
+  const large = provider?.kind === "anthropic" && /opus|fable/.test(cfg.model.slice(slash + 1));
+  if ((cfg.savings ?? "off") === "off" || !large) return { ref: cfg.model, effort: work === "question" ? "low" : cfg.effort };
+  if (work === "question") return { ref: `${provider!.id}/claude-haiku-5-5`, effort: "low" };
+  if (work === "member") return { ref: `${provider!.id}/claude-sonnet-5-5`, effort: "medium" };
+  return { ref: cfg.model, effort: cfg.effort };
+}
 
 /** A question is answered on a small budget: a few steps, and no hand-offs of its own. */
-const QUESTION_BUDGET = { steps: 6, spend: 0.15 };
+const QUESTION_BUDGET = { steps: 3, spend: 0.05 };
 
 /** What a bot is told when the person chats with it directly, in place of the line about being sent on a quest. */
 function botChatPrompt(bot: Bot): string {
@@ -486,13 +525,20 @@ export function localRunSpec(jobs: JobBook) {
     const quest = conversation.source === "quest" ? questStore.get(conversation.id) : null;
     if (quest) {
       const bot = limitProjectBot(quest.bot, cfg);
-      const model = resolveModel(cfg, quest.modelOverride ?? bot.model ?? cfg.model);
+      // A manager (anyone with someone to hand work to) keeps the main model; a member doing its own part gets a cheaper one.
+      const manages = assignableBy(orgs.active(), bot.id).length > 0 || bot.lead;
+      const choice = costModel(cfg, bot, quest.kind ? "question" : manages ? "manager" : "member", quest.modelOverride);
+      const model = resolveModel({ ...cfg, effort: choice.effort }, choice.ref);
       const claude = model.kind === "anthropic";
       const root = quest.copy?.worktree ?? WORKSPACE;
       const linked = await connectors(bot.powers.includes("connectors"));
       const where = quest.copy
         ? [`You are working in your own copy of the repository ${quest.project}, on the branch ${quest.copy.branch}. The user reviews your changes before they keep them, so make the changes directly here; do not commit, push or switch branches.`]
-        : [];
+        : quest.project
+          ? [`This task is about the repository ${path.basename(quest.project)}. You cannot read or change its files yourself; hand the parts that need the code to a colleague who can.`]
+          : cfg.projects.length
+            ? [`No repository is attached to this task. The owner has connected ${cfg.projects.map((p) => path.basename(p)).join(", ")}. If the task needs the code, do not search for it and do not hand out work: stop and tell the owner to choose the repository in the Repository box on the Work in progress page and assign the task again.`]
+            : ["No repository is connected. If the task needs code that you cannot see, do not hand out work: stop and tell the owner to connect the repository under Integrations, then assign the task again."];
       const org = orgs.active();
       const role = rolePrompt(bot, org);
       const onChart = Boolean(memberOf(org, bot.id));
@@ -500,6 +546,30 @@ export function localRunSpec(jobs: JobBook) {
       const question = Boolean(quest.kind);
       // Whoever may hand work to someone gets assign_task; every member can ask a colleague and use the shared memory.
       const teamwork = !onChart ? [] : question ? [teamMemory, libraryForAgents] : teamworkTools(org, bot.id);
+      if (question) {
+        // Answering a colleague is a small job, so it is run as one: a short prompt with only who the agent is and
+        // what the organization knows, the two look-up tools, low effort and a few steps. This is what keeps a
+        // question to a cent or two instead of the cost of a full task.
+        const me = memberOf(org, bot.id);
+        return {
+          model,
+          system: [
+            `You are the ${me?.title ?? bot.title} in the ${me?.department ?? bot.group} department of ${org.name}. ${oneLine(bot)}`,
+            "A colleague has put a question to you, or asked you to decide something. Answer in a few sentences, from what you know and what the organization's memory and library hold. Look something up at most once or twice. Do not start any work, do not ask anyone else, and do not pad the answer. If you do not know, say so in one line and say who might.",
+            // A question carries less of the organization's memory than a full task does.
+            onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation), 1200), libraryPrompt(org, bot.id)].filter(Boolean).join("\n\n") : "",
+            `Today's date is ${new Date().toDateString()}.`,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+          tools: teamwork,
+          hostedTools: [],
+          mcpServers: [],
+          approvalMode: bot.approvals,
+          budget: QUESTION_BUDGET,
+          cautionAfter: [...CAUTION_TOOLS],
+        };
+      }
       return {
         model,
         system: `${localPrompt(root, bot.name, [...where, ...linked.note], conversation)}\n\n${botPrompt(bot)}${role ? `\n\n${role}` : ""}${remembered ? `\n\n${remembered}` : ""}`,
@@ -543,7 +613,7 @@ export function localRunSpec(jobs: JobBook) {
     const linked = await connectors(true);
     return {
       model,
-      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", libraryPrompt(orgs.active(), null)].filter(Boolean).join("\n\n"))}`,
+      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", libraryPrompt(orgs.active(), GENERAL_AGENT)].filter(Boolean).join("\n\n"))}`,
       // Other models read the web with our own page reader; Claude uses Anthropic's.
       tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],

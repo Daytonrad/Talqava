@@ -11,6 +11,8 @@ export interface ModelUsage {
   output: number;
   cacheRead?: number;
   cacheWrite?: number;
+  /** What the call cost in dollars, when the service reports it (OpenRouter does). Preferred over an estimate. */
+  cost?: number;
 }
 
 /** Prices in US dollars per million tokens. */

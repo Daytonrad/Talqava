@@ -23,7 +23,7 @@ export interface IntegrationInfo {
 }
 
 /** The categories integrations are filed under, in the order they are shown. */
-export const INTEGRATION_CATEGORIES = ["Code and repositories", "AI apps and connectors"];
+export const INTEGRATION_CATEGORIES = ["AI models", "Code and repositories", "AI apps and connectors"];
 
 const run = (cwd: string, args: string[], timeout = 15_000): Promise<{ ok: boolean; out: string; err: string }> =>
   new Promise((resolve) => {
@@ -112,8 +112,10 @@ export async function listIntegrations(): Promise<{ categories: string[]; integr
   const git = await gitIntegration();
   const { mcpIntegration } = await import("./mcpintegration.ts");
   const mcp = mcpIntegration();
+  const { openrouterIntegration } = await import("./openrouter.ts");
+  const openrouter = await openrouterIntegration({ withAccount: false });
   const line = (i: IntegrationInfo): IntegrationInfo => ({ id: i.id, name: i.name, category: i.category, summary: i.summary, state: i.state, status: i.status });
-  return { categories: INTEGRATION_CATEGORIES, integrations: [line(git), line(mcp)] };
+  return { categories: INTEGRATION_CATEGORIES, integrations: [line(openrouter), line(git), line(mcp)] };
 }
 
 /**

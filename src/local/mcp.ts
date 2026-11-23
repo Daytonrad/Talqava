@@ -110,7 +110,8 @@ async function run(name: string, input: Record<string, unknown>): Promise<string
     if (!bot) throw new Error(`There is no agent called "${input.agent}". The agents are: ${pool.map((b) => b.name).join(", ")}.`);
     const text = String(input.task ?? "").trim();
     if (text.length < 10) throw new Error("Say what the task is, with everything the agent needs to know.");
-    const task = await app<Task>("POST", "quests", { bot: bot.id, text });
+    const task = await app<Task & { needs?: { title: string; detail: string }[] }>("POST", "quests", { bot: bot.id, text });
+    if (task.needs?.length) return `Not started: something the task needs is missing.\n${task.needs.map((n) => `- ${n.title}: ${n.detail}`).join("\n")}\nAsk the owner to set this up in the Talqava app, then assign it again.`;
     return `Assigned to the ${bot.name}. Task id: ${task.id}. It is working in the Talqava app; read its result with talqava_task. If it needs the owner's approval, the owner gives it in the Talqava app.`;
   }
   if (name === "talqava_task") {

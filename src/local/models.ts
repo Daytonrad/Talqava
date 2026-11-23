@@ -3,6 +3,7 @@ import { AnthropicModel, OpenAICompatibleModel } from "../core/index.ts";
 import type { Model } from "../core/index.ts";
 import { apiKey, getConfig, summaries } from "./store.ts";
 import type { Config } from "./store.ts";
+import { ATTRIBUTION, OPENROUTER_ID, openrouterModelInfo } from "./openrouter.ts";
 
 export function splitRef(ref: string): { providerId: string; model: string } {
   const at = ref.indexOf("/");
@@ -18,14 +19,17 @@ export function resolveModel(cfg: Config = getConfig(), ref = cfg.model): Model 
     return new AnthropicModel({ apiKey: apiKey(cfg) || undefined, model, effort: cfg.effort, providerId: provider.id });
   }
   if (!provider.baseUrl) throw new Error(`${provider.name} has no address. Add it under Settings.`);
+  // On OpenRouter every model has its own prices and size; they come from its list of models.
+  const listed = provider.id === OPENROUTER_ID ? openrouterModelInfo(model) : undefined;
   return new OpenAICompatibleModel({
     providerId: provider.id,
     providerName: provider.name,
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey || undefined,
     model,
-    prices: provider.prices,
-    contextTokens: provider.contextTokens,
+    prices: listed?.prices ?? provider.prices,
+    contextTokens: listed?.contextTokens ?? provider.contextTokens,
+    ...(provider.id === OPENROUTER_ID ? { headers: ATTRIBUTION, maxTokens: listed ? Math.min(16_000, Math.max(4096, Math.floor(listed.contextTokens / 8))) : undefined } : {}),
     summaries,
   });
 }

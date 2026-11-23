@@ -200,3 +200,22 @@ test("the page reader follows redirects and reads the page", async () => {
     site.close();
   }
 });
+
+test("a cost the service reports (as OpenRouter does) is used instead of an estimate, and counts towards the budget", async () => {
+  run = { model: local({ input: 1, output: 1 }), budget: { steps: 10, spend: 0.5 } };
+  script.push({ calls: [{ name: "echo", args: { word: "a" } }], usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0.3 } }, { calls: [{ name: "echo", args: { word: "b" } }], usage: { prompt_tokens: 100, completion_tokens: 20, cost: 0.3 } }, { text: "never reached" });
+  const { saved, notices } = await runOnce("echo twice");
+  // 0.3 + 0.3 reported, not the 0.00012 per call the list prices would give; the second call passes the $0.50 budget.
+  assert.equal(Math.round(saved.usage.cost! * 100) / 100, 0.6);
+  assert.ok(notices.some((n) => /Stopped at its budget/.test(n)));
+  script.length = 0;
+});
+
+test("a model with no known prices still keeps to the budget when the service reports costs", async () => {
+  run = { model: local(undefined), budget: { steps: 10, spend: 0.1 } };
+  script.push({ calls: [{ name: "echo", args: { word: "a" } }], usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.2 } }, { text: "never reached" });
+  const { saved, notices } = await runOnce("echo once");
+  assert.equal(saved.usage.cost, 0.2);
+  assert.ok(notices.some((n) => /Stopped at its budget/.test(n)));
+  script.length = 0;
+});

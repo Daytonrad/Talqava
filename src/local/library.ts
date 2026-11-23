@@ -30,6 +30,8 @@ export const libraryFolder = (orgId: string) => path.join(home(orgId), "Library"
 /** Who may use a document: everyone in the organization, or only some departments and agents. */
 export interface Access {
   everyone: boolean;
+  /** Locked: no agent may find, list or read it, whatever else is set. Only the owner sees it. */
+  private: boolean;
   departments: string[];
   agents: string[];
 }
@@ -41,12 +43,16 @@ export interface LibraryDoc {
   name: string;
   type: string;
   size: number;
+  /** When the file last changed, in milliseconds. */
+  modified: number;
   /** Whether its text could be read. A picture or an unknown kind of file is kept and can be found by name only. */
   readable: boolean;
   passages: number;
   access: Access;
   /** True when the person set who may use it, rather than its folder deciding. */
   accessSet: boolean;
+  /** The folder whose setting it follows ("" the library itself), its own path when set on it, or null for the default. */
+  accessFrom: string | null;
   problem: string;
   addedAt: string;
 }
@@ -81,6 +87,7 @@ function open(orgId: string): DatabaseSync {
       text text not null
     );
     create index if not exists passages_document on passages(document, seq);
+    create table if not exists folder_access (path text primary key, access text not null);
     create virtual table if not exists passages_fts using fts5(text, content='passages', content_rowid='id', tokenize='porter unicode61');
     create trigger if not exists passages_ai after insert on passages begin insert into passages_fts(rowid, text) values (new.id, new.text); end;
     create trigger if not exists passages_ad after delete on passages begin insert into passages_fts(passages_fts, rowid, text) values ('delete', old.id, old.text); end;
@@ -104,7 +111,7 @@ export function ensureFolders(org: Org): string {
   if (!fs.existsSync(note)) {
     fs.writeFileSync(
       note,
-      `This is the library of ${org.name} in Talqava Agents.\n\nDrop documents here and your agents can search and read them.\n\n- Files in "${EVERYONE}" can be used by every agent.\n- Files in a department's folder (such as "Finance") can be used only by that department's agents.\n- You can change who may use any single file on the Library page in the app.\n\nReadable: PDF, Word, PowerPoint, Excel, text, Markdown, CSV, web pages and similar.\nOther files (pictures, videos) are kept and can be found by name.\n`,
+      `This is the library of ${org.name} in Talqava Agents.\n\nDrop documents here and your agents can search and read them.\n\n- Files in "${EVERYONE}" can be used by every agent.\n- Files in a department's folder (such as "Finance") can be used only by that department's agents.\n- You can change who may use any file or folder on the Library page in the app, or lock it as Private so no agent ever sees it.\n\nReadable: PDF, Word, PowerPoint, Excel, text, Markdown, CSV, web pages and similar.\nOther files (pictures, videos) are kept and can be found by name.\n`,
     );
   }
   return root;
@@ -263,7 +270,7 @@ function walk(root: string): { rel: string; full: string; size: number; modified
       return;
     }
     for (const n of names) {
-      if (n.name.startsWith(".") || n.name.startsWith("~$") || n.name === "READ ME.txt") continue;
+      if (n.name.startsWith(".") || n.name.startsWith("~$") || (depth === 0 && n.name === "READ ME.txt")) continue;
       const full = path.join(folder, n.name);
       if (n.isDirectory()) visit(full, depth + 1);
       else if (n.isFile()) {
@@ -293,7 +300,19 @@ export function syncLibrary(org: Org): Promise<{ added: number; updated: number;
     const found = walk(root);
     let added = 0;
     let updated = 0;
+    const present = new Set(found.map((f) => f.rel));
+    const vanished = new Map([...known.values()].filter((r) => !present.has(r.path)).map((r) => [r.hash, r]));
     for (const file of found) {
+      if (!known.has(file.rel) && vanished.size) {
+        const hash = crypto.createHash("sha1").update(fs.readFileSync(file.full)).digest("hex");
+        const was = vanished.get(hash);
+        if (was) {
+          db.prepare("update documents set path = ?, name = ?, size = ?, modified = ? where id = ?").run(file.rel, path.basename(file.rel), file.size, file.modified, was.id);
+          vanished.delete(hash);
+          known.delete(was.path);
+          continue;
+        }
+      }
       const before = known.get(file.rel);
       known.delete(file.rel);
       if (before && before.size === file.size && before.modified === file.modified) continue;
@@ -335,41 +354,177 @@ export function syncLibrary(org: Org): Promise<{ added: number; updated: number;
 
 // ---------- who may use what ----------
 
-/** A document's access when the person has not set it: decided by the folder it sits in. */
-function folderAccess(org: Org, rel: string): Access {
-  const top = rel.includes("/") ? rel.split("/")[0] : EVERYONE;
-  const department = [...new Set(org.members.map((m) => m.department))].find((d) => safeName(d).toLowerCase() === top.toLowerCase());
-  return department ? { everyone: false, departments: [department], agents: [] } : { everyone: true, departments: [], agents: [] };
+/** The owner, looking at their own library in the app: sees everything, private files too. */
+export const OWNER = null;
+/** The general chat agent: an AI, so it never sees private files. */
+export const GENERAL_AGENT = "@general";
+
+/** Paths inside the library are written with "/", each part a safe name; "" is the library itself. */
+export function cleanRel(input: unknown): string {
+  const parts = String(input ?? "").split(/[\\/]+/).map((p) => p.trim()).filter(Boolean);
+  if (parts.some((p) => p === "." || p === ".." || p.startsWith("."))) throw new Error("That is not a folder in the library.");
+  return parts.map(safeName).join("/");
+}
+const parentOf = (rel: string) => (rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "");
+const baseOf = (rel: string) => rel.slice(rel.lastIndexOf("/") + 1);
+/** The full path on the computer of a place in the library, refused if it would fall outside it. */
+function fullOf(org: Org, rel: string): string {
+  const root = libraryFolder(org.id);
+  const full = path.resolve(root, ...rel.split("/").filter(Boolean));
+  if (full !== root && !full.startsWith(root + path.sep)) throw new Error("That is not in the library.");
+  return full;
 }
 
-function accessOf(org: Org, row: Row): { access: Access; set: boolean } {
-  if (row.access) {
-    try {
-      const a = JSON.parse(row.access) as Partial<Access>;
-      return { access: { everyone: a.everyone === true, departments: Array.isArray(a.departments) ? a.departments.map(String) : [], agents: Array.isArray(a.agents) ? a.agents.map(String) : [] }, set: true };
-    } catch {}
+function parseAccess(raw: string | null): Access | null {
+  if (!raw) return null;
+  try {
+    const a = JSON.parse(raw) as Partial<Access>;
+    return { everyone: a.everyone === true && a.private !== true, private: a.private === true, departments: Array.isArray(a.departments) ? a.departments.map(String) : [], agents: Array.isArray(a.agents) ? a.agents.map(String) : [] };
+  } catch {
+    return null;
   }
-  return { access: folderAccess(org, row.path), set: false };
 }
 
-/** Whether an agent may use a document. The person (no agent) may use everything. */
+/** What a top folder named after a department means when nobody has set anything: that department only. */
+function departmentAccess(org: Org, rel: string): Access {
+  const top = rel.split("/")[0] ?? "";
+  const department = [...new Set(org.members.map((m) => m.department))].find((d) => safeName(d).toLowerCase() === top.toLowerCase());
+  return department ? { everyone: false, private: false, departments: [department], agents: [] } : { everyone: true, private: false, departments: [], agents: [] };
+}
+
+const folderSettings = (db: DatabaseSync) => new Map((db.prepare("select path, access from folder_access").all() as unknown as { path: string; access: string }[]).map((r) => [r.path, parseAccess(r.access)!]).filter(([, a]) => a) as [string, Access][]);
+
+/**
+ * Who may use something at `rel`: its own setting if it has one, else the nearest folder above it that has one,
+ * else what a department's top folder means, else every agent. `from` says where the answer came from.
+ */
+function effectiveAccess(org: Org, rel: string, own: Access | null, settings: Map<string, Access>): { access: Access; from: string | null } {
+  if (own) return { access: own, from: rel };
+  for (let at = parentOf(rel); ; at = parentOf(at)) {
+    const set = settings.get(at);
+    if (set) return { access: set, from: at };
+    if (!at) break;
+  }
+  return { access: departmentAccess(org, rel), from: null };
+}
+
+/** Whether someone may use a document. The owner may use everything; no agent may use a private one. */
 function mayUse(org: Org, access: Access, botId: string | null): boolean {
-  if (!botId || access.everyone) return true;
+  if (botId === OWNER) return true;
+  if (access.private) return false;
+  if (botId === GENERAL_AGENT || access.everyone) return true;
   const me = memberOf(org, botId);
   return access.agents.includes(botId) || Boolean(me && access.departments.includes(me.department));
 }
 
-const toDoc = (org: Org, db: DatabaseSync, row: Row): LibraryDoc => {
-  const { access, set } = accessOf(org, row);
+const toDoc = (org: Org, db: DatabaseSync, row: Row, settings = folderSettings(db)): LibraryDoc => {
+  const own = parseAccess(row.access);
+  const { access, from } = effectiveAccess(org, row.path, own, settings);
   const passages = (db.prepare("select count(*) n from passages where document = ?").get(row.id) as { n: number }).n - 1;
-  return { id: row.id, path: row.path, name: row.name, type: row.type || "file", size: row.size, readable: row.readable === 1, passages: Math.max(0, passages), access, accessSet: set, problem: row.problem, addedAt: row.added_at };
+  return { id: row.id, path: row.path, name: row.name, type: row.type || "file", size: row.size, modified: row.modified, readable: row.readable === 1, passages: Math.max(0, passages), access, accessSet: Boolean(own), accessFrom: from, problem: row.problem, addedAt: row.added_at };
 };
+
+function cleanAccess(org: Org, access: Partial<Access>): string {
+  const departments = new Set(org.members.map((m) => m.department));
+  const agents = new Set(org.members.map((m) => m.bot));
+  const isPrivate = access.private === true;
+  return JSON.stringify({
+    everyone: !isPrivate && access.everyone === true,
+    private: isPrivate,
+    departments: isPrivate ? [] : (access.departments ?? []).map(String).filter((d) => departments.has(d)),
+    agents: isPrivate ? [] : (access.agents ?? []).map(String).filter((a) => agents.has(a)),
+  });
+}
+
+const uniqueTarget = (dir: string, name: string) => {
+  let target = path.join(dir, name);
+  const ext = fs.existsSync(target) && fs.statSync(target).isFile() ? path.extname(name) : "";
+  for (let n = 2; fs.existsSync(target); n++) target = path.join(dir, `${ext ? path.basename(name, ext) : name} (${n})${ext}`);
+  return target;
+};
+const likePrefix = (rel: string) => `${rel.replace(/[\\%_]/g, (c) => `\\${c}`)}/%`;
+
+// ---------- deleted items: kept for 30 days, then gone ----------
+interface Trashed {
+  id: string;
+  name: string;
+  kind: "file" | "folder";
+  /** Where it was, inside the library. */
+  from: string;
+  at: string;
+  size: number;
+  /** The access settings it and anything inside it had, by path relative to it ("" is itself). */
+  access: Record<string, string>;
+  folderAccess: Record<string, string>;
+}
+const KEEP_DELETED_DAYS = 30;
+const trashHome = (orgId: string) => path.join(home(orgId), "Deleted");
+const trashFile = (orgId: string) => path.join(trashHome(orgId), "deleted.json");
+function readTrash(orgId: string): Trashed[] {
+  try {
+    return JSON.parse(fs.readFileSync(trashFile(orgId), "utf8")) as Trashed[];
+  } catch {
+    return [];
+  }
+}
+function writeTrash(orgId: string, items: Trashed[]) {
+  fs.mkdirSync(trashHome(orgId), { recursive: true });
+  fs.writeFileSync(trashFile(orgId), JSON.stringify(items, null, 1));
+}
+const sizeOfTree = (full: string): number => {
+  const stat = fs.statSync(full);
+  if (!stat.isDirectory()) return stat.size;
+  return fs.readdirSync(full).reduce((n, name) => n + sizeOfTree(path.join(full, name)), 0);
+};
+
+export interface LibraryFolder {
+  path: string;
+  name: string;
+  files: number;
+  folders: number;
+  access: Access;
+  accessSet: boolean;
+  accessFrom: string | null;
+}
 
 export const library = {
   /** Every document, or those one agent may use. */
-  list(org: Org, botId: string | null = null): LibraryDoc[] {
+  list(org: Org, botId: string | null = OWNER): LibraryDoc[] {
     const db = open(org.id);
-    return (db.prepare("select * from documents order by path").all() as unknown as Row[]).map((r) => toDoc(org, db, r)).filter((d) => mayUse(org, d.access, botId));
+    const settings = folderSettings(db);
+    return (db.prepare("select * from documents order by path").all() as unknown as Row[]).map((r) => toDoc(org, db, r, settings)).filter((d) => mayUse(org, d.access, botId));
+  },
+
+  /** Every folder in the library, with what is in it and who may use it. */
+  folders(org: Org): LibraryFolder[] {
+    const root = ensureFolders(org);
+    const db = open(org.id);
+    const settings = folderSettings(db);
+    const out: LibraryFolder[] = [];
+    const visit = (dir: string, depth: number) => {
+      if (depth > 8 || out.length > 2000) return;
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name.startsWith(".")) continue;
+        const full = path.join(dir, e.name);
+        const rel = path.relative(root, full).split(path.sep).join("/");
+        let inner: fs.Dirent[] = [];
+        try {
+          inner = fs.readdirSync(full, { withFileTypes: true }).filter((x) => !x.name.startsWith(".") && !x.name.startsWith("~$"));
+        } catch {}
+        const own = settings.get(rel) ?? null;
+        const { access, from } = effectiveAccess(org, rel, own, settings);
+        out.push({ path: rel, name: e.name, files: inner.filter((x) => x.isFile()).length, folders: inner.filter((x) => x.isDirectory()).length, access, accessSet: Boolean(own), accessFrom: from });
+        visit(full, depth + 1);
+      }
+    };
+    visit(root, 0);
+    return out.sort((a, b) => a.path.localeCompare(b.path));
   },
 
   /**
@@ -387,12 +542,13 @@ export const library = {
     } catch {
       return [];
     }
+    const settings = folderSettings(db);
     const docs = new Map((db.prepare("select * from documents").all() as unknown as Row[]).map((r) => [r.id, r]));
     const out: { document: number; name: string; path: string; part: number; text: string }[] = [];
     const perDoc = new Map<number, number>();
     for (const r of rows) {
       const doc = docs.get(r.document);
-      if (!doc || !mayUse(org, accessOf(org, doc).access, botId)) continue;
+      if (!doc || !mayUse(org, effectiveAccess(org, doc.path, parseAccess(doc.access), settings).access, botId)) continue;
       // At most three passages from one document, so one long file does not crowd out the rest.
       if ((perDoc.get(r.document) ?? 0) >= 3) continue;
       perDoc.set(r.document, (perDoc.get(r.document) ?? 0) + 1);
@@ -407,8 +563,8 @@ export const library = {
   read(org: Org, botId: string | null, id: number, from = 1, budget = 6000): { name: string; text: string; from: number; to: number; parts: number } {
     const db = open(org.id);
     const row = db.prepare("select * from documents where id = ?").get(id) as unknown as Row | undefined;
-    if (!row || !mayUse(org, accessOf(org, row).access, botId)) throw new Error("There is no such document in the library, or it is not one you may use.");
-    const parts = (db.prepare("select seq, text from passages where document = ? and seq >= ? order by seq").all(id, Math.max(1, from)) as unknown as { seq: number; text: string }[]);
+    if (!row || !mayUse(org, effectiveAccess(org, row.path, parseAccess(row.access), folderSettings(db)).access, botId)) throw new Error("There is no such document in the library, or it is not one you may use.");
+    const parts = db.prepare("select seq, text from passages where document = ? and seq >= ? order by seq").all(id, Math.max(1, from)) as unknown as { seq: number; text: string }[];
     const total = (db.prepare("select count(*) n from passages where document = ?").get(id) as { n: number }).n - 1;
     let text = "";
     let to = Math.max(1, from) - 1;
@@ -420,47 +576,177 @@ export const library = {
     return { name: row.name, text: text || (row.problem || "This file has no readable text."), from: Math.max(1, from), to, parts: total };
   },
 
+  /** One document, for the app: its details and where it is on this computer. */
+  file(org: Org, id: number): { doc: LibraryDoc; full: string } {
+    const db = open(org.id);
+    const row = db.prepare("select * from documents where id = ?").get(id) as unknown as Row | undefined;
+    if (!row) throw new Error("There is no such document.");
+    return { doc: toDoc(org, db, row), full: fullOf(org, row.path) };
+  },
+
   /** Sets who may use a document, or hands the decision back to its folder. */
   setAccess(org: Org, id: number, access: Partial<Access> | null): LibraryDoc {
     const db = open(org.id);
     const row = db.prepare("select * from documents where id = ?").get(id) as unknown as Row | undefined;
     if (!row) throw new Error("There is no such document.");
-    const departments = new Set(org.members.map((m) => m.department));
-    const agents = new Set(org.members.map((m) => m.bot));
-    const value = access === null ? null : JSON.stringify({ everyone: access.everyone === true, departments: (access.departments ?? []).map(String).filter((d) => departments.has(d)), agents: (access.agents ?? []).map(String).filter((a) => agents.has(a)) });
-    db.prepare("update documents set access = ? where id = ?").run(value, id);
+    db.prepare("update documents set access = ? where id = ?").run(access === null ? null : cleanAccess(org, access), id);
     return toDoc(org, db, db.prepare("select * from documents where id = ?").get(id) as unknown as Row);
   },
 
-  /** Saves a file into the library (in Everyone, or a department's folder) and reads it in. */
+  /** Sets who may use everything in a folder (unless a file inside says otherwise), or clears it. */
+  setFolderAccess(org: Org, rel: unknown, access: Partial<Access> | null) {
+    const at = cleanRel(rel);
+    if (!at || !fs.existsSync(fullOf(org, at))) throw new Error("There is no such folder.");
+    const db = open(org.id);
+    if (access === null) db.prepare("delete from folder_access where path = ?").run(at);
+    else db.prepare("insert into folder_access (path, access) values (?, ?) on conflict(path) do update set access = excluded.access").run(at, cleanAccess(org, access));
+    return library.folders(org).find((f) => f.path === at);
+  },
+
+  /** Makes a new folder inside another (or at the top of the library). */
+  makeFolder(org: Org, parent: unknown, name: unknown): { path: string } {
+    ensureFolders(org);
+    const within = cleanRel(parent);
+    const clean = safeName(String(name ?? "").trim());
+    if (!String(name ?? "").trim() || clean.startsWith(".")) throw new Error("Give the folder a name.");
+    const dir = fullOf(org, within);
+    if (!fs.existsSync(dir)) throw new Error("The folder to put it in is not there any more.");
+    const target = path.join(dir, clean);
+    if (fs.existsSync(target)) throw new Error(`There is already something called “${clean}” here.`);
+    fs.mkdirSync(target);
+    return { path: within ? `${within}/${clean}` : clean };
+  },
+
+  /**
+   * Moves files and folders into a folder, keeping their settings, and their text so nothing is read again.
+   * A name that is already taken there gets a number. A folder cannot go inside itself.
+   */
+  async move(org: Org, items: { kind: "file" | "folder"; path: string }[], to: unknown, newName?: unknown): Promise<{ moved: string[] }> {
+    const dest = cleanRel(to);
+    const destFull = fullOf(org, dest);
+    if (!fs.existsSync(destFull) || !fs.statSync(destFull).isDirectory()) throw new Error("That folder is not there any more.");
+    const db = open(org.id);
+    const moved: string[] = [];
+    for (const item of items) {
+      const from = cleanRel(item.path);
+      if (!from) continue;
+      const fromFull = fullOf(org, from);
+      if (!fs.existsSync(fromFull)) throw new Error(`“${baseOf(from)}” is not there any more.`);
+      if (item.kind === "folder" && (dest === from || dest.startsWith(`${from}/`))) throw new Error(`A folder cannot go inside itself: “${baseOf(from)}”.`);
+      const name = newName !== undefined && items.length === 1 ? safeName(String(newName).trim()) : baseOf(from);
+      if (!name || name.startsWith(".")) throw new Error("Give it a name.");
+      if (parentOf(from) === dest && name === baseOf(from)) continue;
+      const target = path.join(destFull, name) === fromFull ? fromFull : uniqueTarget(destFull, name);
+      fs.renameSync(fromFull, target);
+      const rel = path.relative(libraryFolder(org.id), target).split(path.sep).join("/");
+      db.exec("begin");
+      try {
+        if (item.kind === "file") db.prepare("update documents set path = ?, name = ? where path = ?").run(rel, baseOf(rel), from);
+        else {
+          db.prepare("update documents set path = ? || substr(path, ?) where path like ? escape '\\'").run(rel, from.length + 1, likePrefix(from));
+          db.prepare("update folder_access set path = ? || substr(path, ?) where path like ? escape '\\' or path = ?").run(rel, from.length + 1, likePrefix(from), from);
+        }
+        db.exec("commit");
+      } catch (err) {
+        db.exec("rollback");
+        throw err;
+      }
+      moved.push(rel);
+    }
+    await syncLibrary(org);
+    return { moved };
+  },
+
+  /** Saves a file into a folder of the library (made if missing) and reads it in. A name may carry sub-folders, as a dropped folder does. */
   async add(org: Org, name: unknown, data: Buffer, folder: unknown = EVERYONE): Promise<{ path: string }> {
     if (!data.length) throw new Error("That file is empty.");
     if (data.length > MAX_FILE) throw new Error("That file is larger than 60 MB. Put it in the library folder yourself; very large files are skipped.");
-    const root = ensureFolders(org);
-    const top = [EVERYONE, ...new Set(org.members.map((m) => m.department))].map(safeName).find((d) => d.toLowerCase() === String(folder ?? "").toLowerCase()) ?? EVERYONE;
-    const clean = safeName(path.basename(String(name ?? "file")));
-    let target = path.join(root, top, clean);
-    for (let n = 2; fs.existsSync(target); n++) target = path.join(root, top, `${path.basename(clean, path.extname(clean))} (${n})${path.extname(clean)}`);
+    ensureFolders(org);
+    // A file's name may carry sub-folders (a dropped folder); parts that would climb out are dropped, not followed.
+    const named = String(name ?? "file").split(/[\\/]+/).filter((p) => p && p !== "." && p !== "..").map((p) => p.replace(/^\.+/, "")).filter(Boolean).join("/");
+    const rel = cleanRel(`${cleanRel(folder)}/${cleanRel(named)}`);
+    if (!baseOf(rel)) throw new Error("The file needs a name.");
+    const dir = fullOf(org, parentOf(rel));
+    fs.mkdirSync(dir, { recursive: true });
+    const target = uniqueTarget(dir, baseOf(rel));
     fs.writeFileSync(target, data);
     await syncLibrary(org);
-    return { path: path.relative(root, target).split(path.sep).join("/") };
+    return { path: path.relative(libraryFolder(org.id), target).split(path.sep).join("/") };
   },
 
-  /** Deletes a document from the library folder and the database. */
-  async remove(org: Org, id: number) {
+  /** Moves files and folders to Deleted, where they stay for 30 days and can be put back. */
+  async remove(org: Org, items: { kind: "file" | "folder"; path: string }[] | number) {
     const db = open(org.id);
-    const row = db.prepare("select * from documents where id = ?").get(id) as unknown as Row | undefined;
-    if (!row) throw new Error("There is no such document.");
-    const root = libraryFolder(org.id);
-    const file = path.resolve(root, row.path);
-    if (file.startsWith(root + path.sep)) fs.rmSync(file, { force: true });
+    if (typeof items === "number") {
+      const row = db.prepare("select * from documents where id = ?").get(items) as unknown as Row | undefined;
+      if (!row) throw new Error("There is no such document.");
+      items = [{ kind: "file", path: row.path }];
+    }
+    const trash = readTrash(org.id);
+    for (const item of items) {
+      const from = cleanRel(item.path);
+      if (!from) throw new Error("The library itself cannot be deleted.");
+      const full = fullOf(org, from);
+      if (!fs.existsSync(full)) continue;
+      const id = crypto.randomBytes(6).toString("hex");
+      const kind = fs.statSync(full).isDirectory() ? "folder" : "file";
+      const access: Record<string, string> = {};
+      const folderAccess: Record<string, string> = {};
+      const rows = (kind === "file" ? db.prepare("select path, access from documents where path = ?").all(from) : db.prepare("select path, access from documents where path like ? escape '\\'").all(likePrefix(from))) as unknown as { path: string; access: string | null }[];
+      for (const r of rows) if (r.access) access[r.path.slice(from.length + 1)] = r.access;
+      for (const r of db.prepare("select path, access from folder_access where path = ? or path like ? escape '\\'").all(from, likePrefix(from)) as unknown as { path: string; access: string }[]) folderAccess[r.path.slice(from.length + 1)] = r.access;
+      db.prepare("delete from folder_access where path = ? or path like ? escape '\\'").run(from, likePrefix(from));
+      const size = sizeOfTree(full);
+      fs.mkdirSync(path.join(trashHome(org.id), id), { recursive: true });
+      fs.renameSync(full, path.join(trashHome(org.id), id, baseOf(from)));
+      trash.push({ id, name: baseOf(from), kind, from, at: new Date().toISOString(), size, access, folderAccess });
+    }
+    writeTrash(org.id, trash);
     await syncLibrary(org);
+  },
+
+  /** What has been deleted, newest first. Anything older than 30 days is removed for good on the way. */
+  deleted(org: Org): Omit<Trashed, "access" | "folderAccess">[] {
+    const cutoff = Date.now() - KEEP_DELETED_DAYS * 24 * 3600 * 1000;
+    const all = readTrash(org.id);
+    const keep = all.filter((t) => new Date(t.at).getTime() >= cutoff && fs.existsSync(path.join(trashHome(org.id), t.id)));
+    for (const t of all) if (!keep.includes(t)) fs.rmSync(path.join(trashHome(org.id), t.id), { recursive: true, force: true });
+    if (keep.length !== all.length) writeTrash(org.id, keep);
+    return keep.map(({ access: _a, folderAccess: _f, ...t }) => t).reverse();
+  },
+
+  /** Puts a deleted file or folder back where it was, with its settings. */
+  async restore(org: Org, id: unknown): Promise<{ path: string }> {
+    const trash = readTrash(org.id);
+    const item = trash.find((t) => t.id === id);
+    if (!item) throw new Error("That is no longer in Deleted.");
+    const parent = fullOf(org, parentOf(item.from));
+    fs.mkdirSync(parent, { recursive: true });
+    const target = uniqueTarget(parent, item.name);
+    fs.renameSync(path.join(trashHome(org.id), item.id, item.name), target);
+    fs.rmSync(path.join(trashHome(org.id), item.id), { recursive: true, force: true });
+    writeTrash(org.id, trash.filter((t) => t !== item));
+    const rel = path.relative(libraryFolder(org.id), target).split(path.sep).join("/");
+    await syncLibrary(org);
+    const db = open(org.id);
+    for (const [inner, access] of Object.entries(item.access)) db.prepare("update documents set access = ? where path = ?").run(access, inner ? `${rel}/${inner}` : rel);
+    for (const [inner, access] of Object.entries(item.folderAccess)) db.prepare("insert into folder_access (path, access) values (?, ?) on conflict(path) do update set access = excluded.access").run(inner ? `${rel}/${inner}` : rel, access);
+    return { path: rel };
+  },
+
+  /** Removes deleted items for good: one, or all of them. */
+  purge(org: Org, id: unknown | "all") {
+    const trash = readTrash(org.id);
+    const gone = id === "all" ? trash : trash.filter((t) => t.id === id);
+    for (const t of gone) fs.rmSync(path.join(trashHome(org.id), t.id), { recursive: true, force: true });
+    writeTrash(org.id, trash.filter((t) => !gone.includes(t)));
+    return { removed: gone.length };
   },
 
   /** How much is in the library, for the page and for telling agents it exists. */
-  stats(org: Org, botId: string | null = null): { documents: number; readable: number; passages: number } {
+  stats(org: Org, botId: string | null = OWNER): { documents: number; readable: number; passages: number; private: number } {
     const docs = this.list(org, botId);
-    return { documents: docs.length, readable: docs.filter((d) => d.readable).length, passages: docs.reduce((n, d) => n + d.passages, 0) };
+    return { documents: docs.length, readable: docs.filter((d) => d.readable).length, passages: docs.reduce((n, d) => n + d.passages, 0), private: docs.filter((d) => d.access.private).length };
   },
 };
 
@@ -486,7 +772,7 @@ export function libraryTool(who: (conversationId: string) => string | null): Too
     required: ["action"],
     async run(input, { conversation }) {
       const org = orgs.active();
-      const bot = who(conversation.id);
+      const bot = who(conversation.id) ?? GENERAL_AGENT;
       await syncLibrary(org).catch(() => {});
       if (input.action === "list") {
         const docs = library.list(org, bot);

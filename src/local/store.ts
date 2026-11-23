@@ -104,6 +104,8 @@ export interface Config {
   projects: string[];
   mcpServers: McpServer[];
   secrets: Record<string, Secret>;
+  /** Cost saving for an organization's agents: "balanced" gives routine work to cheaper models, "off" uses the main model for everything. */
+  savings?: "balanced" | "off";
   /** The Client ID of the GitHub app that "Connect GitHub" signs in through. Not a secret. */
   githubClientId?: string;
   sessionSecret: string;
@@ -152,6 +154,7 @@ export function publicConfig() {
     agentName: cfg.agentName,
     model: cfg.model,
     effort: cfg.effort,
+    savings: cfg.savings ?? "off",
     approvalMode: cfg.approvalMode,
     hasApiKey: Boolean(apiKey(cfg)),
     providers: cfg.providers.map((p) => ({

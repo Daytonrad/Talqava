@@ -423,7 +423,11 @@ test("an agent's question to a colleague is answered on a small budget, and the 
   assert.match(String(reply.content), /answered\]/);
   // The one answering works on a few steps, cannot hand work on, and still has the shared memory.
   const spec = await tools.localRunSpec(app.jobs)(store.conversations.get(child().id)!);
-  assert.equal(spec.budget!.steps, 6);
+  assert.equal(spec.budget!.steps, 3);
+  // It runs lean: a short prompt about who it is and what the organization knows, not the whole working prompt.
+  assert.ok(spec.system.length < 2600, `question prompt is ${spec.system.length} characters`);
+  assert.match(spec.system, /A colleague has put a question to you/);
+  assert.doesNotMatch(spec.system, /# Skills|# How you work/);
   const names = spec.tools.map((t) => t.name);
   assert.ok(names.includes("team_memory") && !names.includes("assign_task") && !names.includes("ask_colleague"));
   // Even in a hierarchy, where it may hand work to no one, a specialist can ask a colleague.
@@ -650,7 +654,7 @@ test("each structure is a different size, and Git reports its repositories", asy
   assert.equal(found.uncommitted, 1);
   assert.equal(found.github, null);
   assert.equal(gone.found, false);
-  assert.equal((await listIntegrations()).integrations[0].id, "git");
+  assert.ok((await listIntegrations()).integrations.some((i) => i.id === "git"));
   for (const bad of ["", "not a url; rm -rf /", "file:///etc/passwd", "--upload-pack=touch /tmp/x", "https://example.com/../../x"]) await assert.rejects(cloneRepository(bad), /web address/);
   store.saveConfig({ projects: [] });
 });
@@ -929,8 +933,8 @@ test("the library: dropped documents are read into the organization's database a
   assert.ok(by("Everyone/Refund policy.pdf").readable && by("Everyone/Handbook.docx").readable);
   assert.equal(by("Everyone/logo.png").readable, false);
   // The folder decides who may use a file: Everyone, or one department.
-  assert.deepEqual(by("Everyone/Refund policy.pdf").access, { everyone: true, departments: [], agents: [] });
-  assert.deepEqual(by("Finance/price list.csv").access, { everyone: false, departments: ["Finance"], agents: [] });
+  assert.deepEqual(by("Everyone/Refund policy.pdf").access, { everyone: true, private: false, departments: [], agents: [] });
+  assert.deepEqual(by("Finance/price list.csv").access, { everyone: false, private: false, departments: ["Finance"], agents: [] });
 
   // The person searches everything; words match in other forms ("refund" finds "Refunds").
   assert.equal(library.search(org(), null, "refund")[0].name, "Refund policy.pdf");
@@ -989,3 +993,272 @@ test("the library: dropped documents are read into the organization's database a
   assert.ok(!fs.existsSync(root));
 });
 const DATA_FOR_TEST = () => store.DATA;
+
+test("a task that is waiting on its own hand-offs is not reported upward as finished; its real report is", { timeout: 30_000 }, async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const quests = await import("../../src/local/quests.ts");
+  const org = orgs.create("Chain Co", "", "team");
+  market.buildStructure(org.id, "team", "software");
+  const leadBot = (await import("../../src/local/crew.ts")).findBot("lead-developer");
+  // The lead hands a part to the front-end developer, who asks a colleague a question and ends its turn to wait.
+  // Then the answer comes back, the developer writes its real report, and only that reaches the lead.
+  // The three runs overlap, so each is answered by who is asking and how far it has got, not by order.
+  mock.route = (body) => {
+    const system = JSON.stringify(body.system);
+    const said = JSON.stringify(body.messages);
+    if (/A colleague has put a question to you/.test(system)) return say("It calls POST /signup.");
+    if (/the Front-End Developer in the user's organization/.test(system)) {
+      if (/Report from Back-End Developer/.test(said)) return say("REAL REPORT: the sign-up page has two problems.");
+      if (/tool_result/.test(said)) return say("I have asked the back-end developer and am waiting for the answer.");
+      return call("ask_colleague", { to: "Back-End Developer", question: "Which endpoint does the sign-up page call?" });
+    }
+    if (/the Lead Developer in the user's organization/.test(system)) {
+      if (/Report from Front-End Developer/.test(said)) return say("Combined result: two problems on the sign-up page.");
+      if (/tool_result/.test(said)) return say("Handed to the front-end developer; waiting.");
+      return call("assign_task", { to: "Front-End Developer", task: "Review the sign-up page and list the problems you find." });
+    }
+    return undefined;
+  };
+  const root = await quests.quests.start({ bot: leadBot, text: "Review the sign-up flow as a team." });
+  const all = () => quests.questStore.list().filter((q) => (q.root ?? q.id) === root.id);
+  const settled = () => all().length >= 3 && all().every((q) => q.status !== "running" && q.status !== "waiting" && (!q.parent || q.parent.delivered)) && !app.engine.isRunning(root.id);
+  for (let i = 0; i < 300 && !settled(); i++) await new Promise((r) => setTimeout(r, 50));
+  mock.route = undefined;
+  assert.ok(settled(), `the chain finished: ${all().map((q) => `${q.bot.id}:${q.status}:${q.parent?.delivered}`).join(" ")}`);
+  const texts = store.conversations.get(root.id)!.messages.filter((m) => typeof m.content === "string").map((m) => String(m.content));
+  const reports = texts.filter((t) => t.startsWith("[Report from Front-End Developer"));
+  // Exactly one report from the developer reached the lead, and it is the real one, not "I am waiting".
+  assert.equal(reports.length, 1);
+  assert.match(reports[0], /REAL REPORT/);
+  assert.doesNotMatch(reports[0], /am waiting/);
+  // Every task in the chain knows which task it came from, so they share one budget and one total.
+  assert.equal(all().length, 3);
+  assert.ok(all().every((q) => q.root === root.id));
+  assert.equal(quests.chainSize(root.id), 3);
+});
+
+test("a task may ask three colleagues at most, never the same question twice, and shares one budget with its hand-offs", { timeout: 30_000 }, async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const quests = await import("../../src/local/quests.ts");
+  const org = orgs.active();
+  assert.ok(org.members.length > 6);
+  const chat = store.conversations.create({ bot: "lead-developer" });
+  const ctx = { signal: new AbortController().signal, conversation: { id: chat.id, bot: "lead-developer", messages: [] } as unknown as Conversation };
+  for (let i = 0; i < 12; i++) script.push(say(`Answer ${i}.`));
+  const names = org.members.map((m) => m.bot).filter((id) => id !== "lead-developer");
+  await tools.askTool.run({ to: names[0], question: "What is the deadline for the spring release, exactly?" }, ctx);
+  // The same question to someone else is polling, and is refused.
+  await assert.rejects(Promise.resolve(tools.askTool.run({ to: names[1], question: "What is the deadline for the spring release, exactly?" }, ctx)), /same question/);
+  await tools.askTool.run({ to: names[1], question: "Which customers are waiting on the export feature?" }, ctx);
+  await tools.askTool.run({ to: names[2], question: "Is the staging server free on Thursday afternoon?" }, ctx);
+  // A fourth is refused, whoever it is for.
+  await assert.rejects(Promise.resolve(tools.askTool.run({ to: names[3], question: "Who approved the new pricing page copy?" }, ctx)), /already asked 3 colleagues/);
+  assert.equal(quests.questStore.list().filter((q) => q.parent?.id === chat.id && q.kind === "question").length, 3);
+  for (let i = 0; i < 200 && quests.questStore.list().some((q) => q.parent?.id === chat.id && (q.status === "running" || !q.parent.delivered)); i++) await new Promise((r) => setTimeout(r, 50));
+
+  // The shared budget: once a task and its hand-offs have cost the budget for one task, nothing more is handed on.
+  const leadBot = (await import("../../src/local/crew.ts")).findBot("lead-developer");
+  script.push(say("Started."));
+  const root = await quests.quests.start({ bot: leadBot, text: "A task whose budget is about to be used up." });
+  for (let i = 0; i < 100 && app.engine.isRunning(root.id); i++) await new Promise((r) => setTimeout(r, 50));
+  const conversation = store.conversations.get(root.id)!;
+  store.conversations.save({ ...conversation, usage: { ...conversation.usage, cost: quests.chainBudget() + 0.01 } }, { touch: false });
+  assert.equal(quests.chainOver(root.id), true);
+  const asRoot = { signal: new AbortController().signal, conversation: { id: root.id, messages: [] } as unknown as Conversation };
+  await assert.rejects(Promise.resolve(tools.assignTool.run({ to: "Front-End Developer", task: "Something long enough to be a task." }, asRoot)), /used the whole budget for one task/);
+  await assert.rejects(Promise.resolve(tools.askTool.run({ to: "Back-End Developer", question: "Anything at all, long enough?" }, asRoot)), /used the whole budget for one task/);
+});
+
+test("a task about the repository gets the only connected one; an agent is told when none is attached", async () => {
+  const leadBot = (await import("../../src/local/crew.ts")).findBot("lead-developer");
+  const quests = await import("../../src/local/quests.ts");
+  // With repositories connected but none attached, the agent is told which exist and to stop and ask, not to hand out work.
+  store.saveConfig({ projects: ["/somewhere/alpha-app", "/somewhere/beta-site"] });
+  script.push(say("ok"));
+  const none = await quests.quests.start({ bot: leadBot, text: "Review our repository." });
+  for (let i = 0; i < 100 && app.engine.isRunning(none.id); i++) await new Promise((r) => setTimeout(r, 50));
+  const spec = await tools.localRunSpec(app.jobs)(store.conversations.get(none.id)!);
+  assert.match(spec.system, /No repository is attached to this task\. The owner has connected alpha-app, beta-site/);
+  assert.match(spec.system, /Every step costs the owner money/);
+  store.saveConfig({ projects: [] });
+});
+
+test("cost saving is the owner's switch: off uses their model for everything, on matches the model to the work", async () => {
+  const crew = await import("../../src/local/crew.ts");
+  const lead = crew.findBot("lead-developer");
+  const cfg = { ...store.getConfig(), model: "anthropic/claude-opus-5-5", effort: "high" as const };
+  // Off (the default): every kind of work runs on the owner's model. Only a quick question thinks less hard.
+  assert.deepEqual(tools.costModel({ ...cfg, savings: undefined }, lead, "manager"), { ref: "anthropic/claude-opus-5-5", effort: "high" });
+  assert.deepEqual(tools.costModel({ ...cfg, savings: "off" }, lead, "member"), { ref: "anthropic/claude-opus-5-5", effort: "high" });
+  assert.deepEqual(tools.costModel({ ...cfg, savings: "off" }, lead, "question"), { ref: "anthropic/claude-opus-5-5", effort: "low" });
+  // On: a manager keeps the owner's model, a member doing its part gets the mid-size one, a question the small one.
+  const on = { ...cfg, savings: "balanced" as const };
+  assert.deepEqual(tools.costModel(on, lead, "manager"), { ref: "anthropic/claude-opus-5-5", effort: "high" });
+  assert.deepEqual(tools.costModel(on, lead, "member"), { ref: "anthropic/claude-sonnet-5-5", effort: "medium" });
+  assert.deepEqual(tools.costModel(on, lead, "question"), { ref: "anthropic/claude-haiku-5-5", effort: "low" });
+  // An agent given a model of its own keeps it, and so does a task handed to a named model.
+  assert.equal(tools.costModel(on, { ...lead, model: "local/qwen3:8b" }, "member").ref, "local/qwen3:8b");
+  assert.equal(tools.costModel(on, lead, "member", "anthropic/claude-fable-5-2").ref, "anthropic/claude-fable-5-2");
+  // A model that is already the cheaper kind, or from another provider, is left alone.
+  assert.equal(tools.costModel({ ...on, model: "anthropic/claude-sonnet-5-5" }, lead, "member").ref, "anthropic/claude-sonnet-5-5");
+});
+
+test("OpenRouter: sign in through the web, models with their prices, a model for the team, and removing it", async () => {
+  const or = await import("../../src/local/openrouter.ts");
+  const http = await import("node:http");
+  const seen: { url: string; body: any; headers: Record<string, unknown> }[] = [];
+  const standIn = http.createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    seen.push({ url: req.url ?? "", body: raw ? JSON.parse(raw) : null, headers: req.headers });
+    res.writeHead(200, { "content-type": "application/json" });
+    if (req.url === "/api/v1/auth/keys") return res.end(JSON.stringify({ key: "sk-or-v1-testkey0123456789" }));
+    if (req.url?.startsWith("/api/v1/models")) {
+      return res.end(JSON.stringify({ data: [
+        { id: "anthropic/claude-sonnet-5.5", name: "Anthropic: Claude Sonnet 5.5", context_length: 1000000, pricing: { prompt: "0.000002", completion: "0.00001" }, supported_parameters: ["tools", "tool_choice"] },
+        { id: "some/free-model:free", name: "Some Free Model", context_length: 64000, pricing: { prompt: "0", completion: "0" }, supported_parameters: ["tools"] },
+        { id: "some/no-tools", name: "No Tools", context_length: 8000, pricing: { prompt: "0.000001", completion: "0.000001" }, supported_parameters: ["temperature"] },
+        { id: "openrouter/auto", name: "Auto Router", context_length: 2000000, pricing: { prompt: "-1", completion: "-1" }, supported_parameters: ["tools"] },
+      ] }));
+    }
+    if (req.url === "/api/v1/key") return res.end(JSON.stringify({ data: { label: "Talqava Agents", usage: 1.5, limit: 10, limit_remaining: 8.5, is_free_tier: false } }));
+    res.end("{}");
+  });
+  await new Promise<void>((r) => standIn.listen(0, "127.0.0.1", r));
+  const address = `http://127.0.0.1:${(standIn.address() as import("node:net").AddressInfo).port}`;
+  process.env.TALQAVA_OPENROUTER_API = `${address}/api/v1`;
+  try {
+    // Starting: the browser is sent to openrouter.ai with a fingerprint of a secret, and asked to come back to this app on localhost.
+    const { url } = or.startOpenRouterSignIn("http://127.0.0.1:8788");
+    const asked = new URL(url);
+    assert.equal(asked.origin + asked.pathname, "https://openrouter.ai/auth");
+    assert.equal(asked.searchParams.get("callback_url"), "http://localhost:8788/api/integrations/openrouter/callback");
+    assert.equal(asked.searchParams.get("code_challenge_method"), "S256");
+    assert.match(asked.searchParams.get("code_challenge")!, /^[\w-]{43}$/);
+    // A made-up state is refused, and the real one works once.
+    await assert.rejects(or.finishOpenRouterSignIn("code-1", "not-the-state"), /expired or was already used/);
+    await or.finishOpenRouterSignIn("code-1", asked.searchParams.get("state"));
+    const exchange = seen.find((x) => x.url === "/api/v1/auth/keys")!;
+    assert.equal(exchange.body.code, "code-1");
+    assert.equal(exchange.body.code_challenge_method, "S256");
+    // The secret sent now matches the fingerprint sent before.
+    const crypto = await import("node:crypto");
+    assert.equal(crypto.createHash("sha256").update(exchange.body.code_verifier).digest("base64url"), asked.searchParams.get("code_challenge"));
+    await assert.rejects(or.finishOpenRouterSignIn("code-1", asked.searchParams.get("state")), /expired or was already used/);
+    assert.equal(store.getConfig().providers.find((p) => p.id === "openrouter")?.apiKey, "sk-or-v1-testkey0123456789");
+
+    // Models: dollars per token become dollars per million; models without tools, and routers with no fixed price, are left out.
+    const info = await or.openrouterIntegration();
+    assert.equal(info.state, "connected");
+    assert.deepEqual(info.models.map((m) => m.id), ["anthropic/claude-sonnet-5.5", "some/free-model:free"]);
+    assert.deepEqual(info.models[0].prices, { input: 2, output: 10 });
+    assert.equal(info.models[0].contextTokens, 1000000);
+    assert.equal(info.models[1].free, true);
+    assert.equal(info.account?.remaining, 8.5);
+    assert.equal(info.suggested[0]?.id, "anthropic/claude-sonnet-5.5");
+
+    // Choosing a model for the team: the main model becomes it, with its own prices and attribution headers.
+    await assert.rejects(or.useOpenRouterModel("some/no-tools"), /does not list/);
+    await or.useOpenRouterModel("anthropic/claude-sonnet-5.5");
+    assert.equal(store.getConfig().model, "openrouter/anthropic/claude-sonnet-5.5");
+    const { resolveModel } = await import("../../src/local/models.ts");
+    const model = resolveModel();
+    assert.equal(model.label, "anthropic/claude-sonnet-5.5 on OpenRouter");
+    assert.deepEqual(model.prices, { input: 2, output: 10 });
+
+    // Removing: the key is forgotten and the team goes back to Claude.
+    or.removeOpenRouter();
+    assert.equal(store.getConfig().model, "anthropic/claude-opus-5-5");
+    assert.equal(store.getConfig().providers.some((p) => p.id === "openrouter"), false);
+    await assert.rejects(or.saveOpenRouterKey("not-a-key"), /starts with sk-or-/);
+  } finally {
+    delete process.env.TALQAVA_OPENROUTER_API;
+    standIn.close();
+  }
+});
+
+test("a task is checked before it starts: work on code with no repository is caught, for free", async () => {
+  const { needsFor, aboutCode } = await import("../../src/local/preflight.ts");
+  const crew = await import("../../src/local/crew.ts");
+  const lead = crew.findBot("lead-developer");
+  store.saveConfig({ projects: [] });
+  // Code work with no repository connected: one need, which the person may skip.
+  const needs = needsFor({ bot: lead, text: "Review our GitHub repository for bugs" });
+  assert.deepEqual(needs.map((n) => [n.id, n.canSkip]), [["repository", true]]);
+  // Ordinary business work is not held up, and the team instruction added to team tasks does not count.
+  for (const text of ["Plan our spring sale campaign", "Draft a follow-up email to a prospect", "Commit to a budget for the new branch office"]) assert.equal(aboutCode(text), false, text);
+  assert.equal(needsFor({ bot: lead, text: "Plan our spring sale campaign\n\n[This task is for your whole team (the Engineering team), not for you alone. Split it into parts and hand each part to the right member of your team with assign_task.]" }).length, 0);
+  // With a repository given, nothing is missing; with several connected and none given, the person chooses.
+  assert.equal(needsFor({ bot: lead, text: "Refactor the sign-up code", project: "/some/repo" }).length, 0);
+  store.saveConfig({ projects: ["/a/one", "/a/two"] });
+  assert.equal(needsFor({ bot: lead, text: "Refactor the sign-up code" })[0].id, "choose-repository");
+  store.saveConfig({ projects: [] });
+  // A model with no key cannot be skipped past.
+  const saved = store.getConfig();
+  store.saveConfig({ model: "openrouter/some/model", providers: [...saved.providers.filter((p) => p.id !== "openrouter"), { id: "openrouter", kind: "openai", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" }] });
+  assert.deepEqual(needsFor({ bot: { ...lead, model: undefined }, text: "Plan a campaign" }).map((n) => [n.id, n.canSkip]), [["model-key", false]]);
+  store.saveConfig({ model: saved.model, providers: saved.providers });
+});
+
+test("the library works like a file manager: folders, moves that keep settings, private files no agent sees, and Deleted", { timeout: 30_000 }, async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const { library, libraryFolder, syncLibrary, libraryTool, GENERAL_AGENT } = await import("../../src/local/library.ts");
+  const org0 = orgs.create("Files Co", "", "functional");
+  market.buildStructure(org0.id, "functional", "general");
+  const org = () => orgs.active();
+  const root = libraryFolder(org0.id);
+  const by = (p: string) => library.list(org()).find((d) => d.path === p)!;
+
+  // Folders at any depth; a name cannot climb out of the library.
+  library.makeFolder(org(), "", "Clients");
+  library.makeFolder(org(), "Clients", "Acme");
+  assert.throws(() => library.makeFolder(org(), "Clients", "Acme"), /already something called/);
+  assert.throws(() => library.makeFolder(org(), "../..", "Escape"), /not a folder in the library/);
+  assert.ok(library.folders(org()).some((f) => f.path === "Clients/Acme"));
+  // Uploading into a folder, and a dropped folder's own sub-folders.
+  await library.add(org(), "contract.txt", Buffer.from("The Acme contract renews every March."), "Clients/Acme");
+  await library.add(org(), "Notes/call.txt", Buffer.from("Acme asked about bulk pricing."), "Clients/Acme");
+  assert.ok(by("Clients/Acme/contract.txt") && by("Clients/Acme/Notes/call.txt"));
+
+  // Private: the owner finds it, no agent does, the general chat agent included; and a folder's setting covers what is inside.
+  library.setAccess(org(), by("Clients/Acme/contract.txt").id, { private: true });
+  assert.equal(library.search(org(), null, "renews march")[0].name, "contract.txt");
+  assert.deepEqual(library.search(org(), "bookkeeper", "renews march"), []);
+  assert.deepEqual(library.search(org(), GENERAL_AGENT, "renews march"), []);
+  assert.throws(() => library.read(org(), GENERAL_AGENT, by("Clients/Acme/contract.txt").id), /not one you may use/);
+  const asChat = libraryTool(() => null);
+  const ctx = { signal: new AbortController().signal, conversation: { id: "y".repeat(16), messages: [] } as unknown as Conversation };
+  assert.doesNotMatch(String(await asChat.run({ action: "list" }, ctx)), /contract\.txt/);
+  library.setFolderAccess(org(), "Clients", { private: true });
+  assert.equal(by("Clients/Acme/Notes/call.txt").access.private, true);
+  assert.equal(by("Clients/Acme/Notes/call.txt").accessFrom, "Clients");
+  assert.deepEqual(library.search(org(), GENERAL_AGENT, "bulk pricing"), []);
+  library.setFolderAccess(org(), "Clients", null);
+  assert.equal(library.search(org(), GENERAL_AGENT, "bulk pricing")[0].name, "call.txt");
+
+  // Moving and renaming keep a file's settings and its text; a folder cannot go inside itself.
+  await library.move(org(), [{ kind: "folder", path: "Clients/Acme" }], "");
+  assert.equal(by("Acme/contract.txt").access.private, true);
+  assert.ok(by("Acme/Notes/call.txt").passages > 0);
+  await assert.rejects(library.move(org(), [{ kind: "folder", path: "Acme" }], "Acme/Notes"), /cannot go inside itself/);
+  await library.move(org(), [{ kind: "file", path: "Acme/contract.txt" }], "Acme", "Acme contract 2027.txt");
+  assert.equal(by("Acme/Acme contract 2027.txt").access.private, true);
+  // A move made in Finder is recognised by the file's contents, so its setting stays too.
+  fs.renameSync(path.join(root, "Acme", "Acme contract 2027.txt"), path.join(root, "Everyone", "moved.txt"));
+  await syncLibrary(org());
+  assert.equal(by("Everyone/moved.txt").access.private, true);
+
+  // Deleting goes to Deleted; restoring brings it back with its setting; Delete forever removes it.
+  await library.remove(org(), [{ kind: "folder", path: "Acme" }, { kind: "file", path: "Everyone/moved.txt" }]);
+  assert.ok(!fs.existsSync(path.join(root, "Acme")));
+  assert.equal(library.list(org()).filter((d) => d.path.startsWith("Acme/") || d.path === "Everyone/moved.txt").length, 0);
+  const deleted = library.deleted(org());
+  assert.deepEqual(deleted.map((t) => t.name).sort(), ["Acme", "moved.txt"]);
+  await library.restore(org(), deleted.find((t) => t.name === "moved.txt")!.id);
+  assert.equal(by("Everyone/moved.txt").access.private, true);
+  assert.equal(library.purge(org(), "all").removed, 1);
+  assert.deepEqual(library.deleted(org()), []);
+  orgs.remove(org0.id);
+});

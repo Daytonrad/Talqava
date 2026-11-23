@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Bot, Engine, RunEvent } from "../core/index.ts";
-import { DATA, WORKSPACE, conversations, readJson, writeJson } from "./store.ts";
+import { DATA, WORKSPACE, conversations, getConfig, readJson, writeJson } from "./store.ts";
 import { feedback, runChecks } from "./checks.ts";
 import { budgetBlock, recordSpend } from "./spend.ts";
 import { loadCrew } from "./crew.ts";
@@ -47,6 +47,8 @@ export interface Quest {
   parent?: { id: string; by: string; delivered: boolean };
   /** A question from a colleague rather than a task: answered briefly, from what the agent knows. */
   kind?: "question" | "decision";
+  /** The task the person assigned that this one descends from (its own id for that task itself). A task and everything handed on from it share one budget. */
+  root?: string;
   /** How many hand-offs deep this quest is: 0 for one the person sent. */
   depth?: number;
   createdAt: string;
@@ -55,6 +57,32 @@ export interface Quest {
 
 /** How a report from a hand-off starts, so the window can show it as a report rather than something the person typed. */
 export const REPORT_MARK = "[Report from ";
+
+/** The budget a task shares with everything handed on from it: the budget per task in Settings. */
+export const chainBudget = () => getConfig().budget.spend ?? 1;
+/**
+ * The task the person assigned that a task descends from. Tasks record it when they start; for one
+ * made before that was recorded, it is found by following who handed it on.
+ */
+export function rootOf(quest: Quest): string {
+  if (quest.root) return quest.root;
+  let at = quest;
+  for (let steps = 0; steps < 12 && at.parent; steps++) {
+    const from = questStore.get(at.parent.id);
+    if (!from) break;
+    at = from;
+  }
+  return at.root ?? at.id;
+}
+/** A task and everything handed on from it. */
+export const chainOf = (rootId: string) => questStore.list().filter((q) => rootOf(q) === rootId);
+/** What a task and everything handed on from it have cost so far. */
+export function chainCost(rootId: string): number {
+  return chainOf(rootId).reduce((sum, q) => sum + (conversations.get(q.id)?.usage.cost ?? 0), 0);
+}
+export const chainOver = (rootId: string) => chainCost(rootId) >= chainBudget();
+/** How many tasks came from one task, itself included. */
+export const chainSize = (rootId: string) => chainOf(rootId).length;
 /** Hand-offs may go this many levels down the chart, and a conversation may have this many open at once. */
 export const MAX_DEPTH = 5;
 export const MAX_OPEN_HANDOFFS = 8;
@@ -158,9 +186,13 @@ export class QuestRunner {
     const conversation = await conversations.create({ title: (title ?? text).replace(/\s+/g, " ").slice(0, 80), source: "quest" });
     const now = new Date().toISOString();
     const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now, ...(template ? { template } : {}), ...(kind ? { kind } : {}) };
+    quest.root = quest.id;
     if (parent) {
       quest.parent = { ...parent, delivered: false };
-      quest.depth = (questStore.get(parent.id)?.depth ?? 0) + 1;
+      const from = questStore.get(parent.id);
+      quest.depth = (from?.depth ?? 0) + 1;
+      // Handed on from a task: it belongs to that task's chain. Handed on from a chat: it starts a chain of its own.
+      if (from) quest.root = from.root ?? from.id;
     }
     if (project) {
       quest.project = project;
@@ -268,8 +300,12 @@ export class QuestRunner {
    */
   async deliverReports(parentId: string) {
     if (this.#engine.isRunning(parentId)) return; // it gets them when its own turn ends
-    const children = questStore.list().filter((q) => q.parent?.id === parentId && !q.parent.delivered);
+    const all = questStore.list();
+    const children = all.filter((q) => q.parent?.id === parentId && !q.parent.delivered);
     if (!children.length || children.some((q) => q.status === "running" || q.status === "waiting")) return;
+    // A child that is still waiting for its own hand-offs has only said "I have asked, I am waiting": that is not
+    // its report. Its report goes up when its own reports have come in and it has finished again.
+    if (children.some((child) => all.some((q) => q.parent?.id === child.id && (!q.parent.delivered || q.status === "running" || q.status === "waiting")))) return;
     for (const child of children) this.#set(child.id, { parent: { ...child.parent!, delivered: true } });
     const reports = children.reverse().map((child) => {
       const said = [...(conversations.get(child.id)?.messages ?? [])].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text.trim()));
@@ -300,6 +336,13 @@ export class QuestRunner {
       recordSpend(id, quest.bot.id, conversations.get(id)?.usage.cost ?? 0);
       if (event.type === "assistant" && budgetBlock(asItIsNow(quest.bot))) {
         this.#ending.set(id, "budget");
+        this.#engine.stop(id);
+      }
+      // A task and everything handed on from it share one budget. When it is used up, the hand-offs stop;
+      // the task itself carries on within its own limit, so it can still report what was found.
+      if (event.type === "assistant" && quest.parent && rootOf(quest) !== id && chainOver(rootOf(quest))) {
+        this.#ending.set(id, "budget");
+        this.#set(id, { note: "The task it belongs to used its whole budget of $" + chainBudget().toFixed(2) + ", counting everything handed on." });
         this.#engine.stop(id);
       }
     }

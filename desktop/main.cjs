@@ -134,7 +134,7 @@ function showWindow() {
     title: NAME,
     backgroundColor: "#0a0a0a",
     show: false,
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, plugins: true }, // plugins: the built-in PDF viewer, for previews in the library
   });
   win.loadURL(url);
   win.once("ready-to-show", () => win.show());
