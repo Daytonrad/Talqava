@@ -18,22 +18,50 @@
   "build": {
     "appId": "com.talqava.agents",
     "productName": "Talqava Agents",
-    "copyright": "Copyright © Talqava",
-    "directories": { "output": "dist", "buildResources": "assets" },
-    "files": ["main.cjs", "assets/**"],
-    "extraResources": [{ "from": "build/server", "to": "server" }],
+    "copyright": "Copyright \u00a9 Talqava",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.cjs",
+      "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/server",
+        "to": "server"
+      }
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.png",
       "identity": "-",
-      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }]
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
     },
     "dmg": {
       "title": "Talqava Agents",
       "contents": [
-        { "x": 140, "y": 180 },
-        { "x": 400, "y": 180, "type": "link", "path": "/Applications" }
+        {
+          "x": 140,
+          "y": 180
+        },
+        {
+          "x": 400,
+          "y": 180,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
-    }
+    },
+    "afterPack": "after-pack.cjs"
   }
 }

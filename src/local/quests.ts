@@ -8,6 +8,8 @@ import { DATA, WORKSPACE, conversations, readJson, writeJson } from "./store.ts"
 import { feedback, runChecks } from "./checks.ts";
 import { budgetBlock, recordSpend } from "./spend.ts";
 import { loadCrew } from "./crew.ts";
+import { orgs } from "./orgs.ts";
+import { orgMemory } from "./orgmemory.ts";
 import type { CheckResult } from "./checks.ts";
 import type { QuestCheck, QuestTemplate } from "./templates.ts";
 import { fill, resolveInputs } from "./templates.ts";
@@ -43,6 +45,8 @@ export interface Quest {
   changedFiles?: number;
   /** For a task handed down the org chart: the conversation (a manager's quest, or a chat) its report goes back to. */
   parent?: { id: string; by: string; delivered: boolean };
+  /** A question from a colleague rather than a task: answered briefly, from what the agent knows. */
+  kind?: "question" | "decision";
   /** How many hand-offs deep this quest is: 0 for one the person sent. */
   depth?: number;
   createdAt: string;
@@ -52,8 +56,8 @@ export interface Quest {
 /** How a report from a hand-off starts, so the window can show it as a report rather than something the person typed. */
 export const REPORT_MARK = "[Report from ";
 /** Hand-offs may go this many levels down the chart, and a conversation may have this many open at once. */
-export const MAX_DEPTH = 3;
-export const MAX_OPEN_HANDOFFS = 5;
+export const MAX_DEPTH = 5;
+export const MAX_OPEN_HANDOFFS = 8;
 
 /** Quests that may run at the same time. */
 export const MAX_RUNNING = 6;
@@ -146,14 +150,14 @@ export class QuestRunner {
     return questStore.list().filter((q) => q.status === "running" || q.status === "waiting");
   }
 
-  async start({ bot, text, project, title, template, parent }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string } }): Promise<Quest> {
+  async start({ bot, text, project, title, template, parent, kind }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string }; kind?: "question" | "decision" }): Promise<Quest> {
     if (this.running().length >= MAX_RUNNING) throw new Error(`${MAX_RUNNING} quests are already under way. Wait for one to finish, or stop one.`);
     // A bot that has used its month's budget starts nothing new.
     const blocked = budgetBlock(bot);
     if (blocked) throw new Error(blocked);
     const conversation = await conversations.create({ title: (title ?? text).replace(/\s+/g, " ").slice(0, 80), source: "quest" });
     const now = new Date().toISOString();
-    const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now, ...(template ? { template } : {}) };
+    const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now, ...(template ? { template } : {}), ...(kind ? { kind } : {}) };
     if (parent) {
       quest.parent = { ...parent, delivered: false };
       quest.depth = (questStore.get(parent.id)?.depth ?? 0) + 1;
@@ -161,7 +165,7 @@ export class QuestRunner {
     if (project) {
       quest.project = project;
       // Only bots that can change files get a branch and working copy of their own.
-      if (bot.powers.some((p) => p === "files" || p === "shell")) quest.copy = await prepareCopy(project, quest.id, WORKTREE_DIR());
+      if (!kind && bot.powers.some((p) => p === "files" || p === "shell")) quest.copy = await prepareCopy(project, quest.id, WORKTREE_DIR());
     }
     questStore.save(quest);
     journal.append(quest.id, { type: "quest_start", bot: bot.id, title: quest.title, project: project ?? null, branch: quest.copy?.branch ?? null });
@@ -271,7 +275,7 @@ export class QuestRunner {
       const said = [...(conversations.get(child.id)?.messages ?? [])].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text.trim()));
       const text = said && Array.isArray(said.content) ? said.content.map((b) => (b.type === "text" ? b.text : "")).join("\n").trim() : "";
       const how = { done: "finished", stopped: "was stopped", failed: `failed${child.note ? `: ${child.note}` : ""}`, budget: "stopped at its budget" }[child.status as string] ?? child.status;
-      return `${REPORT_MARK}${child.bot.name} · ${child.title} · ${how}]\n${text || "(It left no report.)"}`;
+      return `${REPORT_MARK}${child.bot.name} · ${child.title} · ${child.status === "done" && child.kind === "question" ? "answered" : child.status === "done" && child.kind === "decision" ? "decided" : how}]\n${text || "(It left no report.)"}`;
     });
     const parentQuest = questStore.get(parentId);
     const next = parentQuest
@@ -310,6 +314,14 @@ export class QuestRunner {
           this.#ending.delete(id);
           this.#stopping.delete(id);
           this.#set(id, { status });
+          // The organization keeps a line about each task an agent finishes, so later work can build on it.
+          if (status === "done" && !quest.kind) {
+            const said = [...(conversations.get(id)?.messages ?? [])].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text.trim()));
+            const report = said && Array.isArray(said.content) ? said.content.map((b) => (b.type === "text" ? b.text : "")).join(" ").trim() : "";
+            try {
+              orgMemory.logTask(orgs.active(), quest.bot.id, quest.title, report);
+            } catch {}
+          }
           // A task handed down the chart reports back to whoever assigned it.
           if (quest.parent && !quest.parent.delivered) setTimeout(() => this.deliverReports(quest.parent!.id).catch(() => {}), 80);
           if (quest.copy && !quest.outcome) {
@@ -383,7 +395,7 @@ export class QuestRunner {
   /** Keeps the quest's changes as a commit on its own branch. */
   async accept(id: string): Promise<{ branch: string | null }> {
     const quest = this.#closable(id);
-    const branch = await acceptCopy(quest.copy, `${quest.title}\n\nQuest by ${quest.bot.name} (${quest.bot.type}) in Talqava Agents.`);
+    const branch = await acceptCopy(quest.copy, `${quest.title}\n\nTask by ${quest.bot.name === quest.bot.title ? quest.bot.name : `${quest.bot.name} (${quest.bot.title})`} in Talqava Agents.`);
     this.#set(id, { outcome: branch ? "accepted" : "no-changes" });
     journal.append(id, { type: "quest_accept", branch });
     return { branch };

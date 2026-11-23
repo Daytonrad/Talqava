@@ -70,6 +70,8 @@ export interface Bot {
   name: string;
   /** scout, scribe, maker, keeper, counter, spark, or a type of one's own. */
   type: string;
+  /** Its job title, e.g. "Head of Sales". A file that names none gets its type, capitalised. */
+  title: string;
   /** How the bot looks: a keycap with this legend printed on it and this texture on its base. */
   character: { legend: string; texture: Texture; color: Color; shape: Shape; eyes: Eyes; top: Top };
   instructions: string;
@@ -80,13 +82,17 @@ export interface Bot {
   budget?: Budget;
   /** The most this bot may spend in a calendar month, in US dollars. None means no monthly limit of its own. */
   monthly?: number;
+  /** Whether this role leads others: a head, a lead, a manager with reports. Used when a chart is drawn. */
+  lead: boolean;
+  /** How the role is held to account: what it is measured on, what it decides itself, and what it must take to its lead or the owner. */
+  governance: { kpis: string[]; decides: string[]; escalates: string[] };
   /** The team group it is shown under, such as Research or Writing. */
   group: string;
   source: BotSource;
 }
 
 /** The group a bot is shown under when its file names none. */
-const TYPE_GROUPS: Record<string, string> = { scout: "Research", scribe: "Writing", maker: "Engineering", keeper: "Operations", counter: "Money", spark: "Ideas" };
+const TYPE_GROUPS: Record<string, string> = { scout: "Research", scribe: "Writing", maker: "Engineering", keeper: "Operations", counter: "Finance", spark: "Strategy" };
 export const defaultGroup = (type: string): string => TYPE_GROUPS[type] ?? "Other";
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -107,6 +113,8 @@ export function parseBot(id: string, text: string, source: BotSource): Bot {
   if (!name || name.length > 40) throw problem("needs a name of up to 40 characters.");
   const type = typeof data.type === "string" ? data.type.trim().toLowerCase() : "";
   if (!/^[a-z][a-z0-9-]{0,29}$/.test(type)) throw problem("needs a type, such as scout or maker.");
+  const titleText = typeof data.title === "string" ? data.title.replace(/\s+/g, " ").trim().slice(0, 50) : "";
+  const title = titleText || `${type.charAt(0).toUpperCase()}${type.slice(1)}`;
   const instructions = typeof data.instructions === "string" ? data.instructions.trim() : "";
   if (!instructions) throw problem("needs instructions: what this bot does and how.");
 
@@ -160,7 +168,12 @@ export function parseBot(id: string, text: string, source: BotSource): Bot {
   }
   const group = typeof data.group === "string" && data.group.trim() ? data.group.replace(/\s+/g, " ").trim().slice(0, 30) : defaultGroup(type);
 
-  return { id, name, type, character: { legend, texture, color, shape, eyes, top }, instructions, model, powers: [...new Set(powers as Power[])], approvals, budget, ...(monthly !== undefined ? { monthly } : {}), group, source };
+  const list = (value: unknown) => (Array.isArray(value) ? value.map((v) => String(v).replace(/\s+/g, " ").trim().slice(0, 140)).filter(Boolean).slice(0, 6) : []);
+  const rules = isRecord(data.governance) ? data.governance : {};
+  const governance = { kpis: list(rules.kpis), decides: list(rules.decides), escalates: list(rules.escalates) };
+  const lead = data.lead === true;
+
+  return { id, name, type, title, lead, governance, character: { legend, texture, color, shape, eyes, top }, instructions, model, powers: [...new Set(powers as Power[])], approvals, budget, ...(monthly !== undefined ? { monthly } : {}), group, source };
 }
 
 /**
@@ -178,11 +191,28 @@ export function limitProjectBot(bot: Bot, user: { approvalMode: ApprovalMode; bu
   };
 }
 
+/** A role's targets and decision rights, as told to the agent. Empty when its file gives none. */
+function governancePrompt(bot: Bot): string[] {
+  const g = bot.governance;
+  if (!g.kpis.length && !g.decides.length && !g.escalates.length) return [];
+  return [
+    [
+      "# What you answer for",
+      g.kpis.length ? `You are measured on: ${g.kpis.join("; ")}.` : "",
+      g.decides.length ? `You decide yourself: ${g.decides.join("; ")}. Decide, say what you decided and why, and move on.` : "",
+      g.escalates.length ? `You must take to your lead (or to the owner, if you report to them) before acting: ${g.escalates.join("; ")}. Give the options and your recommendation.` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  ];
+}
+
 /** What the bot is told about its role, added after the shared system prompt. */
 export function botPrompt(bot: Bot): string {
   return [
     "# Your role",
-    `You are ${bot.name}, the ${bot.type} in the user's crew of agents, sent on a quest. ${bot.instructions}`,
-    "You only have the tools listed for you. If the quest needs something you cannot do, say so plainly and suggest which kind of bot could do it. When the quest is done, end with a short report: what you did, how you checked it, and anything that needs the user.",
+    `You are ${bot.name === bot.title ? `the ${bot.title}` : `${bot.name}, the ${bot.title},`} in the user's organization, and you have been given a task. ${bot.instructions}`,
+    ...governancePrompt(bot),
+    "You only have the tools listed for you. If the task needs something you cannot do, say so plainly and suggest which role could do it. When the task is done, end with a short report: what you did, how you checked it, and anything that needs the user.",
   ].join("\n\n");
 }

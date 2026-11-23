@@ -79,20 +79,21 @@ Inside Docker the agent's shell can only touch the container and the `data/` fol
 
 ## The crew
 
-The window is laid out for a desktop screen. **Home base** shows the crew on the left, quests under way in the middle (with their approvals right on the card), and the quest log on the right. The box at the top sends a quest: type the task and the selected bot goes, start with `@name` to send someone else, or type a command such as "settings" (Ctrl K or ⌘K to jump there). A quest opens on its own page with its steps, its changes, its conversation and its budget. **Hatch a bot**, or **Edit** one, to change its name, look, instructions, model, powers and limits; your version is saved as a file in your data folder.
+The window is laid out for a desktop screen. **Work in progress** shows your agents on the left, grouped by department, tasks under way in the middle (with their approvals right on the card), and completed work on the right. The box at the top assigns a task: type it and the selected agent starts, begin with `@name` to assign someone else, or type a command such as "settings" (Ctrl K or ⌘K to jump there). A task opens on its own page with its steps, its changes, its conversation and its budget. **Create an agent**, or **Edit** one, to change its name, job title, department, instructions, model, powers and limits; your version is saved as a file in your data folder.
 
-Six starter bots ship with the app. Each is a keycap that hopped off your keyboard, drawn in a single white line: the legend printed on the key is its job, and the texture on its base tells it apart from the others. The window is black and white; a bot shows how its quest is going by how it moves (pressed down while working, floating with a dashed edge while it waits for you, shaking when stuck) and by a symbol beside it: ● working, ◌ waiting, ✓ done, ■ stopped, ✕ failed, ↺ resumed.
+Six standard agents ship with the app: a small company for day one, each owning one thing (customers, marketing, money, operations, technology, research). An agent is shown as a badge with its initials in its own colour; a marker on the badge and a symbol beside it show how its task is going: ● working, ◌ waiting for you, ✓ done, ■ stopped, ✕ failed, ↺ resumed.
 
-| Bot | Key | Type | Good at | Powers |
+| Agent | Badge | Department | Responsible for | Powers |
 | --- | --- | --- | --- | --- |
-| Pip | `?` | Scout | Research, with sources | web, memory, skills, past chats |
-| Margo | `Aa` | Scribe | Changelogs, READMEs, drafts | web, files, memory, past chats |
-| Rivet | `</>` | Maker | Building and fixing code | files, shell, web, memory, skills |
-| Dusk | `zz` | Keeper | Memory, skills, routine checks | memory, skills, past chats, schedules |
-| Tally | `#` | Counter | Numbers and data | files, shell, APIs, memory |
-| Ember | `!` | Spark | Ideas and options | web, memory |
+| Business Development Specialist | `BD` | Sales | Winning customers: prospects, pitches, proposals | web, memory |
+| Marketing Specialist | `MK` | Marketing | What the organization publishes and sends | web, files, memory, past chats |
+| Finance Analyst | `FN` | Finance | Where the money stands, with the working shown | files, shell, APIs, memory |
+| Operations Coordinator | `OC` | Operations | Procedures, follow-ups, routine checks | memory, skills, past chats, schedules |
+| Technology Specialist | `TS` | Operations | Websites, scripts, automations and code | files, shell, web, memory, skills |
+| Research Analyst | `RA` | Research | Business questions answered with sources | web, memory, skills, past chats |
 
-Several quests run at once. A bot only gets the tools its powers grant: Pip cannot touch files.
+
+Several quests run at once. An agent only gets the tools its powers grant: the Research Analyst cannot touch files.
 
 **Bots are files.** Each is a short YAML file (see [crew/](crew/)) with a name, a type, its key's legend and base texture, instructions, powers, a model, approvals and a budget. To change one or add your own, put a file in your data folder's `crew/` folder; a file with the same name replaces the starter. To share bots with a project, put them in the repository's `.crew/` folder. Bots from a repository never get more than your own settings allow: they always ask before changes unless you chose "run everything", and their budget is capped at yours.
 
@@ -102,12 +103,36 @@ Several quests run at once. A bot only gets the tools its powers grant: Pip cann
 
 **Caution after the web.** Once a quest has read a web page or an API reply, every change it wants to make asks first, whatever the bot's approval setting. That limits what a page written to trick bots can make them do.
 
+## The library: documents as memory
+
+**Library** (in the rail) is where you share documents with your agents. Drop files on the page, or put them straight into the library folder (`data/organizations/<organization>/Library/`); the app reads them and agents search them as they work.
+
+- **One database per organization.** Each organization has its own SQLite database (`data/organizations/<organization>/organization.db`, using Node's built-in SQLite, so nothing is installed). It holds every document's text in passages with a full-text index. Deleting an organization deletes its database and library.
+- **What is read.** PDF, Word, PowerPoint and Excel files, text, Markdown, CSV, web pages and similar. Other files (pictures, video) are kept and found by name. A file that changes is read again; one that is deleted is forgotten.
+- **Who may use a document.** The folder decides: `Everyone`, or a department's folder (`Finance`, `Sales`, …). On the Library page you can change any single document to every agent, some departments, or named agents. An agent never sees a document that is not shared with it or its department.
+- **How agents use it.** Every agent has a `library` tool: search (the passages that match, in any word order or form, with the document each came from), read (a document a stretch at a time) and list. Only matching passages are sent to the model, so a large library costs nothing until it is used. "Check what your agents will find" on the page runs the same search as you, or as any one agent.
+- **Assigning to a team.** On Work in progress the "Assign a task to" list starts with Teams; a team's task goes to its manager with the instruction to share it out and bring back one result.
+
+## Integrations
+
+**Integrations** (in the rail, under Connect) lists the outside tools agents work with, by category. Each has a status, its own set-up page, and a plain list of what agents can and cannot do with it.
+
+- **Git** (Code and repositories) is the first. **Set up Git for me** does it in one click: it checks git is installed (and offers macOS's installer if not), signs in to GitHub with the sign-in this computer already has (the `gh` tool's) and sets your name for commits from it if git has none, then lists the repositories it found on this computer and on GitHub for you to connect. You can also connect a repository by its folder on this computer, or paste a web address to have it copied into `data/repos/` (a private repository needs this computer to be signed in to its host already). Each repository shows your branch, last commit, unsaved changes, where it is hosted, and the agent tasks and task branches on it. A GitHub token (kept as the `GITHUB_TOKEN` key, sent only to `api.github.com`, never shown to an agent) lets tasks read issues and pull requests; **Test** asks GitHub who it belongs to. Agents never touch your branches, push, merge or deploy (`src/local/integrations.ts`).
+
 ## Organizations, roles and the org chart
 
 - **An organization puts bots in roles.** Each member has a title, a department and a manager, with you at the top. Open it from the Bots page (**Organization →**): an org chart and a departments view. Click a bot to change its title, department or who it reports to, to chat with it, or to send it on a quest. You can have several organizations; a bot's own file says what it can do, the organization says where it sits.
+- **A structure is a management philosophy.** Each organization is run one way: functional departments, a traditional hierarchy under a general manager, a matrix, outcome teams, flat, or a structure of your own. The Organization page shows the philosophy behind each, a sample chart, the kinds of business it suits, what to watch out for, and who settles a disagreement (**Change structure**). A structure is only offered when the app makes it behave differently: it sets who may hand work to whom (`assign_task`), how work is requested across departments (`request_work`: up the chain in a hierarchy, from any department's head elsewhere), and who breaks a tie (`src/local/structures.ts`).
+- **A kind of business decides who is on the chart.** Pick general business, professional services, software, retail and e-commerce, restaurants and hospitality, or manufacturing; the app recommends a structure for it. **Set up this structure** then brings in the roles that business needs (only a software business gets developers), seats them in layers, and keeps the agents you already had. Departments include Leadership, Marketing, Sales, Operations, Finance, People, Legal, Customer Support, Product, Engineering and Research.
+- **Every role answers for something.** A role's file lists what it is measured on, what it decides itself and what it must take to its lead (`governance:`), and whether it leads others (`lead: true`). An agent raises what is not its to decide with `escalate`; its lead decides on a small budget or passes it up. The organization's approval limit (any spending above an amount needs you) is told to every agent.
+- **Teams are the simple way in.** The **Teams** tab opens first: a tray of things to drag in (ready-made teams, your agents that are not on the chart, marketplace agents), a lane of agents reporting to you, and a card per team. Drop an agent on a lead to join its team, on another agent to start a team, on **You** to report to you; drag a lead to move its whole team; drag a ready-made team in to add all of it; drag an agent onto the remove strip to take it off. The same dragging works on the org chart.
+- **The chart is yours to draw.** Drag an agent onto another to make it report there, or onto **You**. Hover an agent for **+** (add an agent beneath it, from your team or the marketplace) and **−** (take it off the chart; for a lead, either only that agent or its whole team). Agents taken off the chart stay on your team. The **Teams** tab shows each lead with its direct reports, with the same + and −. The counts on the Organization and Work in progress pages are those of the organization selected.
+- **Every agent can talk to every other.** `ask_colleague` puts a question to any member, whatever the structure; it is answered on a small budget (six steps) and the answer comes back as a message. `assign_task` hands over work, within the structure's rule.
+- **The organization remembers.** Shared memory has three shelves: the whole organization's, each department's, and each agent's own notes plus a line the app records for every task it finishes. Agents read and write it with `team_memory`; you can read, add and remove entries on the **Memory** tab of the Organization page (`data/org-memory.json`).
+- **Tokens are spent with care.** Only the memory that bears on the task goes into a prompt (about 3,200 characters of organization memory, best matches first; the rest is one search away). An agent is told about the colleagues near it (its lead, its reports, its teammates) and gets the rest as a short directory. Questions run on a small budget, hand-offs are limited in depth and number, long conversations are summarised, and Claude's prompt caching is on.
 - **Work follows the chart.** A bot with reports gets an `assign_task` tool and may hand tasks only to its direct reports. Each task runs as a quest of its own; when all of a manager's hand-offs have stopped, their reports come back to it in one message and it carries on. The general chat agent, which speaks for you, can hand a job to any member; a job for a whole department goes to its lead. Hand-offs go at most three levels down, five open at a time per conversation, and every bot's budgets still apply.
 - **Chat with a bot in its role.** **Chat with …** opens a chat that answers as that bot, with its instructions, powers, model and limits. Reports from bots it assigned work to arrive in that chat.
-- **Every bot looks like itself.** Besides its legend, texture and colour, a bot has a body shape, eyes and something on top (`shape`, `eyes`, `top` under `character:`), chosen in the bot editor or picked from its file name. Each rests, blinks and moves in its own way.
+- **Every agent has a badge.** A tile with its initials (`legend` under `character:`) in its own colour, chosen in the agent editor.
 - **Teams in the marketplace.** A team is a lead and the bots that report to it (marketing, sales, engineering, research, finance, support, or a starter company under a chief of staff), added together with their reporting lines. Teams are listed in `marketplace/teams.yaml`; a bot's `listing` names its `title` and who it `reports_to`.
 
 ## Inbox, team and monthly budgets
@@ -127,11 +152,11 @@ Five ready-made quests are on home base, each run by the bot that suits it, each
 
 | Quest | Bot | What the app gathers first | The check |
 | --- | --- | --- | --- |
-| Write the changelog | Margo | The commits since the last tag | `CHANGELOG.md` changed and covers every commit |
-| Add tests for a file | Rivet | | The test command passes in Rivet's copy of the repository |
-| Triage open issues | Tally | The open issues, from GitHub | Every issue is covered |
-| Morning report | Dusk | Failing builds and quiet pull requests, from GitHub | Every one is mentioned |
-| Research with sources | Pip | | At least three different sources are linked |
+| Write the changelog | Marketing Specialist | The commits since the last tag | `CHANGELOG.md` changed and covers every commit |
+| Add tests for a file | Technology Specialist | | The test command passes in the engineer's copy of the repository |
+| Triage open issues | Finance Analyst | The open issues, from GitHub | Every issue is covered |
+| Morning report | Operations Coordinator | Failing builds and quiet pull requests, from GitHub | Every one is mentioned |
+| Research with sources | Research Analyst | | At least three different sources are linked |
 
 **A bot does not get to declare victory.** When it says it is done, the app looks at what it actually did. If the check fails (a test still fails, a commit is missing, sources are not linked), the bot is told exactly what failed and sent back to fix it, up to two times. Only a passed check shows ✓. A quest that still fails on a local model can be **handed to Claude** with one click, continuing where it stopped.
 

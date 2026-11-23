@@ -27,8 +27,14 @@ import { CAUTION_TOOLS, localRunSpec } from "./tools.ts";
 import { closeConnectors } from "./connectors.ts";
 import { resolveModel, splitRef } from "./models.ts";
 import { botId, loadCrew, removeBot, saveBot } from "./crew.ts";
-import { addMarketBot, addTeam, loadMarketplace, loadTeams, onTeam } from "./marketplace.ts";
-import { orgs } from "./orgs.ts";
+import { addMarketBot, addTeam, buildStructure, loadMarketplace, loadTeams, onTeam } from "./marketplace.ts";
+import { assignRule, requestRule, orgs } from "./orgs.ts";
+import { orgMemory } from "./orgmemory.ts";
+import { mcpIntegration, setClaudeDesktop } from "./mcpintegration.ts";
+import { EVERYONE, ensureFolders, library, libraryFolder, removeLibrary, syncLibrary } from "./library.ts";
+import { execFile } from "node:child_process";
+import { autoSetupGit, cloneRepository, disconnectRepository, gitIntegration, githubAccounts, githubRepos, installGit, listIntegrations, pollGithubSignIn, removeGitIntegration, startGithubSignIn, testGithub } from "./integrations.ts";
+import { ASSIGN_RULES, INDUSTRIES, REQUEST_RULES, STRUCTURES, seatsFor } from "./structures.ts";
 import { budgetBlock, monthlyBudgets } from "./spend.ts";
 import { findTemplate, loadTemplates } from "./templates.ts";
 import { journal, questStore, quests } from "./quests.ts";
@@ -309,7 +315,7 @@ function questSummary(quest: Quest) {
   return {
     id: quest.id,
     title: quest.title,
-    bot: { id: bot.id, name: bot.name, type: bot.type, character: bot.character, source: bot.source, powers: bot.powers },
+    bot: { id: bot.id, name: bot.name, type: bot.type, title: bot.title, character: bot.character, source: bot.source, powers: bot.powers },
     model: botModel(bot, quest.modelOverride),
     handedTo: quest.modelOverride ?? null,
     template: quest.template ? { id: quest.template.id, name: quest.template.name, tries: quest.template.tries, maxTries: quest.template.maxTries } : null,
@@ -329,6 +335,9 @@ function questSummary(quest: Quest) {
     outcome: quest.outcome ?? null,
     changedFiles: quest.changedFiles ?? null,
     note: quest.note ?? null,
+    // A question or an escalated decision rather than a task, and how many hand-offs deep it is.
+    kind: quest.kind ?? null,
+    depth: quest.depth ?? 0,
     resumedAt: quest.resumedAt ?? null,
     createdAt: quest.createdAt,
     updatedAt: quest.updatedAt,
@@ -336,11 +345,20 @@ function questSummary(quest: Quest) {
   };
 }
 
+/** How big a chart is: its agents, the departments (or teams) they sit in, and how many levels deep it goes below the person. */
+function chartSize(seats: ReturnType<typeof seatsFor>) {
+  const categories = new Map(loadMarketplace().bots.map((m) => [m.bot.id, m.listing.category]));
+  const depth = (bot: string): number => ((m) => (m ? 1 + depth(m) : 1))(seats.find((x) => x.bot === bot)?.manager ?? null);
+  return { agents: seats.length, departments: new Set(seats.map((x) => x.department ?? categories.get(x.bot) ?? "Other")).size, levels: seats.length ? Math.max(...seats.map((x) => depth(x.bot))) : 0 };
+}
+
 // ---------- routes ----------
 async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   const parts = url.pathname.split("/").filter(Boolean).slice(1); // after "api"
   const route = `${req.method} ${parts[0] || ""}`;
-  const body = ["POST", "PUT", "PATCH"].includes(req.method ?? "") ? await readBody(req) : {};
+  // A file dropped into the library arrives as it is, not as JSON; it is read after the sign-in check below.
+  const upload = route === "POST library" && parts[1] === "upload";
+  const body = upload ? {} : ["POST", "PUT", "PATCH"].includes(req.method ?? "") ? await readBody(req) : {};
 
   if (route === "POST login") {
     const ok = PASSWORD && crypto.timingSafeEqual(sha(String(body.password || "")), sha(PASSWORD));
@@ -556,7 +574,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       const bot = loadCrew(project ?? undefined).bots.find((b) => b.id === body.bot);
       if (!bot) throw new HttpError(400, "Choose a bot from the crew.");
       try {
-        return send(res, 200, questSummary(await quests.start({ bot, text, project: project ?? undefined })));
+        return send(res, 200, questSummary(await quests.start({ bot, text, title: typeof body.title === "string" && body.title.trim() ? body.title.trim() : undefined, project: project ?? undefined })));
       } catch (err) {
         throw new HttpError(400, (err as Error).message);
       }
@@ -613,20 +631,123 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (route === "DELETE memory") return send(res, 200, await attempt(() => memory.remove(parts[1])));
 
+  // The library: documents the person shares with their agents, kept in the organization's database.
+  if (parts[0] === "library") {
+    const org = orgs.active();
+    if (upload) {
+      return send(res, 200, await attempt(async () => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of req) {
+          size += (chunk as Buffer).length;
+          if (size > 60_000_000) throw new Error("That file is larger than 60 MB. Put it in the library folder yourself; very large files are skipped.");
+          chunks.push(chunk as Buffer);
+        }
+        return library.add(org, decodeURIComponent(url.searchParams.get("name") ?? "file"), Buffer.concat(chunks), url.searchParams.get("folder") ?? EVERYONE);
+      }));
+    }
+    if (route === "GET library") {
+      const changed = await syncLibrary(org).catch((err) => ({ error: (err as Error).message }));
+      const departments = [...new Set(org.members.map((m) => m.department))].sort();
+      return send(res, 200, { organization: org.name, folder: libraryFolder(org.id), folders: [EVERYONE, ...departments], departments, agents: org.members.map((m) => m.bot), documents: library.list(org), stats: library.stats(org), changed });
+    }
+    if (route === "POST library" && parts[1] === "search") {
+      return send(res, 200, await attempt(async () => {
+        await syncLibrary(org);
+        const as = typeof body.as === "string" && body.as ? body.as : null;
+        return { hits: library.search(org, as, String(body.query ?? ""), 8) };
+      }));
+    }
+    if (route === "POST library" && parts[1] === "open") {
+      return send(res, 200, await attempt(() => {
+        const folder = ensureFolders(org);
+        // Shows the folder in the computer's own file browser, so files can be dropped straight into it.
+        const [command, args] = process.platform === "darwin" ? ["open", [folder]] : process.platform === "win32" ? ["explorer", [folder]] : ["xdg-open", [folder]];
+        execFile(command, args, () => {});
+        return { folder };
+      }));
+    }
+    if (route === "PATCH library" && parts[1]) return send(res, 200, await attempt(() => library.setAccess(org, Number(parts[1]), body.folderDecides === true ? null : { everyone: body.everyone === true, departments: body.departments, agents: body.agents })));
+    if (route === "DELETE library" && parts[1]) return send(res, 200, await attempt(async () => (await library.remove(org, Number(parts[1])), { ok: true })));
+  }
+
+  // Integrations: the outside tools agents work with. Git is the first.
+  if (parts[0] === "integrations") {
+    if (route === "GET integrations" && !parts[1]) return send(res, 200, await listIntegrations());
+    if (route === "GET integrations" && parts[1] === "git") return send(res, 200, await gitIntegration());
+    if (route === "GET integrations" && parts[1] === "mcp") return send(res, 200, mcpIntegration());
+    if (route === "POST integrations" && parts[1] === "mcp" && parts[2] === "claude-desktop") return send(res, 200, await attempt(() => setClaudeDesktop(body.remove !== true)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "clone") {
+      return send(res, 200, await attempt(async () => {
+        const folder = await cloneRepository(body.url);
+        saveConfig({ projects: [...new Set([...getConfig().projects, folder])] });
+        return { path: folder };
+      }));
+    }
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-start") return send(res, 200, await attempt(() => startGithubSignIn()));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-poll") return send(res, 200, await attempt(() => pollGithubSignIn()));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-client") {
+      return send(res, 200, await attempt(() => {
+        const id = String(body.clientId ?? "").trim();
+        if (id && !/^[A-Za-z0-9._-]{10,60}$/.test(id)) throw new Error("That does not look like a GitHub Client ID. It is a short code such as Ov23li… shown on the app's page on GitHub.");
+        saveConfig({ githubClientId: id });
+        return { ok: true };
+      }));
+    }
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-accounts") return send(res, 200, await attempt(() => githubAccounts()));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-repos") return send(res, 200, await attempt(() => githubRepos(body.account)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "remove") return send(res, 200, await attempt(() => removeGitIntegration(body.deleteCopies === true)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "disconnect") return send(res, 200, await attempt(() => disconnectRepository(body.path, body.deleteCopy === true)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "auto") return send(res, 200, await attempt(() => autoSetupGit(body.scan === true)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "install") return send(res, 200, await attempt(() => installGit()));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "test-github") return send(res, 200, await attempt(() => testGithub()));
+  }
+
   // Organizations: bots in roles, with titles, departments and managers.
   if (parts[0] === "orgs") {
     const [, orgId, sub, memberId] = parts;
-    if (route === "GET orgs" && !orgId) return send(res, 200, orgs.list());
-    if (route === "POST orgs" && !orgId) return send(res, 200, await attempt(() => orgs.create(body.name, body.mission)));
+    if (route === "GET orgs" && !orgId) {
+      const listed = orgs.list();
+      // Each organization comes with the rule its structure sets; the structures themselves are sent once.
+      return send(res, 200, { ...listed, orgs: listed.orgs.map((o) => ({ ...o, assignRule: assignRule(o), requestRule: requestRule(o) })),
+        structures: STRUCTURES,
+        assignRules: ASSIGN_RULES,
+        requestRules: REQUEST_RULES,
+        // For each kind of business, the agents each structure would seat, so the page can say what setting one up adds.
+        industries: INDUSTRIES.map((i) => ({ id: i.id, name: i.name, examples: i.examples, recommended: i.recommended, why: i.why, seats: Object.fromEntries(STRUCTURES.map((x) => [x.id, seatsFor(x.id, i).map((seat) => seat.bot)])), sizes: Object.fromEntries(STRUCTURES.map((x) => [x.id, chartSize(seatsFor(x.id, i))])) })),
+      });
+    }
+    if (route === "POST orgs" && !orgId) return send(res, 200, await attempt(() => orgs.create(body.name, body.mission, body.structure)));
+    if (route === "POST orgs" && sub === "build") return send(res, 200, await attempt(() => buildStructure(orgId, String(body.structure ?? ""), body.industry === undefined ? undefined : String(body.industry), body.exact !== false)));
+    if (route === "POST orgs" && sub === "reset") {
+      // Start over: an empty chart, or exactly the chart the organization's structure and kind of business call for.
+      return send(res, 200, await attempt(() => {
+        if (body.mode === "empty") return orgs.clear(orgId);
+        const org = orgs.list().orgs.find((o) => o.id === orgId);
+        if (!org) throw new Error("No such organization.");
+        return buildStructure(orgId, org.structure, undefined, true);
+      }));
+    }
+    if (route === "POST orgs" && sub === "arrange") return send(res, 200, await attempt(() => orgs.arrange(orgId, String(body.structure ?? ""))));
+    if (route === "GET orgs" && sub === "memory") return send(res, 200, orgMemory.list(orgId));
+    if (route === "POST orgs" && sub === "memory") {
+      return send(res, 200, await attempt(() => {
+        const shelf = body.shelf === "dept" || body.shelf === "agent" ? body.shelf : "org";
+        return orgMemory.add({ org: orgId, shelf, key: String(body.key ?? ""), text: body.text, by: "You" });
+      }));
+    }
+    if (route === "PATCH orgs" && sub === "memory" && memberId) return send(res, 200, await attempt(() => orgMemory.update(orgId, memberId, body.text)));
+    if (route === "DELETE orgs" && sub === "memory" && memberId) return send(res, 200, await attempt(() => (orgMemory.remove(orgId, memberId), { ok: true })));
     if (route === "PATCH orgs" && orgId && !sub) {
       return send(res, 200, await attempt(() => {
         if (body.active) orgs.setActive(orgId);
-        return orgs.update(orgId, { name: body.name, mission: body.mission });
+        return orgs.update(orgId, { name: body.name, mission: body.mission, structure: body.structure, philosophy: body.philosophy, assign: body.assign, industry: body.industry, approvalLimit: body.approvalLimit });
       }));
     }
-    if (route === "DELETE orgs" && orgId && !sub) return send(res, 200, await attempt(() => orgs.remove(orgId)));
+    if (route === "DELETE orgs" && orgId && !sub) return send(res, 200, await attempt(() => (orgs.remove(orgId), orgMemory.purge(orgId), removeLibrary(orgId), { ok: true })));
     if (route === "PUT orgs" && sub === "members") return send(res, 200, await attempt(() => orgs.setMember(orgId, body)));
     if (route === "DELETE orgs" && sub === "members" && memberId) return send(res, 200, await attempt(() => orgs.removeMember(orgId, memberId)));
+    if (route === "DELETE orgs" && sub === "teams" && memberId) return send(res, 200, await attempt(() => orgs.removeTeam(orgId, memberId)));
   }
 
   if (route === "GET spaces") return send(res, 200, spaces.list());
@@ -681,6 +802,11 @@ export function start() {
   server.listen(PORT, HOST, () => {
     console.log(`${BRAND.name} is running at http://${LOCAL_HOSTS.has(HOST) ? "localhost" : HOST}:${PORT}`);
     console.log(`Data: ${DATA}\nWorkspace: ${WORKSPACE}`);
+    // A note of where this app is listening, so the Talqava MCP server (run by Claude or another AI app) can find it.
+    try {
+      const address = server.address();
+      fs.writeFileSync(path.join(DATA, "running.json"), JSON.stringify({ port: typeof address === "object" && address ? address.port : PORT, pid: process.pid, startedAt: new Date().toISOString() }), { mode: 0o600 });
+    } catch {}
   });
   jobs.start(runJob);
   // Quests that were under way when the app last closed carry on.

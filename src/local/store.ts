@@ -104,6 +104,8 @@ export interface Config {
   projects: string[];
   mcpServers: McpServer[];
   secrets: Record<string, Secret>;
+  /** The Client ID of the GitHub app that "Connect GitHub" signs in through. Not a secret. */
+  githubClientId?: string;
   sessionSecret: string;
 }
 

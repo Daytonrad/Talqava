@@ -17,7 +17,23 @@ export interface QuestCopy {
 
 const MAX_DIFF = 400_000;
 
-function git(cwd: string, args: string[], { allowFail = false } = {}): Promise<string> {
+// Git allows one command at a time to write a working copy's index. Two parts
+// of the app can want the same copy at once (listing a task's changes while
+// its result is being checked), so commands on one folder take turns.
+const turns = new Map<string, Promise<unknown>>();
+
+function git(cwd: string, args: string[], options: { allowFail?: boolean } = {}): Promise<string> {
+  const mine = (turns.get(cwd) ?? Promise.resolve()).then(
+    () => runGit(cwd, args, options),
+    () => runGit(cwd, args, options),
+  );
+  const settled = mine.catch(() => {});
+  turns.set(cwd, settled);
+  settled.then(() => turns.get(cwd) === settled && turns.delete(cwd));
+  return mine;
+}
+
+function runGit(cwd: string, args: string[], { allowFail = false } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile("git", ["-c", "core.quotepath=off", ...args], { cwd, maxBuffer: 20_000_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }, (err, stdout, stderr) => {
       if (err && !allowFail) reject(new Error(`git ${args[0]} failed: ${(stderr || err.message).trim()}`));

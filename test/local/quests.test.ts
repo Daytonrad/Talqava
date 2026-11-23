@@ -97,15 +97,15 @@ test("three bots run at once, each in its own quest with its own journal", async
   }
   // Each quest ran as its own bot.
   const system = mock.requests.filter((r) => /quest for ember/.test(JSON.stringify(r.body.messages))).at(-1)!.body.system;
-  assert.match(JSON.stringify(system), /You are Ember, the spark/);
+  assert.match(JSON.stringify(system), /You are the Business Development Specialist in the user's organization/);
 });
 
-test("a bot only gets the tools its powers grant", async () => {
+test("a bot only gets the tools its powers grant, plus the organization's: hand-offs, questions and shared memory", async () => {
   const pip = (await crew()).bots.find((b) => b.id === "pip")!;
   const quest = await runner.quests.start({ bot: pip, text: "quest for tools" });
   await waitFor(() => runner.questStore.get(quest.id)!.status === "done");
   const request = mock.requests.filter((r) => /quest for tools/.test(JSON.stringify(r.body.messages))).at(-1)!;
-  assert.deepEqual(request.body.tools.map((t: { name: string }) => t.name), ["memory", "skill", "conversation_search", "web_search", "web_fetch"]);
+  assert.deepEqual(request.body.tools.map((t: { name: string }) => t.name), ["memory", "skill", "conversation_search", "assign_task", "ask_colleague", "team_memory", "library", "web_search", "web_fetch"]);
 });
 
 test("a code quest works on its own branch: preview, then undo leaves no trace", async () => {

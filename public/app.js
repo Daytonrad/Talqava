@@ -43,7 +43,8 @@ function h(tag, props = {}, ...children) {
     else if (value === true) node.setAttribute(key, "");
     else if (value !== false && value != null) node.setAttribute(key, value);
   }
-  for (const child of children.flat()) {
+  // Children may be nested lists of any depth (a list inside a conditional inside a list).
+  for (const child of children.flat(Infinity)) {
     if (child != null && child !== false) node.append(child);
   }
   return node;
@@ -237,6 +238,8 @@ const ICONS = {
   skills: "M4.5 5h11M4.5 10h11M4.5 15h7",
   jobs: "M10 5.5V10l3 2M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0z",
   settings: "M4 6h7M15 6h1M4 14h1M9 14h7M13 4v4M7 12v4",
+  integrations: "M7.5 3.5v4M12.5 3.5v4M5.5 7.5h9v2.5a4.5 4.5 0 0 1-9 0zM10 14.5v2.5",
+  library: "M3.5 6A1.5 1.5 0 0 1 5 4.5h3l1.5 2H15A1.5 1.5 0 0 1 16.5 8v6A1.5 1.5 0 0 1 15 15.5H5A1.5 1.5 0 0 1 3.5 14zM7 10.5h6M7 12.8h4",
 };
 const icon = (name) => {
   const node = h("span", { class: "ico", "aria-hidden": "true" });
@@ -256,9 +259,11 @@ function renderRail() {
     h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava Agents, chat" }, "TALQAVA", h("span", { class: "cursor", "aria-hidden": "true" })),
     h("div", { class: "railgroup" }, item("chat", "Chat", v === "chat"), inbox),
     h("div", { class: "raillabel" }, "Team"),
-    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("home", "Bots at work", ["home", "quest", "bot"].includes(v), "Send bots on jobs and follow their work"), item("market", "Marketplace", v === "market" || v === "marketbot", "Free ready-made bots and teams")),
+    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Assign tasks to agents and follow their work"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department")),
     h("div", { class: "raillabel" }, "Knowledge"),
-    h("div", { class: "railgroup" }, item("memory", "Memory", v === "memory"), item("skills", "Skills", v === "skills"), item("jobs", "Schedules", v === "jobs")),
+    h("div", { class: "railgroup" }, item("library", "Library", v === "library", "Documents you share with your agents"), item("memory", "Memory", v === "memory"), item("skills", "Skills", v === "skills"), item("jobs", "Schedules", v === "jobs")),
+    h("div", { class: "raillabel" }, "Connect"),
+    h("div", { class: "railgroup" }, item("integrations", "Integrations", v === "integrations", "Connect the tools your business already uses, starting with Git")),
     h("div", { class: "railgroup railend" }, item("settings", "Settings", v === "settings")),
   );
   syncInboxCount();
@@ -282,7 +287,7 @@ function renderBody() {
   state.source = null;
   ui.log = null;
   ui.body.className = "body";
-  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView };
+  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView, integrations: integrationsView, library: libraryView };
   (views[state.view] || homeView)();
 }
 
@@ -312,7 +317,7 @@ function renderTop() {
       bots
         ? h(
             "div",
-            { class: "repo", title: state.project || "Quests work in the workspace folder. Add repositories under Settings." },
+            { class: "repo", title: state.project || "Tasks work in the workspace folder. Connect repositories under Integrations → Git." },
             h("span", { class: "repolabel" }, "Repository"),
             repo,
             state.project && state.crew?.branch ? [h("span", { class: "on" }, "on"), state.crew.branch] : null,
@@ -330,7 +335,7 @@ function renderSpent() {
   if (!ui.spent) return;
   const today = new Date().toDateString();
   const spent = state.quests.filter((q) => new Date(q.createdAt).toDateString() === today).reduce((sum, q) => sum + (q.cost || 0), 0);
-  fill(ui.spent, "Spent today on bots", h("b", {}, money(spent)));
+  fill(ui.spent, "Spent today on agents", h("b", {}, money(spent)));
 }
 
 // ---------- the command box ----------
@@ -340,7 +345,7 @@ const COMMANDS = [
   ["Bots", () => go("home")],
   ["Organization", () => go("team")],
   ["Marketplace", () => go("market")],
-  ["Hatch a bot", () => go("bot", "new")],
+  ["Create an agent", () => go("bot", "new")],
   ["Memory", () => go("memory")],
   ["Skills", () => go("skills")],
   ["Schedules", () => go("jobs")],
@@ -348,7 +353,7 @@ const COMMANDS = [
 ];
 
 function paletteBox() {
-  ui.palette = h("input", { type: "text", placeholder: paletteHint(), "aria-label": "Ask something, send a bot, or run a command", autocomplete: "off" });
+  ui.palette = h("input", { type: "text", placeholder: paletteHint(), "aria-label": "Ask something, assign an agent, or run a command", autocomplete: "off" });
   ui.paletteList = null;
   ui.paletteAt = 0;
   const box = h("div", { class: "palette" }, ui.palette, h("span", { class: "keys" }, navigator.platform.includes("Mac") ? "⌘K" : "Ctrl K"));
@@ -373,8 +378,8 @@ function paletteBox() {
 
 function paletteHint() {
   const bot = state.crew?.bots.find((b) => b.id === state.selectedBot);
-  if (state.view === "home" && bot) return `Send ${bot.name} on a quest, or type @name, or a command`;
-  return "Ask in a new chat, @bot to send a bot, or a command";
+  if (state.view === "home" && bot) return `Assign a task to ${bot.name}, or type @name, or a command`;
+  return "Ask in a new chat, type @name to assign an agent, or run a command";
 }
 
 function paletteItems() {
@@ -387,14 +392,14 @@ function paletteItems() {
   if (text && !mention) items.push({ label: "Ask in a new chat", what: text, run: () => startChatWith(text) });
   const target = mention ? bots.find((b) => b.id === mention[1].toLowerCase() || b.name.toLowerCase().startsWith(mention[1].toLowerCase())) : botFirst ? bots.find((b) => b.id === state.selectedBot) : null;
   const task = mention ? mention[2].trim() : text;
-  if (task && target) items[botFirst && !mention ? "unshift" : "push"]({ label: `Send ${target.name} on a quest`, what: task, bot: target, run: () => sendQuest(target, task) });
+  if (task && target) items[botFirst && !mention ? "unshift" : "push"]({ label: `Assign to ${target.name}`, what: task, bot: target, run: () => sendQuest(target, task) });
   if (task && !mention && botFirst) {
-    for (const bot of bots.filter((b) => b !== target).slice(0, 5)) items.push({ label: `Send ${bot.name} instead`, what: bot.type, bot, run: () => sendQuest(bot, task) });
+    for (const bot of bots.filter((b) => b !== target).slice(0, 5)) items.push({ label: `Assign to ${bot.name} instead`, what: roleLine(bot, roleOf(bot.id)?.title), bot, run: () => sendQuest(bot, task) });
   }
   const needle = text.toLowerCase();
   const commands = [
     ...COMMANDS,
-    ...(state.templates ?? []).map((t) => [`Core quest: ${t.name}`, () => (go("home"), openCoreQuest(t.id))]),
+    ...(state.templates ?? []).map((t) => [`Standard task: ${t.name}`, () => (go("home"), openCoreQuest(t.id))]),
     ...bots.map((b) => [`Edit ${b.name}`, () => go("bot", b.id)]),
   ];
   for (const [label, run] of commands) if (!needle || label.toLowerCase().includes(needle)) items.push({ label, what: "", run });
@@ -569,7 +574,7 @@ function addUser(text) {
   const body = text.replace(/\n\n\[[^\]]*\]\s*$/, "");
   for (const part of body.split(/\n\n(?=\[Report from )/)) {
     const head = /^\[Report from ([^·\]]+) · ([\s\S]*?) · ([^·\]]*)\]\n?/.exec(part);
-    const who = head?.[1].trim() ?? "A bot";
+    const who = head?.[1].trim() ?? "An agent";
     const bot = (state.crew?.bots ?? []).find((b) => b.name === who);
     add(
       h(
@@ -591,7 +596,7 @@ function summarize(name, input = {}) {
   if (name === "memory") return input.text || `${input.action || ""} ${input.id || ""}`;
   if (name === "skill" || name === "schedule") return `${input.action || ""} ${input.name || ""}`;
   if (name === "conversation_search") return input.query || "";
-  if (name === "assign_task") return `to ${input.to || "a bot"}: ${input.task || ""}`;
+  if (name === "assign_task") return `to ${input.to || "an agent"}: ${input.task || ""}`;
   if (name === "browser") return `${input.action || ""} ${input.url || input.target || ""}`;
   const text = JSON.stringify(input);
   return text === "{}" ? "" : text;
@@ -830,6 +835,15 @@ function swatches(current, onpick, label) {
 const escapeXml = (text) => String(text).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 const legendOf = (character, type) => [...String(character?.legend || LEGENDS[type] || "?")].slice(0, 3).join("");
 const textureOf = (character, type) => (TEXTURES[character?.texture] ? character.texture : TYPE_TEXTURES[type] || "plain");
+/** How an agent's name and role read in two lines: the name, then its title, or its department when the name is the title. */
+const roleLine = (bot, title) => {
+  const t = title || bot?.title || "";
+  return t && t.toLowerCase() !== String(bot?.name ?? "").toLowerCase() ? t : bot?.group || t;
+};
+
+// Each agent is a character: a keycap with its initials printed on it, its own
+// body shape, eyes and something on top, in its own colour. It moves a little
+// at rest, and its face and motion show what it is doing.
 let patternIds = 0;
 
 /** A neon-on-black texture as an SVG pattern, or null for solid and plain. */
@@ -989,9 +1003,9 @@ const POWER_NAMES = {
 // ---------- home base ----------
 function homeView() {
   ui.body.className = "body three";
-  ui.crewCol = h("aside", { class: "side", "aria-label": "Crew" });
+  ui.crewCol = h("aside", { class: "side", "aria-label": "Agents" });
   ui.board = h("main", { class: "center" });
-  ui.logCol = h("aside", { class: "logcol", "aria-label": "Quest log" });
+  ui.logCol = h("aside", { class: "logcol", "aria-label": "Completed work" });
   fill(ui.body, ui.crewCol, ui.board, ui.logCol);
   renderHome();
 }
@@ -1003,6 +1017,21 @@ function renderHome() {
   renderLog();
 }
 
+/** The agents the work page is about: the members of the organization that is selected, or everyone when it has none. */
+function orgBots() {
+  const bots = state.crew?.bots ?? [];
+  const members = new Set(activeOrg().members.map((m) => m.bot));
+  const mine = bots.filter((b) => members.has(b.id));
+  return mine.length ? mine : bots;
+}
+
+/** Bots by department in the selected organization, departments in name order. */
+function byDepartment(bots) {
+  const groups = new Map();
+  for (const bot of bots) groups.set(departmentOf(bot.id), [...(groups.get(departmentOf(bot.id)) ?? []), bot]);
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
 /** Bots by team group, groups in name order. */
 function byGroup(bots) {
   const groups = new Map();
@@ -1011,12 +1040,16 @@ function byGroup(bots) {
 }
 
 function renderCrewColumn() {
-  const bots = state.crew?.bots ?? [];
+  const all = state.crew?.bots ?? [];
+  const bots = orgBots();
+  const org = activeOrg();
+  const orgs = state.orgs?.orgs ?? [];
+  const orgPick = h("select", { class: "orgpick", "aria-label": "Organization", onchange: (e) => attempt(async () => (await api("PATCH", `orgs/${e.target.value}`, { active: true }), await loadOrgs(), (state.selectedBot = null), renderHome())) }, orgs.map((o) => h("option", { value: o.id, selected: o.id === org.id }, o.name)));
   const live = new Map(state.quests.filter(isLive).map((q) => [q.bot.id, q]));
   const fromRepo = bots.some((b) => b.source === "project");
   const member = (bot) => {
     const q = live.get(bot.id);
-    const status = q ? (q.status === "waiting" ? "◌ waiting on you" : `● step ${q.steps || 1}`) : bot.month?.state === "stopped" ? "■ at its monthly budget" : "idle";
+    const status = q ? (q.status === "waiting" ? "◌ Waiting on you" : `● Working · step ${q.steps || 1}`) : bot.month?.state === "stopped" ? "■ At its monthly budget" : "Available";
     return h(
       "button",
       {
@@ -1025,27 +1058,30 @@ function renderCrewColumn() {
         title: bot.instructions,
         onclick: () => {
           state.selectedBot = bot.id;
+          state.selectedTeam = null;
           remember("talqava.bot", bot.id);
           if (ui.palette) ui.palette.placeholder = paletteHint();
           if (q) go("quest", q.id);
-          else renderCrewColumn();
+          else renderHome();
         },
         ondblclick: () => go("bot", bot.id),
       },
       keycap(bot.character, 36, mood(q), bot.type),
-      h("span", { class: "who" }, h("b", {}, bot.name), h("span", { class: "type" }, roleOf(bot.id)?.title ?? cap(bot.type)), h("span", { class: `status ${q?.status === "waiting" ? "wait" : ""}` }, status)),
+      h("span", { class: "who" }, h("b", {}, bot.name), ((t) => (t && t.toLowerCase() !== bot.name.toLowerCase() ? h("span", { class: "type" }, t) : null))(roleOf(bot.id)?.title ?? bot.title), h("span", { class: `status ${q?.status === "waiting" ? "wait" : ""}` }, ((n) => (n && !q ? `${status} · ${n} done this week` : status))(state.quests.filter((x) => x.bot.id === bot.id && !isLive(x) && within(x.updatedAt, WEEK)).length))),
       // The model is only worth a mention here when the bot has none it can use.
       bot.modelInfo?.kind ? null : modelChip(bot.modelInfo),
       h("span", { class: "plain edit", role: "button", onclick: (e) => (e.stopPropagation(), go("bot", bot.id)) }, "Edit"),
     );
   };
   fill(ui.crewCol, 
-    h("div", { class: "side-head" }, h("h2", { class: "label" }, `Crew · ${bots.length}`), h("button", { class: "plain small", onclick: () => go("team"), title: "The org chart, departments and budgets" }, "Organization →")),
+    orgs.length > 1 ? h("label", { class: "sidelabel" }, "Organization", orgPick) : null,
+    h("div", { class: "side-head" }, h("h2", { class: "label" }, `${orgs.length > 1 ? "" : `${org.name || "Organization"} · `}${bots.length} agent${bots.length === 1 ? "" : "s"} · ${new Set(bots.map((b) => departmentOf(b.id))).size} department${new Set(bots.map((b) => departmentOf(b.id))).size === 1 ? "" : "s"}`), h("button", { class: "plain small", onclick: () => go("team"), title: "The org chart, departments and budgets" }, "Chart →")),
     fromRepo ? h("div", { class: "note small", style: "padding: 0 8px" }, ".crew/ in this repo") : null,
-    ...byGroup(bots).flatMap(([group, members]) => [h("div", { class: "grouplabel" }, group), ...members.map(member)]),
+    ...byDepartment(bots).flatMap(([group, members]) => [h("div", { class: "grouplabel" }, `${group} · ${members.length}`), ...members.map(member)]),
+    all.length > bots.length ? h("p", { class: "note small", style: "padding: 6px 8px 0" }, `${all.length - bots.length} more agent${all.length - bots.length === 1 ? " is" : "s are"} on your team but not in this organization. `, h("button", { class: "plain link", onclick: () => go("team") }, "Add them on the chart")) : null,
     state.crew?.problems?.length ? h("div", { class: "banner error small" }, state.crew.problems.map((p) => h("div", {}, p.problem))) : null,
     h("button", { class: "hatch", onclick: () => go("market") }, "+ Add from the marketplace"),
-    h("button", { class: "hatch", onclick: () => go("bot", "new") }, "+ Hatch a bot"),
+    h("button", { class: "hatch", onclick: () => go("bot", "new") }, "+ Create an agent"),
     navFooter(),
   );
 }
@@ -1057,26 +1093,186 @@ function navFooter() {
   return null;
 }
 
+// Tasks worth suggesting to each department, so the box is never a blank page.
+const TASK_IDEAS = {
+  Sales: ["Research 10 prospects that fit our ideal customer, and say why each fits", "Draft a follow-up for a prospect who has gone quiet", "Prepare me for a sales call: what to ask and the likely objections"],
+  Marketing: ["Write this month's customer newsletter from my notes", "Draft three social posts announcing our latest news", "Rewrite our homepage introduction so it is clearer"],
+  Finance: ["Summarise income and costs from the file I share, against last month", "List overdue invoices and draft a reminder for each", "Build a 13-week cash forecast from my figures"],
+  Operations: ["Write down how we do a recurring job as a step-by-step checklist", "Give me a weekly report of what is overdue and who it is waiting on", "Compare three suppliers on price, terms and delivery"],
+  Research: ["Compare our top three competitors on price and features, with sources", "Find out what rules apply to our business in our area", "What do customers say they dislike about products like ours?"],
+  "Customer Support": ["Draft replies to the customer questions I paste", "Group this week's complaints by cause and suggest fixes", "Write an onboarding plan for a new customer"],
+  People: ["Write a job description and interview scorecard for a role", "Draft an onboarding checklist for a new hire", "Screen the applications I share against the scorecard"],
+  Legal: ["Summarise this contract: who must do what, by when, and the risks", "List our contracts and when each renews", "Check this plan against our own policies"],
+  Leadership: ["Turn this goal into a plan across departments, with owners and dates", "Report where each department stands against its targets", "List the decisions that are waiting on me"],
+  Product: ["Write the problem, the evidence and success measure for an idea", "Turn this request into acceptance criteria", "Rank these ideas and say what each displaces"],
+  Engineering: ["Fix a bug I describe and run the tests", "Add tests for a file", "Review this change against the plan"],
+  Communications: ["Draft an announcement from my notes", "Edit this draft and keep my voice", "Turn these points into an email I can send"],
+};
+const WEEK = 7 * 24 * 3600 * 1000;
+const within = (iso, ms) => Date.now() - new Date(iso).getTime() < ms;
+const departmentOf = (botId) => roleOf(botId)?.department ?? state.crew?.bots.find((b) => b.id === botId)?.group ?? "Other";
+/** How long ago something started, in a word or two. */
+const elapsed = (iso) => {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  return mins < 1 ? "just now" : mins < 60 ? `${mins} min` : mins < 1440 ? `${Math.round(mins / 60)} h` : `${Math.round(mins / 1440)} d`;
+};
+
+/**
+ * The work page: assign work, see what needs the person, follow what is under
+ * way down the chain of hand-offs, and read how each department is doing.
+ * Ordered by what the person should do next, not by what the software has.
+ */
 function renderBoard() {
-  const active = state.quests.filter(isLive);
-  const working = active.filter((q) => q.status === "running").length;
-  const waiting = active.length - working;
-  const summary = active.length ? [working && `${working} working`, waiting && `${waiting} waiting on you`, "every step saved"].filter(Boolean).join(" · ") : "";
-  const selected = state.crew?.bots.find((b) => b.id === state.selectedBot);
+  const quests = state.quests ?? [];
+  const bots = orgBots();
+  const active = quests.filter(isLive);
+  const selectedAgent = bots.find((b) => b.id === state.selectedBot) ?? bots[0];
+  const { needs } = inboxItems();
+  const week = quests.filter((q) => !isLive(q) && within(q.updatedAt, WEEK));
+  const succeeded = week.filter((q) => q.status === "done" && !(q.check && !q.check.passed));
+  const weekAll = quests.filter((q) => within(q.updatedAt, WEEK));
+  const spent = weekAll.reduce((n, q) => n + (q.cost || 0), 0);
+  const stat = (label, value, note, loud) => h("div", { class: "stat" }, h("span", { class: "label" }, label), h("b", { class: loud ? "loud" : "" }, value), note ? h("span", { class: "statnote" }, note) : null);
+
+  // ----- assign a task: to a whole team (through its manager, who splits it up) or to one agent -----
+  const orgMembers = activeOrg().members.filter((m) => bots.some((b) => b.id === m.bot));
+  const underOf = (id) => {
+    const all = new Set([id]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const m of orgMembers) if (m.manager && all.has(m.manager) && !all.has(m.bot)) (all.add(m.bot), (grew = true));
+    }
+    return all.size - 1;
+  };
+  const teams = orgMembers
+    .filter((m) => orgMembers.some((x) => x.manager === m.bot))
+    .map((m) => ({ lead: m.bot, name: m.department && m.department !== "Leadership" ? `${m.department} team` : `Everyone under the ${bots.find((b) => b.id === m.bot)?.name}`, size: underOf(m.bot) + 1 }))
+    .sort((a, b) => b.size - a.size);
+  const team = teams.find((t) => t.lead === state.selectedTeam) ?? null;
+  const selected = team ? bots.find((b) => b.id === team.lead) : selectedAgent;
+  const who = h(
+    "select",
+    {
+      "aria-label": "Assign to",
+      onchange: (e) => {
+        const value = e.target.value;
+        if (value.startsWith("team:")) state.selectedTeam = value.slice(5);
+        else (state.selectedTeam = null), (state.selectedBot = value), remember("talqava.bot", value);
+        state.draftTask = what.value;
+        renderHome();
+      },
+    },
+    teams.length ? h("optgroup", { label: "Teams" }, teams.map((t) => h("option", { value: `team:${t.lead}`, selected: t.lead === team?.lead }, `${t.name} · ${t.size} agents`))) : null,
+    byDepartment(bots).map(([group, members]) => h("optgroup", { label: `${group} · one agent` }, members.map((b) => h("option", { value: b.id, selected: !team && b.id === selected?.id }, b.name)))),
+  );
+  const what = h("textarea", { rows: 2, placeholder: team ? `What should the ${team.name} do? Say what a good result looks like.` : selected ? `What should the ${selected.name} do? Say what a good result looks like.` : "What needs doing?", "aria-label": "The task" }, state.draftTask ?? "");
+  what.addEventListener("input", () => (state.draftTask = what.value));
+  const assign = h("button", { class: "primary" }, team ? "Assign to the team" : "Assign task");
+  const send = () =>
+    Promise.resolve(attempt(async () => {
+      const text = what.value.trim();
+      if (!selected || text.length < 3) return what.focus();
+      assign.disabled = true;
+      // A team's task goes to its manager, with the instruction to share it out and bring back one result.
+      const forTeam = team ? `${text}\n\n[This task is for your whole team (the ${team.name}), not for you alone. Split it into parts and hand each part to the right member of your team with assign_task. When their reports come back, check them, put them together, and give one combined result. Do only the parts that nobody on your team can do.]` : text;
+      await api("POST", "quests", { bot: selected.id, text: forTeam, title: team ? `${team.name}: ${text}` : undefined, project: state.project || undefined });
+      state.draftTask = "";
+      await loadQuests();
+      renderHome();
+    }, ui.board)).finally(() => (assign.disabled = false));
+  assign.addEventListener("click", send);
+  what.addEventListener("keydown", (e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && send());
+  const ideas = selected ? (TASK_IDEAS[departmentOf(selected.id)] ?? TASK_IDEAS[selected.group] ?? []) : [];
+  const leads = selected && activeOrg().members.some((m) => m.manager === selected.id);
+  const composer = h(
+    "section",
+    { class: "card assignbox", style: selected ? botStyle(selected) : "" },
+    h("div", { class: "assignrow" }, selected ? keycap(selected.character, 40, "", selected.type) : null, h("div", { class: "grow" }, h("div", { class: "row" }, h("span", { class: "label", style: "margin: 0" }, "Assign a task to"), who, team ? h("span", { class: "note small" }, `A whole team: the ${selected.name} shares the work out across ${team.size - 1} agent${team.size === 2 ? "" : "s"} and brings back one result`) : selected ? h("span", { class: "note small" }, `One agent · ${departmentOf(selected.id)}${leads ? " · can hand parts to its team" : ""}`) : null), what)),
+    h("div", { class: "assignfoot" }, h("div", { class: "ideachips" }, ideas.map((idea) => h("button", { type: "button", class: "ideachip", title: "Use this as a starting point", onclick: () => ((what.value = idea), (state.draftTask = idea), what.focus()) }, idea))), assign),
+  );
+
+  // ----- what is under way, as chains of hand-offs -----
+  const childrenOf = (id) => active.filter((q) => q.parent?.id === id);
+  const roots = active.filter((q) => !q.parent || !active.some((p) => p.id === q.parent.id));
+  const flow = (q, depth = 0) => {
+    const approval = q.approvals?.[0];
+    const pct = q.budget?.steps ? Math.min(100, Math.round(((q.steps || 0) / q.budget.steps) * 100)) : null;
+    const doing = approval ? `Wants to use ${NAMES[approval.name] || approval.name}` : q.checking ? "Checking the result" : q.activity ? `${NAMES[q.activity.name] || q.activity.name}: ${summarize(q.activity.name, q.activity.input)}` : "Thinking";
+    const kindWord = q.kind === "question" ? "Question" : q.kind === "decision" ? "Decision" : /^Request: /.test(q.title) ? "Request" : null;
+    return [
+      h(
+        "button",
+        { class: `flowrow ${approval ? "wait" : ""}`, style: `${botStyle(q.bot)}; --depth: ${depth}`, onclick: () => go("quest", q.id) },
+        depth ? h("span", { class: "flowelbow", "aria-hidden": "true" }) : null,
+        keycap(q.bot.character, 30, mood(q), q.bot.type),
+        h("span", { class: "flowmain" }, h("b", {}, kindWord ? h("span", { class: "chip" }, kindWord) : null, q.title.replace(/^(Question|Request|Decision needed): /, "")), h("span", { class: "flowsub" }, `${q.bot.name} · ${departmentOf(q.bot.id)}${q.parent ? ` · from ${q.parent.by}` : ""} · ${doing}`)),
+        h("span", { class: "flowmeta" }, pct != null ? h("span", { class: "track", title: `Step ${q.steps || 0} of up to ${q.budget.steps}` }, h("span", { style: `width: ${pct}%; background: var(--bot)` })) : null, h("span", {}, `${elapsed(q.createdAt)} · ${money(q.cost || 0)}`)),
+      ),
+      ...childrenOf(q.id).flatMap((c) => flow(c, depth + 1)),
+    ];
+  };
+
+  // ----- how each department is doing this week -----
+  const depts = new Map();
+  const row = (name) => depts.get(name) ?? depts.set(name, { name, agents: 0, active: 0, waiting: 0, done: 0, failed: 0, spent: 0 }).get(name);
+  for (const b of bots) row(departmentOf(b.id)).agents++;
+  for (const q of active) (q.approvals?.length ? row(departmentOf(q.bot.id)).waiting++ : row(departmentOf(q.bot.id)).active++);
+  for (const q of week) (succeeded.includes(q) ? row(departmentOf(q.bot.id)).done++ : row(departmentOf(q.bot.id)).failed++);
+  for (const q of weekAll) row(departmentOf(q.bot.id)).spent += q.cost || 0;
+  const rows = [...depts.values()].sort((a, b) => b.active + b.waiting + b.done + b.failed - (a.active + a.waiting + a.done + a.failed) || a.name.localeCompare(b.name));
+  const busiest = Math.max(1, ...rows.map((r) => r.active + r.waiting + r.done + r.failed));
+  const idle = rows.filter((r) => r.active + r.waiting + r.done + r.failed === 0).map((r) => r.name);
+  const stuck = rows.filter((r) => r.waiting > 0 && r.waiting >= r.active).map((r) => r.name);
+  const insight = !weekAll.length
+    ? "No work yet this week. Assign a first task above: pick an agent and use one of the suggestions."
+    : [stuck.length ? `${stuck.join(", ")} ${stuck.length === 1 ? "is" : "are"} waiting on you more than working: clear the approvals to unblock ${stuck.length === 1 ? "it" : "them"}.` : "", idle.length && idle.length < rows.length ? `No work this week in ${idle.slice(0, 4).join(", ")}${idle.length > 4 ? ` and ${idle.length - 4} more` : ""}.` : "", week.length - succeeded.length ? `${week.length - succeeded.length} task${week.length - succeeded.length === 1 ? "" : "s"} did not finish cleanly: open ${week.length - succeeded.length === 1 ? "it" : "them"} under Completed work.` : ""].filter(Boolean).join(" ") || "Work is flowing: nothing is blocked on you.";
+
   fill(ui.board, 
-    h("div", { class: "board-head" }, h("h1", {}, "On the job"), h("span", { class: "note" }, summary)),
-    active.length
-      ? h("div", { class: "cards" }, ...active.map(questCard))
-      : h(
-          "div",
-          { class: "empty-board" },
-          selected ? keycap(selected.character, 72, "", selected.type) : null,
-          h("h2", {}, "Nobody is on a quest"),
-          h("p", {}, selected ? `Type a quest in the box at the top and ${selected.name} will go. Start it with @name to send someone else.` : "Type a quest in the box at the top."),
-          h("button", { class: "primary", onclick: () => ui.palette?.focus() }, selected ? `Send ${selected.name} on a quest` : "Send a quest"),
+    h("div", { class: "board-head" }, h("div", {}, h("h1", {}, "Work in progress"), h("p", { class: "lead" }, "Assign work, clear what is waiting on you, and see how each department is doing."))),
+    composer,
+    h(
+      "section",
+      { class: "stats" },
+      stat("Waiting on you", String(needs.length), needs.length ? "Approvals, reviews and failures" : "Nothing blocked", needs.length > 0),
+      stat("In progress", String(active.length), active.length ? `${new Set(active.map((q) => q.bot.id)).size} agent${new Set(active.map((q) => q.bot.id)).size === 1 ? "" : "s"} working` : "No tasks under way"),
+      stat("Finished this week", String(week.length), week.length ? `${Math.round((succeeded.length / week.length) * 100)}% finished cleanly` : "None yet"),
+      stat("Spent this week", money(spent), weekAll.length ? `${money(spent / weekAll.length)} a task on average` : "Estimated from list prices"),
+    ),
+    needs.length
+      ? h("section", { class: "worksec" }, h("div", { class: "row" }, h("h2", { class: "grow" }, "Waiting on you"), h("button", { class: "plain small", onclick: () => go("inbox") }, "Open inbox →")), h("div", { class: "cards" }, needs.filter((n) => n.kind === "approval").map((n) => questCard(n.q))), h("div", { class: "needlist" }, needs.filter((n) => n.kind !== "approval").map(needRow)))
+      : null,
+    h(
+      "section",
+      { class: "worksec" },
+      h("div", { class: "row" }, h("h2", { class: "grow" }, "Under way"), active.length ? h("span", { class: "note small" }, "Indented tasks were handed on by the one above") : null),
+      active.length ? h("div", { class: "flow" }, roots.flatMap((q) => flow(q))) : h("div", { class: "card quiet" }, h("b", {}, "Nothing under way."), h("span", { class: "note" }, " Assign a task above. A lead will split it across its team, and each hand-off shows here beneath it.")),
+    ),
+    h(
+      "section",
+      { class: "worksec" },
+      h("div", { class: "row" }, h("h2", { class: "grow" }, `Departments this week · ${activeOrg().name || "your organization"}`), h("button", { class: "plain small", onclick: () => go("team") }, "Organization →")),
+      h("p", { class: "note insight" }, insight),
+      h(
+        "div",
+        { class: "depttable", role: "table" },
+        h("div", { class: "dhead", role: "row" }, ...["Department", "Agents", "Working", "Waiting on you", "Finished", "Not clean", "Spent", "Load"].map((x) => h("span", { role: "columnheader" }, x))),
+        rows.map((r) =>
+          h("div", { class: "drow", role: "row" }, h("b", {}, r.name), h("span", {}, String(r.agents)), h("span", {}, String(r.active)), h("span", { class: r.waiting ? "loud" : "" }, String(r.waiting)), h("span", {}, String(r.done)), h("span", { class: r.failed ? "warn" : "" }, String(r.failed)), h("span", {}, money(r.spent)), h("span", { class: "track" }, h("span", { style: `width: ${Math.round(((r.active + r.waiting + r.done + r.failed) / busiest) * 100)}%; background: var(--accent)` }))),
         ),
+      ),
+    ),
     coreQuests(),
   );
+}
+
+/** One thing that needs the person, other than an approval: a review, a failed check, a failure, a budget reached. */
+function needRow(n) {
+  if (!n.q) {
+    const words = n.kind === "chat" ? [n.c.title || "A chat", "A chat is waiting for your approval", () => go("chat", n.c.id)] : n.kind === "monthly" ? [`${n.bot.name} has reached its monthly budget`, "It starts no new work until you raise it", () => go("bot", n.bot.id)] : ["The monthly budget for all agents is used up", "No agent starts new work until you raise it", () => go("team")];
+    return h("button", { class: "needrow", onclick: words[2] }, h("span", { class: "flowmain" }, h("b", {}, words[0]), h("span", { class: "flowsub" }, words[1])), h("span", { class: "pill loud" }, "Open"));
+  }
+  const why = { review: "Changes ready for your review", check: "Finished, but its check failed", failed: n.q.note ? `Failed: ${n.q.note}` : "Failed", budget: "Stopped at its budget: say “continue” to keep going" }[n.kind] ?? "";
+  return h("button", { class: "needrow", style: botStyle(n.q.bot), onclick: () => go("quest", n.q.id) }, keycap(n.q.bot.character, 30, mood(n.q), n.q.bot.type), h("span", { class: "flowmain" }, h("b", {}, n.q.title), h("span", { class: "flowsub" }, `${n.q.bot.name} · ${departmentOf(n.q.bot.id)} · ${why}`)), h("span", { class: "pill loud" }, n.kind === "review" ? "Review" : "Open"));
 }
 
 /** The ready-made quests, each with the bot that goes and how its result is checked. */
@@ -1088,8 +1284,8 @@ function coreQuests() {
     [c.command && "runs the tests", c.changed && c.changed !== "any" && `${c.changed} changes`, c.covers && "covers everything", c.links && `${c.links}+ sources`].filter(Boolean).join(" · ");
   return h(
     "section",
-    { class: "core" },
-    h("div", { class: "board-head small-head" }, h("h2", {}, "Core quests"), h("span", { class: "note" }, "Ready-made, and checked before they count as done")),
+    { class: "core worksec" },
+    h("div", { class: "row" }, h("h2", { class: "grow" }, "Checked task templates"), h("span", { class: "note small" }, "Ready-made tasks whose result is checked automatically before it counts as done")),
     h(
       "div",
       { class: "core-grid" },
@@ -1100,7 +1296,7 @@ function coreQuests() {
           { class: `core-card ${state.coreOpen === t.id ? "on" : ""}`, onclick: () => openCoreQuest(state.coreOpen === t.id ? null : t.id) },
           h("span", { class: "row" }, bot ? keycap(bot.character, 28, "", bot.type) : null, h("b", {}, t.name)),
           h("span", { class: "note small" }, t.summary),
-          h("span", { class: "mono small muted" }, `${bot ? bot.name.toLowerCase() : t.bot} · check: ${checkWords(t.check) || "your review"}`),
+          h("span", { class: "mono small muted" }, `${bot ? bot.name : t.bot} · check: ${checkWords(t.check) || "your review"}`),
         );
       }),
     ),
@@ -1170,8 +1366,8 @@ function questCard(q) {
     q.status === "running" ? h("div", { class: "scanline", "aria-hidden": "true" }, h("span")) : null,
     h("div", { class: "head" }, h("b", {}, q.title), keycap(q.bot.character, 28, mood(q), q.bot.type)),
     approval
-      ? h("div", { class: "now wait" }, `◌ ${q.bot.name.toLowerCase()} wants to use ${NAMES[approval.name] || approval.name}`)
-      : h("div", { class: "now" }, `● ${q.bot.name.toLowerCase()} · step ${q.steps || 1}${q.budget?.steps ? ` of up to ${q.budget.steps}` : ""} · ${doing}`),
+      ? h("div", { class: "now wait" }, `◌ ${q.bot.name} wants to use ${NAMES[approval.name] || approval.name}`)
+      : h("div", { class: "now" }, `● ${q.bot.name} · step ${q.steps || 1}${q.budget?.steps ? ` of up to ${q.budget.steps}` : ""} · ${doing}`),
     approval ? h("pre", {}, approval.name === "bash" ? approval.input.command : JSON.stringify(approval.input, null, 2)) : showOutput ? h("pre", {}, showOutput.trim()) : null,
     approval?.reason || (q.readOutside && q.status === "running")
       ? h("div", { class: "caution" }, `Read outside content, so any change ${q.bot.name} wants to make now needs your approval.`)
@@ -1198,7 +1394,7 @@ function questCard(q) {
 function renderLog() {
   const done = state.quests.filter((q) => !isLive(q));
   fill(ui.logCol, 
-    h("h2", { class: "label" }, "Quest log"),
+    h("h2", { class: "label" }, "Completed work"),
     done.length
       ? done.slice(0, 40).map((q) => {
           const [label, tone] = standing(q);
@@ -1210,7 +1406,7 @@ function renderLog() {
             h("div", { class: "meta" }, [q.bot.name, shortWhen(q.updatedAt), detail].filter(Boolean).join(" · ")),
           );
         })
-      : h("p", { class: "note" }, "Finished quests appear here, with what became of them."),
+      : h("p", { class: "note" }, "Finished tasks appear here, with what became of them."),
   );
 }
 
@@ -1274,10 +1470,10 @@ function renderInbox() {
     if (n.kind === "review") return row(q.bot, `${q.title} is ready for your review`, `${q.bot.name}${q.check?.passed ? " · passed its check" : ""} · ${q.changedFiles ?? "some"} file${q.changedFiles === 1 ? "" : "s"} changed on ${q.branch}`, null, [h("button", { class: "primary", onclick: () => go("quest", q.id) }, "Review")]);
     if (n.kind === "check") return row(q.bot, `${q.title} did not pass its check`, `${q.bot.name} · ${shortWhen(q.updatedAt)}`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
     if (n.kind === "failed") return row(q.bot, `${q.title} failed`, `${q.bot.name} · ${q.note || shortWhen(q.updatedAt)}`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
-    if (n.kind === "budget") return row(q.bot, `${q.title} stopped at its budget`, `${q.bot.name} · say “continue” in the quest to keep going`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
+    if (n.kind === "budget") return row(q.bot, `${q.title} stopped at its budget`, `${q.bot.name} · say “continue” in the task to keep going`, null, [h("button", { onclick: () => go("quest", q.id) }, "Open")]);
     if (n.kind === "chat") return row(null, "A chat is waiting for your approval", n.c.title, null, [h("button", { class: "primary", onclick: () => go("chat", n.c.id) }, "Open chat")]);
     if (n.kind === "monthly") return row(n.bot, `${n.bot.name} has reached its monthly budget`, `${money(n.bot.month.spent)} of ${money(n.bot.month.limit)} · it starts no new work until you raise it`, null, [h("button", { class: "primary", onclick: () => go("bot", n.bot.id) }, "Raise budget")]);
-    return row(null, "Your bots have reached the monthly budget for all bots", "No bot starts new work until you raise it or the month turns.", null, [h("button", { class: "primary", onclick: () => go("team") }, "Change budget")]);
+    return row(null, "Your agents have reached the monthly budget for all agents", "No agent starts new work until you raise it or the month turns.", null, [h("button", { class: "primary", onclick: () => go("team") }, "Change budget")]);
   };
   const live = working.filter((w) => w.q).length;
   fill(
@@ -1285,8 +1481,8 @@ function renderInbox() {
     h(
       "div",
       { class: "row" },
-      h("div", { class: "grow" }, h("h1", {}, "Inbox"), h("p", { class: "lead" }, "What needs you, what is being worked on, and what got done today, across chats and bots.")),
-      live ? h("button", { class: "danger", onclick: () => confirm(`Stop the ${live} bot${live === 1 ? "" : "s"} working now? Their work so far is kept, and you can say “continue” later.`) && act(() => Promise.all(working.filter((w) => w.q).map((w) => api("POST", `quests/${w.q.id}/stop`)))) }, "Stop all bots") : null,
+      h("div", { class: "grow" }, h("h1", {}, "Inbox"), h("p", { class: "lead" }, "What needs you, what is being worked on, and what got done today, across chats and agents.")),
+      live ? h("button", { class: "danger", onclick: () => confirm(`Stop the ${live} bot${live === 1 ? "" : "s"} working now? Their work so far is kept, and you can say “continue” later.`) && act(() => Promise.all(working.filter((w) => w.q).map((w) => api("POST", `quests/${w.q.id}/stop`)))) }, "Stop all agents") : null,
     ),
     h("section", {}, h("h2", { class: `label ${needs.length ? "loud" : ""}` }, `◌ Needs you · ${needs.length}`), needs.length ? needs.map(need) : h("p", { class: "note" }, "Nothing needs you right now.")),
     h(
@@ -1316,6 +1512,56 @@ function renderInbox() {
 // The bots in roles: an org chart with the person at the top, departments, and
 // what each bot may spend this month. Work follows the chart: a bot with
 // reports hands tasks to them and gets their reports back.
+/** What a role answers for: its targets, what it decides itself, and what it must take to its lead. Nothing when its file says none. */
+function governanceBox(bot) {
+  const g = bot?.governance;
+  if (!g || !(g.kpis?.length || g.decides?.length || g.escalates?.length)) return null;
+  const col = (label, items) => (items?.length ? h("div", { class: "gcol" }, h("div", { class: "label" }, label), h("ul", {}, items.map((x) => h("li", {}, x)))) : null);
+  return h("div", { class: "govern" }, col("Measured on", g.kpis), col("Decides itself", g.decides), col("Must escalate", g.escalates));
+}
+
+/**
+ * A small picture of how each structure's chart is drawn: you at the top in
+ * the accent colour, leads outlined, the rest filled. Solid lines are
+ * reporting lines; dashed ones are a matrix's project lines or peer links.
+ */
+function structureDiagram(id) {
+  const W = 22;
+  const H = 12;
+  const box = (x, y, kind = "") => `<rect class="sd-box ${kind}" x="${x - W / 2}" y="${y - H / 2}" width="${W}" height="${H}" rx="3.5"/>`;
+  const line = (x1, y1, x2, y2, kind = "") => `<path class="sd-line ${kind}" d="M${x1} ${y1}L${x2} ${y2}"/>`;
+  // A lead above a row of reports, joined by an elbow.
+  const fan = (px, py, xs, cy) => {
+    const mid = (py + cy) / 2;
+    return line(px, py + H / 2, px, mid) + (xs.length > 1 ? line(Math.min(...xs), mid, Math.max(...xs), mid) : "") + xs.map((x) => line(x, mid, x, cy - H / 2)).join("");
+  };
+  let body = "";
+  if (id === "hierarchical") {
+    body = fan(120, 14, [70, 170], 46) + fan(70, 46, [44, 96], 78) + fan(170, 46, [144, 196], 78) + [44, 96, 144, 196].map((x) => line(x, 84, x, 98) + box(x, 104)).join("") + box(120, 14, "top") + box(70, 46, "lead") + box(170, 46, "lead") + [44, 96, 144, 196].map((x) => box(x, 78, "lead")).join("");
+  } else if (id === "functional") {
+    const heads = [50, 120, 190];
+    body = fan(120, 14, heads, 46) + heads.map((x) => line(x, 52, x, 98) + box(x, 46, "lead") + box(x, 76) + box(x, 104)).join("") + box(120, 14, "top");
+  } else if (id === "divisional") {
+    const divs = [48, 120, 192];
+    body = fan(120, 12, divs, 44) + divs.map((x) => `<rect class="sd-group" x="${x - 32}" y="30" width="64" height="84" rx="7"/>` + fan(x, 46, [x - 15, x + 15], 76) + line(x - 15, 82, x - 15, 96) + line(x + 15, 82, x + 15, 96) + box(x, 46, "lead") + box(x - 15, 76) + box(x + 15, 76) + box(x - 15, 102) + box(x + 15, 102)).join("") + box(120, 12, "top");
+  } else if (id === "matrix") {
+    const cols = [92, 146, 200];
+    const rows = [64, 96];
+    body = fan(146, 12, cols, 36) + cols.map((x) => line(x, 42, x, 96)).join("") + rows.map((y) => line(38, y, 200, y, "dash")).join("") + rows.map((y) => box(38, y, "lead")).join("") + cols.map((x) => box(x, 36, "lead") + rows.map((y) => box(x, y)).join("")).join("") + box(146, 12, "top");
+  } else if (id === "team") {
+    const pods = [48, 120, 192];
+    body = fan(120, 12, pods, 44) + pods.map((x) => `<rect class="sd-group" x="${x - 32}" y="30" width="64" height="84" rx="32"/>` + line(x - 15, 76, x + 15, 76, "dash") + line(x - 15, 76, x, 100, "dash") + line(x + 15, 76, x, 100, "dash") + line(x, 52, x - 15, 70) + line(x, 52, x + 15, 70) + box(x, 46, "lead") + box(x - 15, 76) + box(x + 15, 76) + box(x, 100)).join("") + box(120, 12, "top");
+  } else if (id === "flat") {
+    const xs = [30, 66, 102, 138, 174, 210];
+    body = fan(120, 30, xs, 82) + line(30, 82, 210, 82, "dash") + xs.map((x) => box(x, 82)).join("") + box(120, 30, "top");
+  } else {
+    body = line(120, 26, 120, 44) + line(70, 44, 170, 44) + line(70, 44, 70, 58) + line(170, 44, 170, 58) + box(120, 20, "top") + `<rect class="sd-box ghost" x="59" y="58" width="22" height="12" rx="3.5"/><rect class="sd-box ghost" x="159" y="58" width="22" height="12" rx="3.5"/><rect class="sd-box ghost" x="109" y="88" width="22" height="12" rx="3.5"/>` + line(120, 82, 120, 70, "dash") + `<path class="sd-plus" d="M120 60v8M116 64h8"/>`;
+  }
+  const wrap = h("div", {});
+  wrap.innerHTML = `<svg viewBox="0 0 240 120" aria-hidden="true">${body}</svg>`;
+  return wrap.firstChild;
+}
+
 async function teamView() {
   ui.body.className = "body";
   ui.log = null;
@@ -1325,6 +1571,14 @@ async function teamView() {
   if (state.view !== "team") return;
   const again = () => teamView();
   const org = activeOrg();
+  const structures = state.orgs.structures ?? [];
+  const assignRules = state.orgs.assignRules ?? {};
+  const requestRules = state.orgs.requestRules ?? {};
+  const industries = state.orgs.industries ?? [];
+  const industry = industries.find((i) => i.id === org.industry) ?? industries[0] ?? { id: "", name: "", examples: "", recommended: [], why: "", seats: {} };
+  const structure = structures.find((x) => x.id === org.structure) ?? structures[0] ?? { id: "", name: "", summary: "", philosophy: "", bestFor: "", watchOut: "", shape: "" };
+  const orgMemory = (ui.orgView ?? "teams") === "memory" && org.id ? await api("GET", `orgs/${org.id}/memory`).catch(() => []) : [];
+  if (state.view !== "team") return;
   const bots = state.crew?.bots ?? [];
   const byId = new Map(bots.map((b) => [b.id, b]));
   const members = org.members.filter((m) => byId.has(m.bot));
@@ -1341,15 +1595,16 @@ async function teamView() {
   };
   const statusOf = (bot) => {
     const q = live.get(bot.id);
-    return q ? (q.status === "waiting" ? ["◌ needs you", true] : ["● working", true]) : bot.month?.state === "stopped" ? ["■ at budget", true] : ["idle", false];
+    return q ? (q.status === "waiting" ? ["◌ Needs you", true] : ["● Working", true]) : bot.month?.state === "stopped" ? ["■ At budget", true] : ["Available", false];
   };
 
   // ----- which organization -----
   const newName = h("input", { placeholder: "Name, e.g. your company", maxlength: 50, "aria-label": "Name of the new organization" });
   const newMission = h("input", { placeholder: "What it is for, in a sentence (optional)", maxlength: 300, "aria-label": "Mission" });
-  const newForm = h("form", { class: "card orgform", hidden: true, onsubmit: (e) => (e.preventDefault(), save(() => api("POST", "orgs", { name: newName.value, mission: newMission.value }))) }, h("b", {}, "New organization"), h("p", { class: "note small" }, "It starts empty. Add bots to it from below or from the marketplace; a bot can be in more than one organization."), newName, newMission, h("div", { class: "row" }, h("button", { class: "primary" }, "Create organization"), h("button", { type: "button", onclick: () => (newForm.hidden = true) }, "Cancel")));
+  const newStructure = h("select", { "aria-label": "Structure" }, structures.map((x) => h("option", { value: x.id, selected: x.id === "functional" }, `${x.name}: ${x.summary}`)));
+  const newForm = h("form", { class: "card orgform", hidden: true, onsubmit: (e) => (e.preventDefault(), save(() => api("POST", "orgs", { name: newName.value, mission: newMission.value, structure: newStructure.value }))) }, h("b", {}, "New organization"), h("p", { class: "note small" }, "It starts empty. Add agents to it from below or from the marketplace; an agent can be in more than one organization."), newName, newMission, h("label", { class: "field" }, "How it is run", newStructure), h("div", { class: "row" }, h("button", { class: "primary" }, "Create organization"), h("button", { type: "button", onclick: () => (newForm.hidden = true) }, "Cancel")));
   const rename = h("input", { value: org.name, maxlength: 50, "aria-label": "Organization name" });
-  const mission = h("input", { value: org.mission, maxlength: 300, placeholder: "What the organization is for, in a sentence. Every bot is told it.", "aria-label": "Mission" });
+  const mission = h("input", { value: org.mission, maxlength: 300, placeholder: "What the organization is for, in a sentence. Every agent is told it.", "aria-label": "Mission" });
   const editForm = h(
     "form",
     { class: "card orgform", hidden: true, onsubmit: (e) => (e.preventDefault(), save(() => api("PATCH", `orgs/${org.id}`, { name: rename.value, mission: mission.value }))) },
@@ -1361,30 +1616,297 @@ async function teamView() {
       { class: "row" },
       h("button", { class: "primary" }, "Save"),
       h("button", { type: "button", onclick: () => (editForm.hidden = true) }, "Cancel"),
-      state.orgs.orgs.length > 1 ? h("button", { type: "button", class: "plain danger", onclick: () => confirm(`Delete the organization “${org.name}”? Its chart is deleted. The bots themselves are kept.`) && save(() => api("DELETE", `orgs/${org.id}`)) }, "Delete organization") : null,
+      state.orgs.orgs.length > 1 ? h("button", { type: "button", class: "plain danger", onclick: () => confirm(`Delete the organization “${org.name}”? Its chart is deleted. The agents themselves are kept.`) && save(() => api("DELETE", `orgs/${org.id}`)) }, "Delete organization") : null,
     ),
   );
   const pick = h("select", { "aria-label": "Organization", class: "orgpick" }, state.orgs.orgs.map((o) => h("option", { value: o.id, selected: o.id === org.id }, o.name)));
   pick.addEventListener("change", () => save(() => api("PATCH", `orgs/${pick.value}`, { active: true })));
 
+  // ----- how the organization is run: its structure and the philosophy behind it -----
+  const ownPhilosophy = h("textarea", { rows: 4, maxlength: 1200, placeholder: "How your organization works, in your own words. For example: decisions are made by whoever is closest to the customer; anything over $500 comes to me first." }, org.philosophy ?? "");
+  const ownRule = h("select", {}, Object.entries(assignRules).map(([id, words]) => h("option", { value: id, selected: id === (org.assign ?? "reports") }, words)));
+  // What setting a structure up will do, said before it is done.
+  const setUpWords = (x) => {
+    const missing = (industry.seats?.[x.id] ?? []).filter((id) => !byId.has(id)).length;
+    const layers = { hierarchical: "a general manager, then department heads, then their specialists", functional: "department heads reporting to you, with their specialists beneath them", matrix: "departments under a general manager, with a project lead on dotted lines", team: "teams that each own an outcome, a lead with its mix of specialists", flat: "one small level: a specialist from each department, all reporting to you, and no managers" }[x.id];
+    const size = industry.sizes?.[x.id];
+    const leaving = members.filter((m) => !(industry.seats?.[x.id] ?? []).includes(m.bot)).length;
+    return `Set up ${org.name} as “${x.name}” for ${industry.name.toLowerCase()}?\n\nThe chart is redrawn as ${layers}. It will have exactly ${size?.agents ?? 0} agents in ${size?.departments ?? 0} ${x.id === "team" ? "teams" : "departments"}.${missing ? ` ${missing} ${missing === 1 ? "is" : "are"} added from the marketplace.` : ""}${leaving ? ` ${leaving} agent${leaving === 1 ? "" : "s"} now on the chart ${leaving === 1 ? "is" : "are"} not part of this set-up and leave${leaving === 1 ? "s" : ""} it; ${leaving === 1 ? "it stays" : "they stay"} on your team and can be added back.` : ""}`;
+  };
+  const structureCard = (x) => {
+    const current = x.id === org.structure;
+    return h(
+      "div",
+      { class: `scard ${current ? "on" : ""}` },
+      h("div", { class: "sdiagram", role: "img", "aria-label": `A sample ${x.name} chart: ${x.shape}` }, structureDiagram(x.id)),
+      h("div", { class: "shead" }, h("b", {}, x.name), h("span", { class: "row" }, industry.recommended?.includes(x.id) ? h("span", { class: "chip rec", title: industry.why }, industry.recommended[0] === x.id ? "Recommended" : "Also suits you") : null, current ? h("span", { class: "chip on" }, "In use") : null)),
+      h("p", { class: "ssum" }, x.summary),
+      ((size) => h("div", { class: "ssize" }, size?.agents ? [h("span", {}, h("b", {}, String(size.agents)), " agents"), h("span", {}, h("b", {}, String(size.departments)), x.id === "team" ? " teams" : " departments"), h("span", {}, h("b", {}, String(size.levels)), size.levels === 1 ? " level" : " levels")] : h("span", {}, "You decide who is on it")))(industry.sizes?.[x.id]),
+      h("div", { class: "ssec" }, h("div", { class: "label" }, "Philosophy"), x.id === "custom" ? h("label", { class: "field" }, "Write yours. Every agent is told this.", ownPhilosophy) : h("p", {}, x.philosophy)),
+      h("div", { class: "ssec" }, h("div", { class: "label" }, "Recommended for"), h("div", { class: "sbiz" }, (x.businesses ?? []).map((b) => h("span", { class: "chip" }, b))), h("p", {}, x.bestFor)),
+      h("div", { class: "ssec" }, h("div", { class: "label" }, "Watch out for"), h("p", {}, x.watchOut)),
+      h("div", { class: "ssec" }, h("div", { class: "label" }, "How work moves"), x.id === "custom" ? ownRule : h("p", {}, assignRules[x.assign] ?? ""), x.id === "custom" || x.assign === "anyone" ? null : h("p", { class: "gap" }, requestRules[x.request] ?? "")),
+      h("div", { class: "ssec" }, h("div", { class: "label" }, "When two leads disagree"), h("p", {}, x.tieBreak)),
+      h(
+        "div",
+        { class: "sactions" },
+        x.id === "custom"
+          ? h("button", { class: "primary", onclick: () => save(() => api("PATCH", `orgs/${org.id}`, { structure: "custom", philosophy: ownPhilosophy.value, assign: ownRule.value })) }, current ? "Save" : "Use my own structure")
+          : [
+              h("button", { class: "primary", onclick: () => confirm(setUpWords(x)) && ((ui.orgStructures = false), (ui.orgOpen = ""), (ui.orgView = "teams"), (ui.orgSel = null), save(async () => (await api("POST", `orgs/${org.id}/build`, { structure: x.id }), await loadCrew()))) }, current ? "Set up the chart this way" : "Set up this structure"),
+            ],
+      ),
+    );
+  };
+  // A new organization that still has only the standard agents opens on this choice.
+  ui.orgStructures ??= org.structure === "flat" && members.length > 0 && members.every((m) => byId.get(m.bot).source === "starter");
+  const industryPick = h("select", { "aria-label": "Your kind of business", onchange: (e) => save(() => api("PATCH", `orgs/${org.id}`, { industry: e.target.value })) }, industries.map((i) => h("option", { value: i.id, selected: i.id === industry.id }, i.name)));
+  const structurePanel = h(
+    "section",
+    { class: "card structures", hidden: !ui.orgStructures },
+    h("div", { class: "row" }, h("h2", { class: "grow" }, "How should this organization be run?"), h("button", { class: "plain", "aria-label": "Close", onclick: () => ((ui.orgStructures = false), again()) }, "✕")),
+    h("p", { class: "note" }, "Two choices. Your kind of business decides which departments and roles the chart is staffed with. The structure is the management philosophy: what every agent is told about how to work, who may hand work to whom, and who settles a disagreement. The chart stays yours to edit."),
+    h("div", { class: "sbusiness" }, h("label", { class: "field" }, "1. Your kind of business", industryPick), h("div", { class: "grow" }, h("p", { class: "note" }, industry.examples), h("p", { class: "note" }, h("b", {}, "Our recommendation: "), `${(industry.recommended ?? []).map((id) => structures.find((x) => x.id === id)?.name).filter(Boolean).join(", or ")}. ${industry.why}`))),
+    h("div", { class: "label", style: "margin-top: 18px" }, "2. The structure"),
+    h("div", { class: "sgrid" }, [...structures].sort((a, b) => ((i) => (i < 0 ? 9 : i))((industry.recommended ?? []).indexOf(a.id)) - ((i) => (i < 0 ? 9 : i))((industry.recommended ?? []).indexOf(b.id))).map(structureCard)),
+  );
+
+  // Everything on this page is arranged by dragging. What is being dragged is one of:
+  // a member already on the chart, an agent on the team that is not on it, an agent
+  // or a ready-made team from the marketplace. Dropping it on an agent makes it report
+  // there (a team brings its own reports along); dropping it on You makes it report to you.
+  const dropOn = (managerId) => {
+    const d = ui.orgDrag;
+    ui.orgDrag = null;
+    if (!d) return;
+    if (d.kind === "member") {
+      const m = members.find((x) => x.bot === d.id);
+      if (!m || d.id === managerId || (m.manager ?? null) === (managerId ?? null)) return;
+      return save(() => api("PUT", `orgs/${org.id}/members`, { bot: d.id, manager: managerId }));
+    }
+    if (d.kind === "agent") return save(() => api("PUT", `orgs/${org.id}/members`, { bot: d.id, manager: managerId }));
+    if (d.kind === "market") return save(async () => (await api("POST", `marketplace/${d.id}/add`), await loadCrew(), await api("PUT", `orgs/${org.id}/members`, { bot: d.id, manager: managerId }), (state.market = null)));
+    if (d.kind === "team") {
+      return save(async () => {
+        await api("POST", `marketplace/teams/${d.id}/add`);
+        await loadCrew();
+        // The team's lead takes the place it was dropped on; its own reports came with it.
+        if (d.lead && d.lead !== managerId) await api("PUT", `orgs/${org.id}/members`, { bot: d.lead, manager: managerId }).catch(() => {});
+        state.market = null;
+      });
+    }
+  };
+  const dropZone = (managerId) => ({
+    ondragover: (e) => {
+      if (!ui.orgDrag || (ui.orgDrag.kind === "member" && ui.orgDrag.id === managerId)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      e.currentTarget.classList.add("drop");
+    },
+    ondragleave: (e) => e.currentTarget.classList.remove("drop"),
+    ondrop: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.classList.remove("drop");
+      dropOn(managerId);
+    },
+  });
+  /** Makes something draggable, carrying what it is. The page shows where it may be dropped while it is in the air. */
+  const draggable = (payload) => ({
+    draggable: "true",
+    ondragstart: (e) => {
+      ui.orgDrag = payload;
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", payload.id);
+      e.currentTarget.classList.add("dragging");
+      col.classList.add("dragging-on");
+      col.classList.toggle("dragging-member", payload.kind === "member");
+    },
+    ondragend: (e) => {
+      ui.orgDrag = null;
+      e.currentTarget.classList.remove("dragging");
+      col.classList.remove("dragging-on", "dragging-member");
+    },
+  });
+  // Dropping a member here takes it off the chart.
+  const removeZone = () =>
+    h(
+      "div",
+      {
+        class: "removezone",
+        ondragover: (e) => {
+          if (ui.orgDrag?.kind !== "member") return;
+          e.preventDefault();
+          e.currentTarget.classList.add("drop");
+        },
+        ondragleave: (e) => e.currentTarget.classList.remove("drop"),
+        ondrop: (e) => {
+          e.preventDefault();
+          e.currentTarget.classList.remove("drop");
+          const d = ui.orgDrag;
+          ui.orgDrag = null;
+          const m = d?.kind === "member" ? members.find((x) => x.bot === d.id) : null;
+          if (m) minus(m);
+        },
+      },
+      "− Drop here to remove from the chart",
+    );
+
   // ----- one member, on the chart or in a department -----
-  const pickMember = (id) => ((ui.orgSel = ui.orgSel === id ? null : id), again());
+  const pickMember = (id) => ((ui.orgSel = ui.orgSel === id ? null : id), (ui.orgPanel = null), again());
   const node = (m) => {
     const bot = byId.get(m.bot);
     const [status, loud] = statusOf(bot);
     const reports = members.filter((x) => x.manager === m.bot).length;
     return h(
       "button",
-      { class: `onode ${ui.orgSel === m.bot ? "on" : ""} ${bot.month?.state === "stopped" ? "stopped" : ""}`, style: botStyle(bot), onclick: () => pickMember(m.bot), title: `${bot.name}: ${m.title}` },
+      {
+        class: `onode ${ui.orgSel === m.bot ? "on" : ""} ${bot.month?.state === "stopped" ? "stopped" : ""}`,
+        style: botStyle(bot),
+        onclick: () => pickMember(m.bot),
+        title: `${bot.name}: ${m.title}. Drag onto another agent to change who it reports to.`,
+        ...draggable({ kind: "member", id: m.bot }),
+        ...dropZone(m.bot),
+      },
       keycap(bot.character, 44, mood(live.get(bot.id)), bot.type),
       h("b", {}, bot.name),
-      m.title.toLowerCase() === bot.name.toLowerCase() ? null : h("span", { class: "otitle" }, m.title),
+      h("span", { class: "otitle" }, m.title.toLowerCase() === bot.name.toLowerCase() ? m.department : m.title),
       h("span", { class: `mono small ${loud ? "" : "muted"}` }, reports ? `${status} · leads ${reports}` : status),
+      m.also && byId.get(m.also) ? h("span", { class: "odotted", title: "Project lead (dotted line)" }, `⋯ ${byId.get(m.also).name}`) : null,
     );
   };
+  // Everyone beneath a member on the chart.
+  const under = (botId) => {
+    const all = new Set([botId]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const x of members) if (x.manager && all.has(x.manager) && !all.has(x.bot)) (all.add(x.bot), (grew = true));
+    }
+    all.delete(botId);
+    return all;
+  };
+  const openPanel = (panel) => ((ui.orgPanel = panel), (ui.orgSel = null), panel ? (ui.orgOpen = "") : null, again());
+  // Minus takes an agent off the chart (asking first what to do with a lead's team); plus adds one beneath it.
+  const minus = (m) => {
+    const bot = byId.get(m.bot);
+    if (under(m.bot).size) return openPanel({ kind: "remove", bot: m.bot });
+    if (confirm(`Take the ${bot.name} off the chart of ${org.name}? It stays on your team and can be added back.`)) save(() => api("DELETE", `orgs/${org.id}/members/${m.bot}`));
+  };
+  const controls = (m) =>
+    h(
+      "span",
+      { class: "nodectl" },
+      h("button", { class: "ctl minus", title: `Remove the ${byId.get(m.bot).name} from the chart`, "aria-label": `Remove ${byId.get(m.bot).name}`, onclick: (e) => (e.stopPropagation(), minus(m)) }, "−"),
+      h("button", { class: "ctl plus", title: `Add an agent reporting to the ${byId.get(m.bot).name}`, "aria-label": `Add an agent under ${byId.get(m.bot).name}`, onclick: (e) => (e.stopPropagation(), openPanel({ kind: "add", under: m.bot })) }, "+"),
+    );
+  const nodeWrap = (m) => h("div", { class: "onodewrap" }, node(m), controls(m));
   const branch = (managerId) => {
     const kids = members.filter((m) => m.manager === managerId).sort((a, b) => a.department.localeCompare(b.department) || a.title.localeCompare(b.title));
-    return kids.length ? h("ul", {}, kids.map((m) => h("li", {}, node(m), branch(m.bot)))) : null;
+    return kids.length ? h("ul", {}, kids.map((m) => h("li", {}, nodeWrap(m), branch(m.bot)))) : null;
+  };
+
+  // ----- the panel a plus or minus opens -----
+  const panel = () => {
+    const p = ui.orgPanel;
+    if (!p) return null;
+    const close = h("button", { class: "plain", "aria-label": "Close", onclick: () => openPanel(null) }, "✕");
+    if (p.kind === "orgs") {
+      const all = state.orgs.orgs;
+      const nameOf = (id) => structures.find((x) => x.id === id)?.name ?? "";
+      return h(
+        "section",
+        { class: "card memberbox orgpanel" },
+        h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, `Your organizations · ${all.length}`), h("div", { class: "note" }, "Open one to work on it, or delete one you no longer need. Deleting removes its chart and its memory; the agents themselves stay on your team, and chats and tasks are kept.")), close),
+        h(
+          "div",
+          { class: "pickrows" },
+          all.map((o) =>
+            h(
+              "div",
+              { class: "pickrow" },
+              h("span", { class: "flowmain" }, h("b", {}, o.name, o.id === org.id ? h("span", { class: "chip on", style: "margin-left: 8px" }, "Open now") : null), h("span", { class: "flowsub" }, `${o.members.length} agent${o.members.length === 1 ? "" : "s"} · ${new Set(o.members.map((m) => m.department)).size} department${new Set(o.members.map((m) => m.department)).size === 1 ? "" : "s"} · ${nameOf(o.structure)}${o.mission ? ` · ${o.mission}` : ""}`)),
+              o.id === org.id ? null : h("button", { onclick: () => ((ui.orgPanel = null), (ui.orgSel = null), save(() => api("PATCH", `orgs/${o.id}`, { active: true }))) }, "Open"),
+              all.length > 1
+                ? h("button", { class: "danger", onclick: () => confirm(`Delete the organization “${o.name}”?\n\nIts chart (${o.members.length} agent${o.members.length === 1 ? "" : "s"}) and its memory are deleted and cannot be brought back. The agents stay on your team.`) && ((ui.orgSel = null), save(() => api("DELETE", `orgs/${o.id}`))) }, "Delete")
+                : h("span", { class: "note small", title: "Create another organization first" }, "Your only organization"),
+            ),
+          ),
+        ),
+        all.length === 1 ? h("p", { class: "note small" }, "An organization can be deleted once you have more than one. To empty this one instead, use Start over.") : null,
+      );
+    }
+    if (p.kind === "reset") {
+      const size = industry.sizes?.[org.structure];
+      const recipe = size?.agents ? `${size.agents} agents in ${size.departments} ${org.structure === "team" ? "teams" : "departments"}` : "";
+      const done = (mode) => ((ui.orgPanel = null), (ui.orgSel = null), save(async () => (await api("POST", `orgs/${org.id}/reset`, { mode }), await loadCrew())));
+      return h(
+        "section",
+        { class: "card memberbox orgpanel" },
+        h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, `Start ${org.name} over?`), h("div", { class: "note" }, `The chart has ${members.length} agent${members.length === 1 ? "" : "s"} now. Starting over changes the chart only: every agent stays on your team, and your chats, tasks and memory are kept.`)), close),
+        h(
+          "div",
+          { class: "resetchoices" },
+          recipe
+            ? h("div", { class: "resetchoice" }, h("b", {}, `Reset to the standard ${structure.name.toLowerCase()} chart`), h("p", { class: "note" }, `Exactly what ${structure.name.toLowerCase()} calls for in ${industry.name.toLowerCase()}: ${recipe}. Agents you added that are not part of it leave the chart, and every reporting line goes back to the standard.`), h("button", { class: "primary", onclick: () => done("recipe") }, `Reset to ${size.agents} agents`))
+            : null,
+          h("div", { class: "resetchoice" }, h("b", {}, "Clear the chart"), h("p", { class: "note" }, "An empty chart with nobody on it. Build it yourself by dragging in agents and teams, or choose a structure afterwards."), h("button", { class: "danger", onclick: () => done("empty") }, "Clear to 0 agents")),
+        ),
+        h("div", {}, h("button", { class: "plain", onclick: () => openPanel(null) }, "Cancel")),
+      );
+    }
+    if (p.kind === "remove") {
+      const m = members.find((x) => x.bot === p.bot);
+      if (!m) return null;
+      const bot = byId.get(m.bot);
+      const below = under(m.bot);
+      const boss = m.manager ? byId.get(m.manager)?.name : "you";
+      return h(
+        "section",
+        { class: "card memberbox orgpanel", style: botStyle(bot) },
+        h("div", { class: "row" }, keycap(bot.character, 40, "", bot.type), h("div", { class: "grow" }, h("h2", {}, `Remove the ${bot.name}?`), h("div", { class: "note" }, `${below.size} agent${below.size === 1 ? " is" : "s are"} beneath it on the chart. Agents taken off the chart stay on your team and can be added back.`)), close),
+        h(
+          "div",
+          { class: "row" },
+          h("button", { class: "danger", onclick: () => ((ui.orgPanel = null), save(() => api("DELETE", `orgs/${org.id}/teams/${m.bot}`))) }, `− Remove the whole team (${below.size + 1} agents)`),
+          h("button", { onclick: () => ((ui.orgPanel = null), save(() => api("DELETE", `orgs/${org.id}/members/${m.bot}`))) }, `− Remove only the ${bot.name}: its reports move up to ${boss}`),
+          h("button", { class: "plain", onclick: () => openPanel(null) }, "Cancel"),
+        ),
+      );
+    }
+    const lead = p.under ? byId.get(p.under) : null;
+    if (p.under && !members.some((x) => x.bot === p.under)) return null;
+    const find = h("input", { type: "search", placeholder: "Search by role, e.g. bookkeeper or marketing", "aria-label": "Search agents", value: ui.orgAddSearch ?? "" });
+    const results = h("div", { class: "addlist" });
+    const place = (botId) => save(() => api("PUT", `orgs/${org.id}/members`, { bot: botId, manager: p.under ?? null }));
+    const draw = () => {
+      const needle = find.value.trim().toLowerCase();
+      const match = (text) => !needle || text.toLowerCase().includes(needle);
+      const mine = outside.filter((b) => match(`${b.name} ${b.group} ${b.instructions}`));
+      const market = (state.market ?? []).filter((b) => !b.added && !byId.has(b.id) && match(`${b.name} ${b.listing.category} ${b.listing.summary}`));
+      const rowFor = (b, sub, onclick) => h("button", { class: "addrow", style: botStyle(b), onclick }, keycap(b.character, 30, "", b.type), h("span", { class: "flowmain" }, h("b", {}, b.name), h("span", { class: "flowsub" }, sub)), h("span", { class: "pill loud" }, "+ Add"));
+      fill(
+        results,
+        mine.length ? h("div", { class: "label" }, "On your team, not on this chart") : null,
+        mine.map((b) => rowFor(b, `${b.group} · ${b.instructions.split(/(?<=[.!?])\s/)[0].slice(0, 90)}`, () => place(b.id))),
+        market.length ? h("div", { class: "label" }, "From the marketplace") : null,
+        market.slice(0, needle ? 30 : 12).map((b) => rowFor(b, `${b.listing.category} · ${b.listing.summary.slice(0, 90)}`, () => save(async () => (await api("POST", `marketplace/${b.id}/add`), await loadCrew(), await api("PUT", `orgs/${org.id}/members`, { bot: b.id, manager: p.under ?? null }), (state.market = null))))),
+        !mine.length && !market.length ? h("p", { class: "note" }, state.market ? "Nothing matches. Try other words, or create your own agent." : "Loading the marketplace…") : null,
+        !needle && market.length > 12 ? h("p", { class: "note small" }, `${market.length - 12} more in the marketplace: search to find them.`) : null,
+      );
+    };
+    find.addEventListener("input", () => ((ui.orgAddSearch = find.value), draw()));
+    if (!state.market) loadMarket().then(draw).catch(() => {});
+    draw();
+    setTimeout(() => find.focus(), 0);
+    return h(
+      "section",
+      { class: "card memberbox orgpanel", style: lead ? botStyle(lead) : "" },
+      h("div", { class: "row" }, lead ? keycap(lead.character, 40, "", lead.type) : h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("div", { class: "grow" }, h("h2", {}, lead ? `Add an agent under the ${lead.name}` : "Add an agent reporting to you"), h("div", { class: "note" }, "Pick one. It joins the chart at this place, and you can drag it elsewhere afterwards.")), close),
+      find,
+      results,
+      h("div", { class: "row" }, h("button", { onclick: () => go("market") }, "Add a whole team from the marketplace"), h("button", { onclick: () => go("bot", "new") }, "Create your own agent")),
+    );
   };
 
   // ----- the selected member's role -----
@@ -1401,89 +1923,940 @@ async function teamView() {
       for (const x of members) if (x.manager && below.has(x.manager) && !below.has(x.bot)) (below.add(x.bot), (grew = true));
     }
     const boss = h("select", {}, h("option", { value: "", selected: !m.manager }, "You"), members.filter((x) => !below.has(x.bot)).map((x) => h("option", { value: x.bot, selected: x.bot === m.manager }, `${byId.get(x.bot).name} · ${x.title}`)));
-    const reports = members.filter((x) => x.manager === m.bot);
+    const reports = members.filter((x) => x.manager === m.bot || x.also === m.bot);
+    const showAlso = org.structure === "matrix" || org.structure === "custom" || Boolean(m.also);
+    const also = h("select", {}, h("option", { value: "", selected: !m.also }, "None"), members.filter((x) => x.bot !== m.bot).map((x) => h("option", { value: x.bot, selected: x.bot === m.also }, `${byId.get(x.bot).name} · ${x.title}`)));
+    const mates = m.manager ? members.filter((x) => x.manager === m.manager && x.bot !== m.bot) : [];
+    const rule = org.assignRule ?? "reports";
+    const handsTo = rule === "anyone" ? "any other agent" : [...reports, ...(rule === "team" ? mates : [])].map((r) => byId.get(r.bot).name).join(", ");
     const month = bot.month ?? { spent: 0, limit: null, state: "ok" };
+    const boss0 = m.manager ? byId.get(m.manager) : null;
     return h(
       "section",
-      { class: "card memberbox", style: botStyle(bot) },
-      h("div", { class: "row" }, keycap(bot.character, 64, mood(live.get(bot.id)), bot.type), h("div", { class: "grow" }, h("h2", {}, bot.name), h("div", { class: "note" }, bot.instructions.split(/(?<=[.!?])\s/)[0])), h("button", { class: "plain", onclick: () => pickMember(m.bot), "aria-label": "Close" }, "✕")),
-      h(
-        "form",
-        { class: "rolegrid", onsubmit: (e) => (e.preventDefault(), save(() => api("PUT", `orgs/${org.id}/members`, { bot: m.bot, title: title.value, department: dept.value, manager: boss.value || null }))) },
-        h("label", { class: "field" }, "Title", title),
-        h("label", { class: "field" }, "Department", dept),
-        h("label", { class: "field" }, "Reports to", boss),
-        h("button", { class: "primary" }, "Save role"),
-      ),
-      h("p", { class: "note small" }, reports.length ? `${bot.name} can hand tasks to ${reports.map((r) => byId.get(r.bot).name).join(", ")}, and gets their reports back.` : `Nobody reports to ${bot.name}, so it does its work itself. Give it reports by setting another bot's “Reports to”.`),
-      month.limit != null || month.spent >= 0.001 ? h("div", { class: "mono small muted" }, month.limit != null ? `${money(month.spent)} of ${money(month.limit)} this month` : `${money(month.spent)} this month · no limit`) : null,
-      bar(month, colorOf(bot.character, bot.type)),
+      { class: "card memberbox personcard", style: botStyle(bot) },
+      h("div", { class: "row" }, keycap(bot.character, 56, mood(live.get(bot.id)), bot.type), h("div", { class: "grow" }, h("h2", {}, bot.name), h("div", { class: "note" }, bot.instructions.split(/(?<=[.!?])\s/)[0].replace(/^I am the organization's [^:.]*: /, "I ").replace(/^I am the organization's /, "The organization's ")), h("div", { class: "note small" }, boss0 ? `Works for the ${boss0.name}${reports.length ? ` · manages ${reports.length}` : ""}` : `Works directly for you${reports.length ? ` · manages ${reports.length}` : ""}`)), h("button", { class: "plain", onclick: () => pickMember(m.bot), "aria-label": "Close" }, "✕")),
       h(
         "div",
         { class: "row" },
-        h("button", { class: "primary", onclick: () => chatWith(bot, col) }, `Chat with ${bot.name}`),
-        h("button", { onclick: () => ((state.selectedBot = bot.id), remember("talqava.bot", bot.id), go("home")) }, "Send on a quest"),
-        h("button", { onclick: () => go("bot", bot.id) }, month.state === "stopped" ? "Raise budget" : "Edit bot"),
-        h("button", { class: "plain danger", onclick: () => confirm(`Take ${bot.name} off the chart of ${org.name}? Its reports move up to its manager. The bot itself is kept.`) && ((ui.orgSel = null), save(() => api("DELETE", `orgs/${org.id}/members/${m.bot}`))) }, "Remove from organization"),
+        h("button", { class: "primary big", onclick: () => chatWith(bot, col) }, "Chat with it"),
+        h("button", { class: "big", onclick: () => ((state.selectedBot = bot.id), remember("talqava.bot", bot.id), go("home")) }, "Give it a task"),
+        h("button", { class: "plain danger", onclick: () => ((ui.orgSel = null), minus(m)) }, "Remove from my team"),
+      ),
+      h(
+        "details",
+        { class: "moreabout", open: ui.orgRoleOpen ? "" : null, ontoggle: (e) => (ui.orgRoleOpen = e.target.open) },
+        h("summary", {}, h("b", {}, "Change its job, or who it works for")),
+        h(
+          "div",
+          { class: "body" },
+      h(
+        "form",
+        { class: "rolegrid", onsubmit: (e) => (e.preventDefault(), save(() => api("PUT", `orgs/${org.id}/members`, { bot: m.bot, title: title.value, department: dept.value, manager: boss.value || null, ...(showAlso ? { also: also.value || null } : {}) }))) },
+        h("label", { class: "field" }, "Job title", title),
+        h("label", { class: "field" }, "Team or department", dept),
+        h("label", { class: "field" }, "Works for", boss),
+        showAlso ? h("label", { class: "field", title: "A second lead, such as a project lead, who may also give this agent tasks" }, "Project lead (dotted line)", also) : null,
+        h("button", { class: "primary" }, "Save"),
+      ),
+      h("p", { class: "note small" }, `${handsTo ? `The ${bot.name} can hand tasks to ${handsTo}, and gets their reports back.` : `Nobody takes tasks from the ${bot.name}, so it does its work itself. Drag another agent onto it to give it a report.`} It can ask any colleague a question, and shares the organization's memory.`),
+      governanceBox(bot),
+      month.limit != null || month.spent >= 0.001 ? h("div", { class: "mono small muted" }, month.limit != null ? `${money(month.spent)} of ${money(month.limit)} this month` : `${money(month.spent)} this month · no limit`) : null,
+      bar(month, colorOf(bot.character, bot.type)),
+          h("div", {}, h("button", { onclick: () => go("bot", bot.id) }, month.state === "stopped" ? "Raise its budget" : "Edit everything about this agent")),
+        ),
       ),
     );
   };
 
-  const limit = h("input", { type: "number", min: 0, step: 1, value: total.limit ?? "", placeholder: "No limit", "aria-label": "Monthly budget for all bots, in dollars" });
+  function depts_() {
+    return [...new Set(members.map((m) => m.department))].sort();
+  }
+  const limit = h("input", { type: "number", min: 0, step: 1, value: total.limit ?? "", placeholder: "No limit", "aria-label": "Monthly budget for all agents, in dollars" });
   const stat = (label, value, loud) => h("div", { class: "stat" }, h("span", { class: "label" }, label), h("b", { class: loud ? "loud" : "" }, value));
-  const chartView = (ui.orgView ?? "chart") === "chart";
-  const depts = [...new Set(members.map((m) => m.department))].sort();
+  const view = ui.orgView ?? "teams";
+  const chartView = view === "chart";
+  const tab = (id, label) => h("button", { role: "tab", class: view === id ? "on" : "", "aria-selected": String(view === id), onclick: () => ((ui.orgView = id), again()) }, label);
+  // A team is a lead and the agents that report to it.
+  const leads = members.filter((m) => members.some((x) => x.manager === m.bot));
+  // The tray: what can be dragged onto the chart. Ready-made teams, the person's agents that are not on it, and the marketplace.
+  const trayFind = h("input", { type: "search", placeholder: "Find an agent or team to drag in, e.g. bookkeeper", "aria-label": "Find an agent or team", value: ui.traySearch ?? "" });
+  const trayItems = h("div", { class: "trayitems" });
+  const drawTray = () => {
+    const needle = trayFind.value.trim().toLowerCase();
+    const match = (text) => !needle || text.toLowerCase().includes(needle);
+    const addNow = (payload) => ((ui.orgDrag = payload), dropOn(null));
+    const chip = (bot, payload, sub) => h("div", { class: "traychip", style: botStyle(bot), role: "button", tabindex: "0", title: `Click to add it reporting to you, or drag it onto an agent or a team. ${sub}`, onclick: () => addNow(payload), ...draggable(payload) }, keycap(bot.character, 26, "", bot.type), h("span", { class: "flowmain" }, h("b", {}, bot.name), h("span", { class: "flowsub" }, sub)));
+    const mine = outside.filter((b) => match(`${b.name} ${b.group}`));
+    const teams = (state.marketTeams ?? []).filter((t) => match(`${t.name} ${t.summary}`));
+    const market = (state.market ?? []).filter((b) => !byId.has(b.id) && match(`${b.name} ${b.listing.category} ${b.listing.summary}`));
+    const marketById = new Map((state.market ?? []).map((b) => [b.id, b]));
+    fill(
+      trayItems,
+      teams.length
+        ? h(
+            "div",
+            { class: "traygroup" },
+            h("span", { class: "label" }, "Ready-made teams"),
+            h(
+              "div",
+              { class: "trayrow" },
+              teams.map((t) => {
+                const onChart = t.bots.filter((id) => members.some((m) => m.bot === id));
+                const all = onChart.length === t.bots.length;
+                const payload = { kind: "team", id: t.id, lead: t.bots[0] };
+                return h(
+                  "div",
+                  { class: `traychip team ${all ? "have" : ""}`, title: `${t.summary} Drag it onto the board, or use + and −.`, ...draggable(payload) },
+                  h("span", { class: "teamstack" }, t.bots.slice(0, 3).map((id) => (marketById.get(id) ? keycap(marketById.get(id).character, 22, "", marketById.get(id).type) : null))),
+                  h("span", { class: "flowmain" }, h("b", {}, t.name), h("span", { class: "flowsub" }, all ? `All ${t.bots.length} on your chart` : onChart.length ? `${onChart.length} of ${t.bots.length} on your chart` : `${t.bots.length} agents · led by the ${marketById.get(t.bots[0])?.name ?? "lead"}`)),
+                  all ? null : h("button", { class: "ctl plus", title: `Add the ${t.name} to your chart`, "aria-label": `Add the ${t.name}`, onclick: (e) => (e.stopPropagation(), addNow(payload)) }, "+"),
+                  onChart.length
+                    ? h(
+                        "button",
+                        {
+                          class: "ctl minus",
+                          title: `Take the ${t.name} off your chart`,
+                          "aria-label": `Remove the ${t.name}`,
+                          onclick: (e) => {
+                            e.stopPropagation();
+                            if (!confirm(`Take the ${t.name} off your chart?\n\n${onChart.length} agent${onChart.length === 1 ? "" : "s"} leave${onChart.length === 1 ? "s" : ""} the chart. They stay on your team and can be added back with +.`)) return;
+                            // Members first, their lead last, so nobody is moved up the chart on the way out.
+                            save(async () => { for (const id of [...onChart].reverse()) await api("DELETE", `orgs/${org.id}/members/${id}`); });
+                          },
+                        },
+                        "−",
+                      )
+                    : null,
+                );
+              }),
+            ),
+          )
+        : null,
+      mine.length ? h("div", { class: "traygroup" }, h("span", { class: "label" }, "Your agents, not on this chart"), h("div", { class: "trayrow" }, mine.map((b) => chip(b, { kind: "agent", id: b.id }, b.group)))) : null,
+      market.length ? h("div", { class: "traygroup" }, h("span", { class: "label" }, needle ? "From the marketplace" : "From the marketplace (search for more)"), h("div", { class: "trayrow" }, market.slice(0, needle ? 24 : 8).map((b) => chip(b, { kind: "market", id: b.id }, b.listing.category)))) : null,
+      !teams.length && !mine.length && !market.length ? h("p", { class: "note" }, state.market ? "Nothing matches. Try other words." : "Loading…") : null,
+    );
+  };
+  trayFind.addEventListener("input", () => ((ui.traySearch = trayFind.value), drawTray()));
+  const tray = () => {
+    if (!state.market) loadMarket().then(drawTray).catch(() => {});
+    drawTray();
+    return h("section", { class: "card tray" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("b", {}, "Add to my team"), h("div", { class: "note small" }, "Click one to add it. Or drag it onto a team to put it there.")), trayFind), trayItems, removeZone());
+  };
+
+  // The team builder: each lead's team as a card, the agents working alone under the person, and a place to start a new team.
+  const solo = members.filter((m) => !m.manager && !leads.includes(m));
+  // One person on a list: a badge, a name, a line on what it does. Click to open it; drag to move it; drop on it to put someone under it.
+  const blurb = (bot) => {
+    // What it does, in its own words. A first sentence that only states its title ("I am a recruiter.") is skipped for the next one.
+    const sentences = bot.instructions.split(/(?<=[.!?])\s+/);
+    const first = /^I am (a|an|the) [^,:]{0,60}\.$/i.test(sentences[0] ?? "") && sentences[1] ? sentences[1] : (sentences[0] ?? "");
+    return first.replace(/^I am the organization's [^:.]*: /, "").replace(/^./, (c) => c.toUpperCase()).slice(0, 110);
+  };
+  const personRow = (m, tag) => {
+    const bot = byId.get(m.bot);
+    const [status, loud] = statusOf(bot);
+    return h(
+      "div",
+      { class: "onodewrap personwrap" },
+      h(
+        "button",
+        { class: `person ${ui.orgSel === m.bot ? "on" : ""}`, style: botStyle(bot), title: "Click to chat with it or give it work. Drag to move it.", onclick: () => pickMember(m.bot), ...draggable({ kind: "member", id: m.bot }), ...dropZone(m.bot) },
+        keycap(bot.character, 34, mood(live.get(bot.id)), bot.type),
+        h("span", { class: "flowmain" }, h("b", {}, bot.name, tag ? h("span", { class: "chip", style: "margin-left: 8px" }, tag) : null), h("span", { class: "flowsub" }, blurb(bot))),
+        loud ? h("span", { class: "pill loud" }, status.replace(/^[●◌■] /, "")) : null,
+      ),
+      controls(m),
+    );
+  };
+  const teamCard = (lead) => {
+    const bot = byId.get(lead.bot);
+    const list = members.filter((x) => x.manager === lead.bot);
+    const dotted = members.filter((x) => x.also === lead.bot);
+    const parent = lead.manager ? byId.get(lead.manager) : null;
+    // A team is named after what it does: its department, or the outcome it owns.
+    const name = lead.department && lead.department !== "Leadership" ? lead.department : bot.name;
+    return h(
+      "div",
+      { class: "dept teamcard", style: botStyle(bot), ...dropZone(lead.bot) },
+      h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, name), h("div", { class: "note small" }, `${list.length + 1} agent${list.length ? "s" : ""}${parent ? ` · part of the ${parent.name}'s team` : ""}`)), h("button", { class: "ctl plus", title: "Add someone to this team", "aria-label": `Add someone to ${name}`, onclick: () => openPanel({ kind: "add", under: lead.bot }) }, "+"), h("button", { class: "ctl minus", title: "Remove this team", "aria-label": `Remove ${name}`, onclick: () => openPanel({ kind: "remove", bot: lead.bot }) }, "−")),
+      h("div", { class: "people" }, personRow(lead, "Manager"), list.map((x) => personRow(x, members.some((y) => y.manager === x.bot) ? "Manages a team" : "")), dotted.map((x) => personRow(x, "Also helps here"))),
+      h("div", {}, h("button", { class: "teamtask", title: "The manager shares the work out across the team and brings back one result", onclick: () => ((state.selectedTeam = lead.bot), go("home")) }, "Give this team a task")),
+    );
+  };
+  const teamsView = () =>
+    h(
+      "div",
+      { class: "teamboard" },
+      solo.length || !leads.length
+        ? h(
+            "div",
+            { class: "dept youlane", ...dropZone(null) },
+            h("div", { class: "row" }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("div", { class: "grow" }, h("h2", {}, "Works directly for you"), h("div", { class: "note small" }, `${solo.length} agent${solo.length === 1 ? "" : "s"}`)), h("button", { class: "ctl plus", title: "Add someone who works directly for you", "aria-label": "Add someone who works directly for you", onclick: () => openPanel({ kind: "add", under: null }) }, "+")),
+            h("div", { class: "people two" }, solo.map((x) => personRow(x, ""))),
+          )
+        : null,
+      leads.length ? h("section", { class: "depts" }, leads.map((lead) => ((card) => (card.setAttribute("data-team", lead.bot), card))(teamCard(lead)))) : null,
+    );
+  const shelfOf = (e) => (e.shelf === "org" ? "Whole organization" : e.shelf === "dept" ? `${e.key} department` : `${byId.get(e.key)?.name ?? e.key}${e.kind === "log" ? " · past work" : " · notes"}`);
+  const memText = h("textarea", { rows: 2, maxlength: 800, placeholder: "Something every agent should know. For example: our fiscal year starts in April; never promise delivery dates without checking with Operations." });
+  const memShelf = h("select", { "aria-label": "Who should know this" }, h("option", { value: "org:" }, "Whole organization"), depts_().map((d) => h("option", { value: `dept:${d}` }, `${d} department`)));
+  const memoryView = () => {
+    const groups = new Map();
+    for (const e of orgMemory) groups.set(shelfOf(e), [...(groups.get(shelfOf(e)) ?? []), e]);
+    const order = [...groups.keys()].sort((a, b) => Number(b === "Whole organization") - Number(a === "Whole organization") || a.localeCompare(b));
+    return h(
+      "section",
+      { class: "orgmem" },
+      h("p", { class: "note" }, "What the organization remembers across every task. Each agent sees the organization's entries, its own department's, and its own notes and past work. Only what bears on the task in hand is sent to the model, so memory can grow without every task costing more. You can add, correct or remove anything here."),
+      h("form", { class: "card form", onsubmit: (e) => (e.preventDefault(), save(() => api("POST", `orgs/${org.id}/memory`, { text: memText.value, shelf: memShelf.value.startsWith("dept:") ? "dept" : "org", key: memShelf.value.slice(memShelf.value.indexOf(":") + 1) }))) }, h("b", {}, "Add to memory"), memText, h("div", { class: "row" }, memShelf, h("button", { class: "primary" }, "Remember"))),
+      orgMemory.length
+        ? order.map((name) =>
+            h(
+              "div",
+              { class: "memgroup" },
+              h("h2", { class: "label" }, `${name} · ${groups.get(name).length}`),
+              groups.get(name).slice().reverse().map((e) =>
+                h("div", { class: "card memrow" }, h("div", { class: "grow mtext" }, e.text), h("span", { class: "mono small muted" }, e.kind === "log" ? "Recorded automatically" : `Saved by ${e.by}`), h("button", { class: "plain danger", "aria-label": "Remove this entry", onclick: () => save(() => api("DELETE", `orgs/${org.id}/memory/${e.id}`)) }, "Remove")),
+              ),
+            ),
+          )
+        : h("div", { class: "card" }, h("b", {}, "Nothing remembered yet."), h("p", { class: "note" }, "Agents save decisions, facts and how jobs are done as they work, and each finished task is recorded here automatically.")),
+    );
+  };
+  const depts = depts_();
+  // A wide chart opens centred on the top of the tree, not on its left edge.
+  setTimeout(() => {
+    const wrap = col.querySelector(".chartwrap");
+    if (wrap && wrap.scrollWidth > wrap.clientWidth) wrap.scrollLeft = ui.orgScroll?.[org.id + org.structure] ?? (wrap.scrollWidth - wrap.clientWidth) / 2;
+    wrap?.addEventListener("scroll", () => (ui.orgScroll = { [org.id + org.structure]: wrap.scrollLeft }), { passive: true });
+  }, 0);
+  // ----- the simple set-up: two plain questions, then one button -----
+  const PLAIN = {
+    flat: ["Small and simple", "A handful of agents who all report to you. The easiest way to start."],
+    functional: ["Departments", "A head for each department with its specialists under it. You manage the heads."],
+    hierarchical: ["A manager runs it for me", "A general manager looks after the department heads. You mostly deal with one agent."],
+    team: ["Teams built around goals", "Small mixed teams, each owning one result, such as winning customers."],
+    matrix: ["Shared specialists on projects", "Specialists belong to a department and also work for a project lead."],
+    custom: ["My own way", "Start from an empty board, build it yourself and write your own rules."],
+  };
+  const plainName = (id) => PLAIN[id]?.[0] ?? structure.name;
+  const fresh = org.structure === "flat" && members.length > 0 && members.every((m) => byId.get(m.bot).source === "starter");
+  const open = ui.orgOpen ?? (fresh || !members.length ? "run" : "");
+  const show = (what) => ((ui.orgOpen = open === what ? "" : what), (ui.orgPanel = null), again());
+  const wizard = () => {
+    const picked = ui.wizStructure ?? (fresh || !members.length ? (industry.recommended ?? []).find((id) => ["flat", "functional", "hierarchical"].includes(id)) ?? "functional" : org.structure);
+    const size = industry.sizes?.[picked];
+    const choice = (id) =>
+      h(
+        "button",
+        { class: `waychoice ${picked === id ? "on" : ""}`, "aria-pressed": String(picked === id), onclick: () => ((ui.wizStructure = id), again()) },
+        h("span", { class: "waydiagram", "aria-hidden": "true" }, structureDiagram(id)),
+        h("span", { class: "flowmain" }, h("b", {}, PLAIN[id][0], industry.recommended?.[0] === id ? h("span", { class: "chip rec", style: "margin-left: 8px" }, "Recommended") : null), h("span", { class: "waywords" }, PLAIN[id][1]), industry.sizes?.[id]?.agents ? h("span", { class: "flowsub" }, `${industry.sizes[id].agents} agents · ${industry.sizes[id].departments} ${id === "team" ? "teams" : "departments"}`) : null),
+      );
+    const basic = ["flat", "functional", "hierarchical"];
+    const more = ["team", "matrix", "custom"];
+    const showMore = ui.wizMore || more.includes(picked);
+    const go = h("button", { class: "primary big" }, picked === "custom" ? "Start with an empty board" : size?.agents ? `Set up my team · ${size.agents} agents` : "Set up my team");
+    go.addEventListener("click", () => {
+      const replacing = members.length && !fresh;
+      if (replacing && !confirm(`Set ${org.name} up again as “${PLAIN[picked][0]}”?\n\n${picked === "custom" ? "Your board stays as it is; only the rules change." : `The board is redrawn with exactly ${size?.agents ?? "the"} agents for this choice. Agents that are not part of it leave the board; they stay available under “Add agents or a team”.`}`)) return;
+      go.disabled = true;
+      go.textContent = "Setting up…";
+      ui.orgOpen = "";
+      ui.orgView = "teams";
+      ui.orgSel = null;
+      save(async () => {
+        if (picked === "custom") await api("PATCH", `orgs/${org.id}`, { structure: "custom" });
+        else await api("POST", `orgs/${org.id}/build`, { structure: picked, industry: industry.id, exact: true });
+        await loadCrew();
+      });
+    });
+    return h(
+      "section",
+      { class: "card wizard" },
+      h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, fresh || !members.length ? "Set up your team" : "Change how your team is set up"), h("p", { class: "note" }, "Answer two questions and your team of AI agents is ready. You can change anything afterwards.")), fresh || !members.length ? null : h("button", { class: "plain", "aria-label": "Close", onclick: () => show("run") }, "✕")),
+      h("div", { class: "wizstep" }, h("div", { class: "wiznum" }, "1"), h("div", { class: "grow" }, h("b", {}, "What kind of business is it?"), h("div", { class: "biztiles" }, industries.map((i) => h("button", { class: `biztile ${i.id === industry.id ? "on" : ""}`, "aria-pressed": String(i.id === industry.id), title: i.examples, onclick: () => i.id !== industry.id && save(() => api("PATCH", `orgs/${org.id}`, { industry: i.id })) }, h("b", {}, i.name), h("span", {}, i.examples)))))),
+      h(
+        "div",
+        { class: "wizstep" },
+        h("div", { class: "wiznum" }, "2"),
+        h("div", { class: "grow" }, h("b", {}, "How do you want to run it?"), h("div", { class: "waychoices" }, basic.map(choice), showMore ? more.map(choice) : null), h("div", { class: "row" }, showMore ? h("button", { class: "plain link", onclick: () => ((ui.orgCompare = !ui.orgCompare), again()) }, ui.orgCompare ? "Hide the full comparison" : "Compare all of them in detail") : h("button", { class: "plain link", onclick: () => ((ui.wizMore = true), again()) }, "Not sure, or want something else? Show more ways"))),
+      ),
+      h("div", { class: "wizgo" }, go, h("span", { class: "note" }, picked === "custom" ? "Nobody is added. Drag agents and teams onto the board yourself." : size?.agents ? `Your board will have exactly ${size.agents} agents in ${size.departments} ${picked === "team" ? "teams" : "departments"} for ${industry.name.toLowerCase()}, each already reporting to the right lead.` : "")),
+      ui.orgCompare ? h("div", { class: "sgrid" }, [...structures].map(structureCard)) : null,
+    );
+  };
+
+  // ----- spending rules, kept out of the way -----
+  const rulesPanel = () =>
+    h(
+      "section",
+      { class: "card rulespanel" },
+      h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, "Spending rules"), h("p", { class: "note" }, "Agents never pay, send or sign anything themselves. These set when they must stop and ask you.")), h("button", { class: "plain", "aria-label": "Close", onclick: () => show("rules") }, "✕")),
+          h("form", { class: "row spendlimit", onsubmit: (e) => (e.preventDefault(), save(() => api("PATCH", `orgs/${org.id}`, { approvalLimit: approvalInput.value === "" ? null : Number(approvalInput.value) }))) }, h("label", { class: "note", for: "approval-limit" }, "Needs your approval: any spending or commitment above ($)"), approvalInput, h("button", {}, "Save"), h("span", { class: "note small" }, org.approvalLimit ? "" : "Blank means every one needs you.")),
+      h(
+        "section",
+        { class: `card allbudget ${total.state}` },
+        h("div", { class: "row" }, h("h2", { class: "label grow" }, `Budget for all agents · resets ${budgets?.resets ?? ""}`), total.state === "stopped" ? h("span", { class: "pill loud" }, "■ Stopped: no agent starts new work") : total.state === "warned" ? h("span", { class: "pill loud" }, "Past 80%") : null),
+        bar(total),
+        h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), attempt(async () => ((state.config = await api("PUT", "settings", { monthlyBudget: limit.value === "" ? null : Number(limit.value) })), again()), col)) }, h("span", { class: "note" }, "Per month ($)"), limit, h("button", {}, "Save")),
+        h("p", { class: "note small" }, "Agents are warned at 80% and start no new work at 100%, until you raise the budget or the month turns. Each agent can have its own monthly budget too. Spend is estimated from list prices."),
+      ),
+    );
+
+  const teamCount = leads.length;
+  const needWord = needs ? ` · ${needs} need${needs === 1 ? "s" : ""} you` : "";
+  const moreItem = (label, onclick, title) => h("button", { class: "moreitem", title: title || label, onclick }, label);
   col.append(
     ...[
       h(
         "div",
-        { class: "row" },
-        h("div", { class: "grow" }, h("div", { class: "row" }, h("h1", {}, org.name || "Organization"), state.orgs.orgs.length > 1 ? pick : null), h("p", { class: "lead" }, org.mission || "Your bots in roles. Work follows the chart: a bot with reports hands tasks down and brings the results back up.")),
-        h("button", { onclick: () => ((editForm.hidden = !editForm.hidden), (newForm.hidden = true)) }, "Name and mission"),
-        h("button", { onclick: () => ((newForm.hidden = !newForm.hidden), (editForm.hidden = true), newName.focus()) }, "＋ New organization"),
-        h("button", { class: "primary", onclick: () => go("market") }, "＋ Add bots or a team"),
+        { class: "row orghead" },
+        h("div", { class: "grow" }, h("div", { class: "row" }, h("h1", {}, org.name || "Your team"), state.orgs.orgs.length > 1 ? pick : null), h("p", { class: "lead" }, members.length ? `${members.length} AI agent${members.length === 1 ? "" : "s"}${teamCount ? ` in ${teamCount} team${teamCount === 1 ? "" : "s"}` : ", all working directly for you"}${needWord}` : "Nobody on your team yet")),
+        h("button", { class: "primary", onclick: () => ((ui.orgTray = !ui.orgTray), (ui.orgOpen = ""), again()) }, ui.orgTray ? "Done adding" : "＋ Add to my team"),
+        h("button", { "aria-expanded": String(Boolean(ui.orgMore)), onclick: () => ((ui.orgMore = !ui.orgMore), again()) }, "More ▾"),
       ),
-      editForm,
-      newForm,
-      h("section", { class: "stats" }, stat("Members", String(members.length)), stat("Departments", String(depts.length)), stat("Working now", String(members.filter((m) => live.has(m.bot)).length)), stat("Need you", String(needs), needs > 0), stat("Spent this month", total.limit != null ? `${money(total.spent)} of ${money(total.limit)}` : money(total.spent))),
+      ui.orgMore
+        ? h(
+            "div",
+            { class: "moremenu" },
+            moreItem("Change my set-up", () => ((ui.orgMore = false), show("run")), "Your kind of business and how the team is run"),
+            moreItem("Spending limits", () => ((ui.orgMore = false), show("rules")), "When agents must ask you, and the monthly budget"),
+            moreItem("What my team remembers", () => ((ui.orgMore = false), (ui.orgOpen = ""), (ui.orgView = view === "memory" ? "teams" : "memory"), again()), "Facts and decisions your agents keep"),
+            moreItem("Rename", () => ((ui.orgMore = false), show("rename"))),
+            moreItem("Add another organization", () => ((ui.orgMore = false), show("new"))),
+            moreItem(`My organizations (${state.orgs.orgs.length})`, () => ((ui.orgMore = false), (ui.orgOpen = ""), openPanel({ kind: "orgs" })), "Open or delete an organization"),
+            moreItem("Start over", () => ((ui.orgMore = false), (ui.orgOpen = ""), openPanel({ kind: "reset" })), "Reset the team to the standard set-up, or clear it"),
+          )
+        : null,
+      open === "run" ? wizard() : null,
+      open === "rules" ? rulesPanel() : null,
+      open === "rename" ? ((editForm.hidden = false), editForm) : null,
+      open === "new" ? ((newForm.hidden = false), newForm) : null,
+      ui.orgPanel?.kind === "reset" || ui.orgPanel?.kind === "orgs" ? panel() : null,
+      view === "memory"
+        ? h("div", { class: "row" }, h("h2", { class: "grow", style: "margin: 0; font-size: 16px" }, "What my team remembers"), h("button", { onclick: () => ((ui.orgView = "teams"), again()) }, "← Back to my team"))
+        : members.length
+          ? h("div", { class: "row" }, h("span", { class: "note grow" }, "Click anyone to chat with them or give them work. Drag someone onto a team to move them."), h("div", { class: "viewswitch", role: "group", "aria-label": "View" }, h("button", { class: view === "teams" ? "on" : "", "aria-pressed": String(view === "teams"), onclick: () => ((ui.orgView = "teams"), again()) }, "List"), h("button", { class: view === "chart" ? "on" : "", "aria-pressed": String(view === "chart"), onclick: () => ((ui.orgView = "chart"), again()) }, "Chart")))
+          : null,
+      view === "memory" ? null : detail(),
+      ui.orgTray && view !== "memory" ? tray() : null,
+      view === "memory"
+        ? memoryView()
+        : !members.length
+          ? h("div", { class: "card quiet" }, h("b", {}, "Nobody is on the board yet."), h("span", { class: "note" }, " Answer the two questions above, or press “Add agents or a team” and drag some in."))
+          : view === "chart"
+            ? h("div", { class: "chartwrap" }, h("div", { class: `tree ${members.length > 10 ? "dense" : ""}` }, h("ul", {}, h("li", {}, h("div", { class: "onodewrap" }, h("div", { class: "onode you", title: "Drop an agent here to have it report to you", ...dropZone(null) }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("b", {}, "You"), h("span", { class: "otitle" }, "Owner")), h("span", { class: "nodectl" }, h("button", { class: "ctl plus", title: "Add an agent reporting to you", "aria-label": "Add an agent reporting to you", onclick: () => openPanel({ kind: "add", under: null }) }, "+"))), branch(null)))))
+            : teamsView(),
+      view === "memory" || ui.orgPanel?.kind === "reset" || ui.orgPanel?.kind === "orgs" ? null : panel(),
+      h("datalist", { id: "org-depts" }, depts.map((d) => h("option", { value: d }))),
+    ].filter(Boolean),
+  );
+}
+
+// ---------- the library ----------
+// Documents the person shares with their agents. Files are dropped here (or
+// into the folder itself); the app reads them into the organization's
+// database, and agents search them as they work. Each document says who may use it.
+const sizeWords = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+async function libraryView() {
+  ui.body.className = "body";
+  ui.log = null;
+  const col = h("div", { class: "library" });
+  fill(ui.body, h("main", { class: "center" }, col));
+  const again = () => libraryView();
+  let lib;
+  try {
+    [lib] = await Promise.all([api("GET", "library"), loadCrew()]);
+  } catch (err) {
+    return fill(col, h("div", { class: "banner error" }, err.message));
+  }
+  if (state.view !== "library") return;
+  const act = (fn) => attempt(async () => (await fn(), again()), col);
+  const bots = new Map((state.crew?.bots ?? []).map((b) => [b.id, b]));
+
+  // ----- adding documents -----
+  const into = h("select", { "aria-label": "Who can use these files" }, lib.folders.map((f) => h("option", { value: f, selected: f === (ui.libraryFolder ?? "Everyone") }, f === "Everyone" ? "Every agent can use them" : `Only the ${f} department`)));
+  into.addEventListener("change", () => (ui.libraryFolder = into.value));
+  const status = h("span", { class: "note" });
+  const upload = async (files) => {
+    const list = [...files].filter((f) => f.size > 0);
+    if (!list.length) return;
+    let done = 0;
+    const failed = [];
+    for (const file of list) {
+      status.textContent = `Adding ${++done} of ${list.length}: ${file.name}…`;
+      const res = await fetch(`/api/library/upload?name=${encodeURIComponent(file.name)}&folder=${encodeURIComponent(into.value)}`, { method: "POST", headers: { "content-type": "application/octet-stream" }, body: file }).catch(() => null);
+      if (!res?.ok) failed.push(`${file.name}: ${(await res?.json().catch(() => ({})))?.error ?? "could not be added"}`);
+    }
+    ui.libraryNote = failed.length ? failed.join(" · ") : `Added ${list.length} file${list.length === 1 ? "" : "s"}.`;
+    again();
+  };
+  const picker = h("input", { type: "file", multiple: true, hidden: true });
+  picker.addEventListener("change", () => upload(picker.files));
+  const zone = h(
+    "div",
+    {
+      class: "dropzone",
+      ondragover: (e) => (e.preventDefault(), zone.classList.add("over")),
+      ondragleave: () => zone.classList.remove("over"),
+      ondrop: (e) => (e.preventDefault(), zone.classList.remove("over"), upload(e.dataTransfer.files)),
+    },
+    h("div", { class: "dropicon", "aria-hidden": "true" }, icon("library")),
+    h("b", {}, "Drop documents here"),
+    h("p", { class: "note" }, "PDF, Word, PowerPoint, Excel, text and similar. Your agents read them and use them in their work."),
+    h("div", { class: "row" }, h("button", { class: "primary", onclick: () => picker.click() }, "Choose files"), into, h("button", { title: "Opens the library folder on this computer; anything you put in it is added", onclick: () => attempt(() => api("POST", "library/open"), col) }, "Open the folder")),
+    status,
+    picker,
+  );
+
+  // ----- who may use one document -----
+  const accessWords = (d) => (d.access.everyone ? "Every agent" : [...d.access.departments.map((x) => `${x} department`), ...d.access.agents.map((a) => bots.get(a)?.name ?? a)].join(", ") || "Nobody");
+  const accessEditor = (d) => {
+    const everyone = h("input", { type: "radio", name: `acc${d.id}`, checked: d.access.everyone });
+    const some = h("input", { type: "radio", name: `acc${d.id}`, checked: !d.access.everyone });
+    const deptBoxes = lib.departments.map((x) => [x, h("input", { type: "checkbox", checked: d.access.departments.includes(x) })]);
+    const agentBoxes = lib.agents.filter((a) => bots.has(a)).map((a) => [a, h("input", { type: "checkbox", checked: d.access.agents.includes(a) })]);
+    for (const [, box] of [...deptBoxes, ...agentBoxes]) box.addEventListener("change", () => (some.checked = true));
+    return h(
+      "div",
+      { class: "accessbox" },
+      h("b", {}, `Who can use “${d.name}”?`),
+      h("label", { class: "power" }, everyone, "Every agent"),
+      h("label", { class: "power" }, some, "Only these departments and agents:"),
+      h("div", { class: "accessgrid" }, h("div", {}, h("div", { class: "label" }, "Departments"), deptBoxes.map(([x, box]) => h("label", { class: "power" }, box, x))), h("div", {}, h("div", { class: "label" }, "Individual agents"), h("div", { class: "agentpick" }, agentBoxes.map(([a, box]) => h("label", { class: "power" }, box, bots.get(a).name))))),
       h(
         "div",
         { class: "row" },
-        h("div", { class: "tabs flat", role: "tablist" }, h("button", { role: "tab", class: chartView ? "on" : "", onclick: () => ((ui.orgView = "chart"), again()) }, "Org chart"), h("button", { role: "tab", class: chartView ? "" : "on", onclick: () => ((ui.orgView = "depts"), again()) }, "Departments")),
-        h("span", { class: "note grow" }, "Click a bot to set its title, department and who it reports to, or to chat with it."),
+        h("button", { class: "primary", onclick: () => ((ui.libraryEdit = null), act(() => api("PATCH", `library/${d.id}`, { everyone: everyone.checked, departments: deptBoxes.filter(([, b]) => b.checked).map(([x]) => x), agents: agentBoxes.filter(([, b]) => b.checked).map(([a]) => a) }))) }, "Save"),
+        d.accessSet ? h("button", { title: "Goes back to what the folder it is in says", onclick: () => ((ui.libraryEdit = null), act(() => api("PATCH", `library/${d.id}`, { folderDecides: true }))) }, "Let its folder decide") : null,
+        h("button", { class: "plain", onclick: () => ((ui.libraryEdit = null), again()) }, "Cancel"),
       ),
-      members.length
-        ? chartView
-          ? h("div", { class: "chartwrap" }, h("div", { class: "tree" }, h("ul", {}, h("li", {}, h("div", { class: "onode you" }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("b", {}, "You"), h("span", { class: "otitle" }, "Owner")), branch(null)))))
-          : h(
-              "section",
-              { class: "depts" },
-              depts.map((d) => {
-                const list = members.filter((m) => m.department === d).sort((a, b) => Number(Boolean(a.manager && members.find((x) => x.bot === a.manager)?.department === d)) - Number(Boolean(b.manager && members.find((x) => x.bot === b.manager)?.department === d)));
-                return h("div", { class: "dept" }, h("div", { class: "row" }, h("h2", { class: "grow" }, d), h("span", { class: "mono small muted" }, `${list.length} bot${list.length === 1 ? "" : "s"}`)), h("div", { class: "deptnodes" }, list.map(node)));
-              }),
-            )
-        : h("div", { class: "card" }, h("b", {}, `${org.name} has no bots yet.`), h("p", { class: "note" }, "Add a ready-made team from the marketplace, or add your existing bots below.")),
-      detail(),
-      h("datalist", { id: "org-depts" }, depts.map((d) => h("option", { value: d }))),
-      outside.length
-        ? h(
-            "section",
-            { class: "card" },
-            h("h2", { class: "label" }, `Not in ${org.name} · ${outside.length}`),
-            h("div", { class: "outside" }, outside.map((bot) => h("div", { class: "outbot", style: botStyle(bot) }, keycap(bot.character, 28, "", bot.type), h("span", { class: "grow" }, bot.name), h("button", { onclick: () => ((ui.orgSel = bot.id), save(() => api("PUT", `orgs/${org.id}/members`, { bot: bot.id }))) }, "Add")))),
-          )
-        : null,
-      h(
-        "section",
-        { class: `card allbudget ${total.state}` },
-        h("div", { class: "row" }, h("h2", { class: "label grow" }, `Budget for all bots · resets ${budgets?.resets ?? ""}`), total.state === "stopped" ? h("span", { class: "pill loud" }, "■ Stopped: no bot starts new work") : total.state === "warned" ? h("span", { class: "pill loud" }, "Past 80%") : null),
-        bar(total),
-        h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), attempt(async () => ((state.config = await api("PUT", "settings", { monthlyBudget: limit.value === "" ? null : Number(limit.value) })), again()), col)) }, h("span", { class: "note" }, "Per month ($)"), limit, h("button", {}, "Save")),
-        h("p", { class: "note small" }, "Bots are warned at 80% and start no new work at 100%, until you raise the budget or the month turns. Each bot can have its own monthly budget too. Spend is estimated from list prices."),
-      ),
-    ].filter(Boolean),
+    );
+  };
+  const row = (d) => [
+    h(
+      "div",
+      { class: `docrow ${d.readable ? "" : "plainfile"}` },
+      h("span", { class: "doctype" }, (d.type || "file").slice(0, 4).toUpperCase()),
+      h("span", { class: "flowmain" }, h("b", {}, d.name), h("span", { class: "flowsub" }, d.readable ? `${sizeWords(d.size)} · read${d.problem ? ` · ${d.problem}` : ""}` : `${sizeWords(d.size)} · ${d.problem || "kept, found by name only"}`)),
+      h("button", { class: "accessbtn", title: "Change who can use this document", onclick: () => ((ui.libraryEdit = ui.libraryEdit === d.id ? null : d.id), again()) }, accessWords(d)),
+      h("button", { class: "plain danger", "aria-label": `Remove ${d.name}`, onclick: () => confirm(`Remove “${d.name}” from the library?\n\nThe file is deleted from the library folder, and agents can no longer use it.`) && act(() => api("DELETE", `library/${d.id}`)) }, "Remove"),
+    ),
+    ui.libraryEdit === d.id ? accessEditor(d) : null,
+  ];
+  const groups = new Map();
+  for (const d of lib.documents) {
+    const top = d.path.includes("/") ? d.path.split("/")[0] : "Everyone";
+    groups.set(top, [...(groups.get(top) ?? []), d]);
+  }
+  const order = [...groups.keys()].sort((a, b) => Number(b === "Everyone") - Number(a === "Everyone") || a.localeCompare(b));
+
+  // ----- trying a search, as the person or as one agent -----
+  const query = h("input", { type: "search", placeholder: "Try a question, e.g. what is our refund policy?", value: ui.libraryQuery ?? "", "aria-label": "Search the library" });
+  const as = h("select", { "aria-label": "Search as" }, h("option", { value: "" }, "As you (everything)"), lib.agents.filter((a) => bots.has(a)).map((a) => h("option", { value: a, selected: a === ui.libraryAs }, `As the ${bots.get(a).name}`)));
+  const results = h("div", { class: "hits" });
+  const search = async () => {
+    ui.libraryQuery = query.value;
+    ui.libraryAs = as.value;
+    if (!query.value.trim()) return fill(results);
+    try {
+      const { hits } = await api("POST", "library/search", { query: query.value, as: as.value });
+      fill(results, hits.length ? hits.map((x) => h("div", { class: "hit" }, h("div", { class: "label" }, `${x.name} · part ${x.part}`), h("p", {}, x.text.slice(0, 420)))) : h("p", { class: "note" }, as.value ? "Nothing this agent may use matches that." : "Nothing in the library matches that."));
+    } catch (err) {
+      fill(results, h("div", { class: "banner error" }, err.message));
+    }
+  };
+
+  fill(
+    col,
+    h("div", {}, h("h1", {}, "Library"), h("p", { class: "lead" }, `Documents you share with your agents in ${lib.organization}. They look here first, before they guess or ask you.`)),
+    zone,
+    ui.libraryNote ? h("div", { class: "banner" }, ui.libraryNote) : null,
+    lib.documents.length
+      ? [
+          h("div", { class: "row" }, h("h2", { class: "grow" }, `${lib.stats.documents} document${lib.stats.documents === 1 ? "" : "s"}`), h("span", { class: "note small" }, `${lib.stats.readable} read · ${lib.stats.documents - lib.stats.readable} kept by name only`)),
+          order.map((name) => h("section", { class: "docgroup" }, h("div", { class: "label" }, name === "Everyone" ? "For every agent" : `For the ${name} department`), groups.get(name).flatMap(row))),
+          h("section", { class: "card trysearch" }, h("b", {}, "Check what your agents will find"), h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), search()) }, query, as, h("button", {}, "Search")), results),
+        ]
+      : h("div", { class: "card quiet" }, h("b", {}, "Nothing here yet."), h("span", { class: "note" }, " Add your price list, policies, contracts or anything your agents should know. A document in a department's folder is used only by that department.")),
+    h("p", { class: "note small" }, `Kept on this computer in ${lib.folder}. Only the passages that match what an agent is working on are sent to the AI model, so a large library does not cost more.`),
   );
+  ui.libraryNote = null;
+  if (ui.libraryQuery) search();
+}
+
+// ---------- integrations ----------
+// The outside tools agents work with, filed by category. Git is the first:
+// repositories agents may work on, each task in a branch and copy of its own.
+const INTEGRATION_MARKS = {
+  git: `<svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><rect x="3" y="3" width="42" height="42" rx="11" fill="var(--accent)" fill-opacity="0.11" stroke="var(--accent)" stroke-opacity="0.5" stroke-width="1.25"/><g fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round"><path d="M17 14v20M17 24c8 0 14-1 14-8"/></g><g fill="var(--bg)" stroke="var(--accent)" stroke-width="2.2"><circle cx="17" cy="14" r="3.4"/><circle cx="17" cy="34" r="3.4"/><circle cx="31" cy="15" r="3.4"/></g></svg>`,
+};
+INTEGRATION_MARKS.mcp = `<svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><rect x="3" y="3" width="42" height="42" rx="11" fill="var(--accent)" fill-opacity="0.11" stroke="var(--accent)" stroke-opacity="0.5" stroke-width="1.25"/><g fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 24h8M26 24h8"/><rect x="20" y="18" width="8" height="12" rx="2.5" fill="var(--bg)"/><circle cx="12" cy="24" r="3" fill="var(--bg)"/><circle cx="36" cy="24" r="3" fill="var(--bg)"/><path d="M24 12v6M24 30v6"/></g></svg>`;
+const integrationMark = (id) => {
+  const node = h("span", { class: "imark" });
+  node.innerHTML = INTEGRATION_MARKS[id] ?? "";
+  return node;
+};
+const STATE_WORDS = { connected: ["Connected", "on"], "needs-setup": ["Not set up", ""], unavailable: ["Unavailable", "bad"] };
+
+async function integrationsView() {
+  ui.body.className = "body";
+  ui.log = null;
+  const col = h("div", { class: "integrations" });
+  fill(ui.body, h("main", { class: "center" }, col));
+  const again = () => integrationsView();
+  let list, git;
+  try {
+    [list, git] = await Promise.all([api("GET", "integrations"), ui.integration === "git" || ui.integration === "mcp" ? api("GET", `integrations/${ui.integration}`) : null]);
+  } catch (err) {
+    return fill(col, h("div", { class: "banner error" }, err.message));
+  }
+  if (state.view !== "integrations") return;
+  const act = (fn) => attempt(async () => (await fn(), (state.config = await api("GET", "state")), renderTop(), again()), col);
+
+  if (ui.integration === "git" && git) return fill(col, ...gitIntegrationPage(git, act, col, again));
+  if (ui.integration === "mcp" && git) return fill(col, ...mcpIntegrationPage(git, act, col, again));
+
+  const chosen = ui.integrationCategory ?? "All";
+  const shown = list.integrations.filter((i) => chosen === "All" || i.category === chosen);
+  fill(
+    col,
+    h("div", {}, h("h1", {}, "Integrations"), h("p", { class: "lead" }, "Connect the tools your business already uses, so your agents can work where the work is. Each integration says exactly what agents can and cannot do with it.")),
+    h("div", { class: "pills", role: "group", "aria-label": "Categories" }, ["All", ...list.categories].map((c) => h("button", { class: `mpill ${c === chosen ? "on" : ""}`, "aria-pressed": String(c === chosen), onclick: () => ((ui.integrationCategory = c), again()) }, c))),
+    ...list.categories
+      .filter((c) => shown.some((i) => i.category === c))
+      .map((c) =>
+        h(
+          "section",
+          { class: "icat" },
+          h("h2", {}, c),
+          h(
+            "div",
+            { class: "igrid" },
+            shown
+              .filter((i) => i.category === c)
+              .map((i) =>
+                h(
+                  "button",
+                  { class: "icard", onclick: () => ((ui.integration = i.id), again()) },
+                  h("div", { class: "ihead" }, integrationMark(i.id), h("div", { class: "grow" }, h("b", {}, i.name), h("div", { class: "by" }, i.status)), h("span", { class: `chip ${STATE_WORDS[i.state][1]}` }, STATE_WORDS[i.state][0])),
+                  h("p", { class: "mdesc" }, i.summary),
+                  h("span", { class: "ilink" }, i.state === "connected" ? "Manage →" : "Set up →"),
+                ),
+              ),
+          ),
+        ),
+      ),
+    h("p", { class: "note" }, "More integrations will be added here. Services that offer a connector (an MCP server) can already be added under ", h("button", { class: "plain link", onclick: () => go("settings") }, "Settings → Connectors"), "."),
+  );
+}
+
+/** The MCP integration: Talqava inside Claude and other AI apps, and other services' tools for the agents. */
+function mcpIntegrationPage(mcp, act, col, again) {
+  const back = h("button", { class: "plain back", onclick: () => ((ui.integration = null), again()) }, "← All integrations");
+  const copy = (text, btn) => navigator.clipboard?.writeText(text).then(() => ((btn.textContent = "Copied"), setTimeout(() => (btn.textContent = "Copy"), 1500))).catch(() => {});
+  const copyBox = (label, text) => {
+    const btn = h("button", { type: "button" }, "Copy");
+    btn.addEventListener("click", () => copy(text, btn));
+    return h("div", { class: "copybox" }, h("div", { class: "row" }, h("span", { class: "label grow", style: "margin: 0" }, label), btn), h("pre", {}, text));
+  };
+  const name = h("input", { placeholder: "A short name, e.g. notion", "aria-label": "Connector name" });
+  const address = h("input", { placeholder: "Its web address, e.g. https://mcp.example.com/mcp", "aria-label": "Connector address" });
+  const token = h("input", { type: "password", placeholder: "Access token (only if it needs one)", autocomplete: "off", "aria-label": "Access token" });
+  return [
+    back,
+    h("div", { class: "ihero" }, integrationMark("mcp"), h("div", { class: "grow" }, h("div", { class: "row" }, h("h1", {}, "MCP"), h("span", { class: `chip ${STATE_WORDS[mcp.state][1]}` }, STATE_WORDS[mcp.state][0])), h("p", { class: "lead" }, mcp.summary))),
+    h(
+      "section",
+      { class: "isec" },
+      h("h2", {}, "Use your Talqava team from Claude"),
+      h(
+        "div",
+        { class: "card form" },
+        h("div", { class: "row" }, h("b", { class: "grow" }, "The Claude desktop app"), h("span", { class: `chip ${mcp.claude.added ? "on" : ""}` }, mcp.claude.added ? "Added" : mcp.claude.found ? "Not added" : "Not installed")),
+        h("p", { class: "note" }, "Adds your Talqava team to Claude, so you can say things like “ask my Head of Marketing for a campaign plan” in a Claude chat. The work still happens here, and anything that changes files or sends something still waits for your approval here."),
+        mcp.claude.added
+          ? [h("div", { class: "istep done" }, h("span", { class: "istepmark", "aria-hidden": "true" }, "✓"), h("div", { class: "grow" }, h("b", {}, "Talqava is added to Claude"), h("p", { class: "note" }, "Quit Claude completely and open it again to see it. Keep this app open while you use it. Then try asking Claude: “What agents are on my Talqava team?”"))), h("div", { class: "row" }, h("button", { class: "plain danger", onclick: () => confirm("Take Talqava out of Claude?") && act(() => api("POST", "integrations/mcp/claude-desktop", { remove: true })) }, "Remove from Claude"))]
+          : mcp.claude.found
+            ? h("div", { class: "row" }, h("button", { class: "primary big", onclick: () => act(() => api("POST", "integrations/mcp/claude-desktop", {})) }, "Add Talqava to Claude"), h("span", { class: "note" }, "One click. Nothing else in Claude's settings is changed, and a copy of them is kept first."))
+            : h("div", { class: "row" }, h("span", { class: "note" }, "The Claude desktop app was not found on this computer."), h("button", { type: "button", class: "plain link", onclick: () => window.open("https://claude.ai/download", "_blank", "noopener") }, "Get Claude, open it once, then come back")),
+        h("div", { class: "label", style: "margin: 8px 0 0" }, "What Claude can do with your team"),
+        h("ul", { class: "toollist" }, mcp.tools.map(([, words]) => h("li", {}, words))),
+      ),
+      h("details", { class: "card onthis" }, h("summary", {}, h("b", {}, "Other AI apps"), h("span", { class: "note small" }, "For people comfortable with settings files")), h("div", { class: "body" }, h("p", { class: "note" }, "Any app that supports MCP can use the same connection. Paste one of these where that app asks for it."), copyBox("Claude Code (run in a terminal)", mcp.claudeCode), copyBox("Any other app (settings snippet)", mcp.snippet))),
+    ),
+    h(
+      "section",
+      { class: "isec" },
+      h("h2", {}, `Give your agents tools from other services${mcp.connectors.length ? ` · ${mcp.connectors.length}` : ""}`),
+      h("p", { class: "note", style: "margin: 0" }, "A connector lets your agents use another service, such as your documents, calendar or CRM. Their tools ask you before changing anything, and what they return is treated as outside information."),
+      mcp.connectors.map((c) => h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("b", {}, c.name), h("div", { class: "mono small muted" }, c.where)), h("button", { class: "danger", onclick: () => confirm(`Remove the ${c.name} connector? Your agents can no longer use its tools.`) && act(() => api("PUT", "settings", { mcpServer: { name: c.name, remove: true } })) }, "Remove")))),
+      h("form", { class: "card form", onsubmit: (e) => (e.preventDefault(), act(() => api("PUT", "settings", { mcpServer: { name: name.value.trim(), url: address.value.trim(), token: token.value } }))) }, h("b", {}, "Add a connector"), h("p", { class: "note small" }, "The service gives you its MCP address, and a token if it needs one."), name, address, token, h("div", {}, h("button", { class: "primary" }, "Add connector"))),
+      h("p", { class: "note small" }, "Connectors that run as a program on this computer are added under ", h("button", { class: "plain link", onclick: () => go("settings") }, "Settings → Connectors"), "."),
+    ),
+  ];
+}
+
+/** The Git integration: what it does, whether it is ready, the repositories, and GitHub. */
+function gitIntegrationPage(git, act, col, again) {
+  const back = h("button", { class: "plain back", onclick: () => ((ui.integration = null), again()) }, "← All integrations");
+  const step = (done, title, body) => h("div", { class: `istep ${done ? "done" : ""}` }, h("span", { class: "istepmark", "aria-hidden": "true" }, done ? "✓" : ""), h("div", { class: "grow" }, h("b", {}, title), body));
+  const head = h("div", { class: "ihero" }, integrationMark("git"), h("div", { class: "grow" }, h("div", { class: "row" }, h("h1", {}, "Git and GitHub"), h("span", { class: `chip ${STATE_WORDS[git.state][1]}` }, STATE_WORDS[git.state][0])), h("p", { class: "lead" }, git.summary)));
+  // Looking through folders on this computer happens only when asked.
+  const searchBtn = h("button", {}, ui.gitAuto?.local ? "Search this computer again" : "Search this computer for repositories");
+  searchBtn.addEventListener("click", async () => {
+    searchBtn.disabled = true;
+    searchBtn.textContent = "Searching…";
+    try {
+      ui.gitAuto = await api("POST", "integrations/git/auto", { scan: true });
+    } catch (err) {
+      ui.gitAuto = { steps: [], local: [], error: err.message };
+    }
+    again();
+  });
+  const auto = ui.gitAuto;
+  const connectLocal = (r) => act(async () => (await api("PUT", "settings", { project: { path: r.path } }), (ui.gitAuto = await api("POST", "integrations/git/auto", { scan: true }))));
+  const copyBtn = (r) => {
+    const btn = h("button", {}, "Copy here and connect");
+    btn.addEventListener("click", () => ((btn.disabled = true), (btn.textContent = "Copying…"), act(async () => (await api("POST", "integrations/git/clone", { url: r.url }), (ui.gitAuto = await api("POST", "integrations/git/auto")))).finally(() => ((btn.disabled = false), (btn.textContent = "Copy here and connect")))));
+    return btn;
+  };
+  // Repositories on GitHub that are not on this computer yet: tick the ones wanted, and they are copied here and connected.
+  const remotePicker = (found) => {
+    ui.gitPick ??= new Set();
+    const filter = h("input", { type: "search", placeholder: "Filter your repositories", "aria-label": "Filter repositories", value: ui.gitPickFilter ?? "" });
+    const rows = h("div", { class: "pickrows" });
+    const go = h("button", { class: "primary" }, "Connect selected");
+    const draw = () => {
+      const needle = filter.value.trim().toLowerCase();
+      const shown = found.remote.filter((r) => !needle || `${r.name} ${r.description}`.toLowerCase().includes(needle));
+      for (const url of [...ui.gitPick]) if (!found.remote.some((r) => r.url === url && !r.connected)) ui.gitPick.delete(url);
+      fill(
+        rows,
+        shown.length
+          ? shown.map((r) => {
+              if (r.connected) return h("div", { class: "pickrow" }, h("span", { class: "flowmain" }, h("b", {}, r.name), h("span", { class: "flowsub" }, r.description || "Already connected")), h("span", { class: "chip on" }, "Connected"));
+              const box = h("input", { type: "checkbox", checked: ui.gitPick.has(r.url), "aria-label": `Select ${r.name}` });
+              box.addEventListener("change", () => ((box.checked ? ui.gitPick.add(r.url) : ui.gitPick.delete(r.url)), count()));
+              return h("label", { class: "pickrow pickable" }, box, h("span", { class: "flowmain" }, h("b", {}, r.name, r.private ? h("span", { class: "chip", style: "margin-left: 8px" }, "Private") : null), h("span", { class: "flowsub" }, `${r.description ? `${r.description} · ` : ""}last changed ${shortWhen(r.pushedAt)}`)));
+            })
+          : h("p", { class: "note" }, "No repository matches."),
+      );
+    };
+    const count = () => ((go.textContent = ui.gitPick.size ? `Copy here and connect ${ui.gitPick.size} selected` : "Select repositories to connect"), (go.disabled = !ui.gitPick.size));
+    filter.addEventListener("input", () => ((ui.gitPickFilter = filter.value), draw()));
+    go.addEventListener("click", () => {
+      const urls = [...ui.gitPick];
+      go.disabled = true;
+      act(async () => {
+        for (const [i, url] of urls.entries()) {
+          go.textContent = `Copying ${i + 1} of ${urls.length}…`;
+          await api("POST", "integrations/git/clone", { url });
+          ui.gitPick.delete(url);
+        }
+        if (ui.githubPick?.account) ui.githubPick.repos = (await api("POST", "integrations/git/github-repos", { account: ui.githubPick.account })).repos;
+      }).finally(count);
+    });
+    draw();
+    count();
+    return [h("div", { class: "row", style: "margin-top: 6px" }, h("div", { class: "label grow", style: "margin: 0" }, `Repositories of ${found.login} · ${found.remote.length}`), filter), h("p", { class: "note small", style: "margin: 0" }, `Tick the ones you want. Each is copied into ${git.cloneFolder} and connected; nothing on GitHub changes.`), found.remote.length ? rows : h("p", { class: "note" }, "This account has no repositories that this sign-in can see."), found.remote.length ? h("div", {}, go) : null];
+  };
+  // What a search of this computer found, for the "On this computer" part of the page.
+  const foundHere = auto?.local
+    ? auto.local.length
+      ? [
+          h("div", { class: "row" }, h("div", { class: "label grow", style: "margin: 6px 0 0" }, `Found on this computer · ${auto.local.length}`), auto.local.length > 1 ? h("button", { class: "plain link", onclick: () => act(async () => { for (const r of auto.local) await api("PUT", "settings", { project: { path: r.path } }); ui.gitAuto = await api("POST", "integrations/git/auto", { scan: true }); }) }, "Connect all") : null),
+          h("div", { class: "pickrows" }, auto.local.map((r) => h("div", { class: "pickrow" }, h("span", { class: "flowmain" }, h("b", {}, r.name), h("span", { class: "flowsub" }, r.path)), h("button", { class: "primary", onclick: () => connectLocal(r) }, "Connect")))),
+        ]
+      : h("p", { class: "note" }, auto.error ?? "No repositories were found in the usual folders. Connect one by its folder below.")
+    : null;
+  if (!git.installed) {
+    return [
+      back,
+      head,
+      h("section", { class: "card isetup" }, h("h2", {}, "One thing to install first"), h("div", { class: "istep action" }, h("span", { class: "istepmark", "aria-hidden": "true" }, "!"), h("div", { class: "grow" }, h("b", {}, "Git is not on this computer yet"), h("p", { class: "note" }, "Press Install Git. macOS opens its own installer window: click Install there and wait a few minutes, then come back and press Check again."))), h("div", { class: "row" }, h("button", { class: "primary", onclick: (e) => ((e.target.disabled = true), attempt(async () => alert((await api("POST", "integrations/git/install")).message), col)) }, "Install Git"), h("button", { onclick: again }, "Check again"))),
+    ];
+  }
+
+  // ----- repositories -----
+  const folder = h("input", { placeholder: "A folder on this computer, e.g. /Users/you/Projects/my-app", "aria-label": "Folder of a repository" });
+  const url = h("input", { placeholder: "https://github.com/your-name/your-repository", "aria-label": "Web address of a repository" });
+  const cloneBtn = h("button", { class: "primary" }, "Copy it here and connect");
+  const repoCard = (r) =>
+    h(
+      "div",
+      { class: `card irepo ${r.found ? "" : "gone"}` },
+      h("div", { class: "row" }, h("div", { class: "grow" }, h("b", {}, r.name), h("div", { class: "mono small muted" }, r.path)), r.found && state.project !== r.path ? h("button", { title: "New tasks will work on this repository", onclick: () => ((state.project = r.path), remember("talqava.project", r.path), loadCrew().then(() => (renderTop(), again()))) }, "Use for new tasks") : r.found ? h("span", { class: "chip on" }, "In use for new tasks") : null, h(
+        "button",
+        {
+          class: "danger",
+          onclick: () => {
+            const copy = (git.copies ?? []).includes(r.path);
+            if (!confirm(`Remove ${r.name} from Talqava?\n\nAgents stop working on it. ${copy ? "This is a copy the app made; you are asked next whether to delete it too." : "The folder and everything in it stay on your computer."}`)) return;
+            const deleteCopy = copy && confirm(`Also delete the copy on this computer?\n\n${r.path}\n\nOK deletes those files (the repository on GitHub is not touched). Cancel keeps them.`);
+            if (state.project === r.path) (state.project = ""), remember("talqava.project", "");
+            act(async () => (await api("POST", "integrations/git/disconnect", { path: r.path, deleteCopy }), ui.gitAuto ? (ui.gitAuto = await api("POST", "integrations/git/auto")) : null));
+          },
+        },
+        "Remove",
+      )),
+      r.found
+        ? h(
+            "div",
+            { class: "ifacts" },
+            h("div", {}, h("span", { class: "label" }, "Your branch"), h("span", {}, r.branch)),
+            h("div", {}, h("span", { class: "label" }, "Last commit"), h("span", { title: r.lastCommit ? `${r.lastCommit.author}` : "" }, r.lastCommit ? `${r.lastCommit.subject.slice(0, 70)} · ${shortWhen(r.lastCommit.when)}` : "No commits yet")),
+            h("div", {}, h("span", { class: "label" }, "Your unsaved changes"), h("span", { class: r.uncommitted ? "warn" : "" }, r.uncommitted ? `${r.uncommitted} file${r.uncommitted === 1 ? "" : "s"} not committed` : "None")),
+            h("div", {}, h("span", { class: "label" }, "Hosted at"), h("span", {}, r.github ? `GitHub · ${r.github}` : r.remote || "This computer only")),
+            h("div", {}, h("span", { class: "label" }, "Agent work"), h("span", {}, `${r.activeTasks} task${r.activeTasks === 1 ? "" : "s"} under way · ${r.taskBranches} task branch${r.taskBranches === 1 ? "" : "es"}`)),
+          )
+        : h("p", { class: "note" }, "This folder is no longer a git repository, or has been moved. Disconnect it, or put it back."),
+      r.found && !r.lastCommit ? h("p", { class: "note small" }, "A repository needs at least one commit before an agent can work on it.") : null,
+    );
+
+  // ----- GitHub: sign in through the web, or with a token -----
+  const openWeb = (address) => window.open(address, "_blank", "noopener");
+  // Loads the accounts this sign-in can see (the person's own, and their companies) and one account's repositories.
+  const loadAccount = async (account) => {
+    try {
+      const listed = ui.githubPick?.accounts ? ui.githubPick : await api("POST", "integrations/git/github-accounts");
+      const chosen = account ?? ui.githubPick?.account ?? listed.accounts[0].login;
+      ui.githubPick = { login: listed.login, accounts: listed.accounts, account: chosen, repos: null, error: null };
+      again();
+      ui.githubPick.repos = (await api("POST", "integrations/git/github-repos", { account: chosen })).repos;
+    } catch (err) {
+      ui.githubPick = { ...(ui.githubPick ?? { accounts: [] }), repos: [], error: err.message };
+    }
+    again();
+  };
+  const afterGithub = async () => {
+    ui.githubSignIn = null;
+    ui.githubTokenFlow = false;
+    ui.githubPick = null;
+    state.config = await api("GET", "state");
+    await loadAccount();
+  };
+  const startSignIn = async (btn) => {
+    btn.disabled = true;
+    try {
+      ui.githubSignIn = await api("POST", "integrations/git/github-start");
+      navigator.clipboard?.writeText(ui.githubSignIn.code).catch(() => {});
+      openWeb(ui.githubSignIn.url);
+      again();
+    } catch (err) {
+      ui.githubSignIn = { error: err.message };
+      again();
+    }
+  };
+  // While a sign-in is under way, ask GitHub every few seconds whether it has been approved.
+  const waitForApproval = (status) => {
+    const started = ui.githubSignIn;
+    const tick = async () => {
+      if (ui.githubSignIn !== started || state.view !== "integrations" || ui.integration !== "git") return;
+      try {
+        const r = await api("POST", "integrations/git/github-poll");
+        if (r.done) return afterGithub();
+        setTimeout(tick, (r.wait ?? started.interval ?? 5) * 1000);
+      } catch (err) {
+        ui.githubSignIn = { error: err.message };
+        again();
+      }
+    };
+    setTimeout(tick, (started.interval ?? 5) * 1000);
+    status.textContent = "Waiting for you to approve on GitHub…";
+  };
+  const githubSection = () => {
+    const signIn = ui.githubSignIn;
+    const clientId = h("input", { placeholder: "Client ID, e.g. Ov23li…", value: git.github.clientId ?? "", autocomplete: "off", "aria-label": "GitHub app Client ID" });
+    const oneClick = h(
+      "details",
+      { class: "card setup-once", open: ui.githubOnceOpen ? "" : null },
+      h("summary", {}, h("b", {}, "One-click sign-in"), h("span", { class: `chip ${git.github.canSignIn ? "on" : ""}` }, git.github.canSignIn ? "Ready" : "Set up once")),
+      h(
+        "div",
+        { class: "body" },
+        h("p", { class: "note" }, "“Connect GitHub” signs people in on github.com with a short code, with no token to copy. GitHub requires an app to be registered for that, once, by whoever publishes this product. After that it works for everyone who uses it."),
+        h("ol", { class: "isteps" }, h("li", {}, "On GitHub open Settings → Developer settings → OAuth Apps → New OAuth App."), h("li", {}, "Name it Talqava Agents. For both web addresses use your website (they are not used by this kind of sign-in)."), h("li", {}, "Tick “Enable Device Flow”, then Register application."), h("li", {}, "Copy the Client ID shown on the app's page and paste it here. No secret is needed.")),
+        h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), (ui.githubOnceOpen = true), act(() => api("POST", "integrations/git/github-client", { clientId: clientId.value }))) }, clientId, h("button", { class: "primary" }, "Save Client ID"), h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/applications/new") }, "Open that page on GitHub")),
+      ),
+    );
+    if (git.github.tokenSaved) {
+      const pick = ui.githubPick;
+      const other = h("input", { placeholder: "Company's name on GitHub, e.g. talqava", "aria-label": "Company's name on GitHub", autocomplete: "off" });
+      return h(
+        "section",
+        { class: "isec" },
+        h("h2", {}, "GitHub"),
+        h(
+          "div",
+          { class: "card form" },
+          h("div", { class: "row" }, h("b", { class: "grow" }, pick?.login ? `Connected as ${pick.login}` : "Connected to GitHub"), h("span", { class: "chip on" }, "Connected")),
+          h("p", { class: "note small" }, "The sign-in is kept on this computer, is only ever sent to GitHub, and is never shown to an agent."),
+          h("div", { class: "row" }, pick ? null : h("button", { class: "primary", onclick: (e) => ((e.target.disabled = true), (e.target.textContent = "Loading your accounts…"), loadAccount()) }, "Choose repositories"), testBtn, h("button", { type: "button", class: "plain danger", onclick: () => confirm("Disconnect GitHub?\n\nRepositories already connected stay connected. Agents can no longer read issues and pull requests, and you can connect a different account afterwards.") && act(async () => (await api("PUT", "settings", { secret: { name: "GITHUB_TOKEN", remove: true } }), (ui.githubPick = null))) }, "Disconnect GitHub"), tested),
+          pick
+            ? [
+                h("div", { class: "label", style: "margin: 8px 0 0" }, "Whose repositories?"),
+                h("div", { class: "pills", role: "group", "aria-label": "Account" }, pick.accounts.map((a) => h("button", { class: `mpill ${a.login === pick.account ? "on" : ""}`, "aria-pressed": String(a.login === pick.account), title: a.description, onclick: () => a.login !== pick.account && loadAccount(a.login) }, a.kind === "personal" ? `${a.login} (you)` : a.login)), pick.account && !pick.accounts.some((a) => a.login === pick.account) ? h("button", { class: "mpill on" }, pick.account) : null),
+                pick.error ? h("div", { class: "banner error" }, pick.error) : pick.repos ? remotePicker({ login: pick.account, remote: pick.repos }) : h("p", { class: "note" }, "Loading repositories…"),
+                h(
+                  "details",
+                  { class: "notlisted", open: ui.githubNotListed ? "" : null, ontoggle: (e) => (ui.githubNotListed = e.target.open) },
+                  h("summary", {}, h("b", {}, "My company is not listed")),
+                  h(
+                    "div",
+                    { class: "body" },
+                    h("p", { class: "note" }, "GitHub only shows a company (an “organization”) to an app the company has allowed. Whoever connects decides this on GitHub, and a company owner may have to approve it once."),
+                    h("ol", { class: "isteps" }, h("li", {}, "If you used Connect GitHub: on github.com open Settings → Applications → Authorized OAuth Apps → Talqava Agents, and under Organization access press Grant (or Request) beside your company. ", h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/applications") }, "Open that page")), h("li", {}, "If you used a token and your company uses single sign-on: on the tokens page press Configure SSO beside the token and authorize it for your company. ", h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/tokens") }, "Open that page")), h("li", {}, "Then press Refresh here, or type the company's GitHub name below to look at it directly.")),
+                    h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), other.value.trim() ? loadAccount(other.value.trim().replace(/^@|^https:\/\/github\.com\//, "").replace(/\/.*$/, "")) : other.focus()) }, other, h("button", {}, "Show its repositories"), h("button", { type: "button", class: "plain link", onclick: () => ((ui.githubPick = null), loadAccount()) }, "Refresh the list of accounts")),
+                  ),
+                ),
+              ]
+            : null,
+        ),
+        oneClick,
+      );
+    }
+    const connect = h("button", { class: "primary big" }, "Connect GitHub");
+    connect.addEventListener("click", () => (git.github.canSignIn ? startSignIn(connect) : ((ui.githubTokenFlow = true), again())));
+    const status = h("span", { class: "note" });
+    if (signIn?.code) waitForApproval(status);
+    return h(
+      "section",
+      { class: "isec" },
+      h("h2", {}, "GitHub"),
+      h(
+        "div",
+        { class: "card form" },
+        h("div", { class: "row" }, h("b", { class: "grow" }, "Connect your GitHub account"), h("span", { class: "chip" }, "Not connected")),
+        h("p", { class: "note" }, "Sign in on github.com in your browser, then choose which of your repositories to bring in. Your password is never typed into this app."),
+        signIn?.code
+          ? h(
+              "div",
+              { class: "signin" },
+              h("div", { class: "label" }, "Type this code on GitHub"),
+              h("div", { class: "signcode", "aria-live": "polite" }, signIn.code),
+              h("div", { class: "row" }, h("button", { class: "primary", onclick: () => (navigator.clipboard?.writeText(signIn.code).catch(() => {}), openWeb(signIn.url)) }, "Copy the code and open GitHub"), h("button", { class: "plain", onclick: () => ((ui.githubSignIn = null), again()) }, "Cancel")),
+              h("ol", { class: "isteps" }, h("li", {}, "GitHub opens in your browser. Sign in if it asks."), h("li", {}, "Paste or type the code above and press Continue."), h("li", {}, "Press Authorize. This page carries on by itself.")),
+              status,
+            )
+          : h("div", { class: "row" }, connect, h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/signup") }, "No GitHub account? Create one free, then come back and press Connect GitHub")),
+        signIn?.error ? h("div", { class: "banner error" }, signIn.error) : null,
+        ui.githubTokenFlow || signIn?.error
+          ? h(
+              "form",
+              { class: "tokenflow", onsubmit: (e) => (e.preventDefault(), token.value.trim() ? act(async () => (await api("PUT", "settings", { secret: { name: "GITHUB_TOKEN", value: token.value.trim(), host: "api.github.com" } }), await afterGithub())) : token.focus()) },
+              h("div", { class: "label" }, "Connect with an access token"),
+              h("ol", { class: "isteps" }, h("li", {}, h("button", { type: "button", class: "plain link", onclick: () => openWeb("https://github.com/settings/tokens/new?description=Talqava%20Agents&scopes=repo,read:org,read:user") }, "Open GitHub's token page"), " in your browser. Sign in, or create a free account, if it asks."), h("li", {}, "The name and permissions are already filled in. Scroll down and press Generate token."), h("li", {}, "Copy the token GitHub shows (it starts with ghp_) and paste it here.")),
+              h("div", { class: "row" }, token, h("button", { class: "primary" }, "Connect")),
+            )
+          : null,
+      ),
+      oneClick,
+    );
+  };
+
+  // ----- GitHub token field and test -----
+  const token = h("input", { type: "password", autocomplete: "off", placeholder: git.github.tokenSaved ? "A token is saved. Paste a new one to replace it." : "Paste a GitHub token (starts with ghp_ or github_pat_)", "aria-label": "GitHub token" });
+  const tested = h("span", { class: "note small" });
+  const testBtn = h("button", { type: "button", onclick: async () => {
+    tested.textContent = "Checking…";
+    try {
+      tested.textContent = `✓ GitHub accepted it: signed in as ${(await api("POST", "integrations/git/test-github")).login}.`;
+    } catch (err) {
+      tested.textContent = `✕ ${err.message}`;
+    }
+  } }, "Test");
+
+  const connected = git.github.tokenSaved;
+  const hasRepo = git.repos.some((r) => r.found);
+  return [
+    back,
+    head,
+    h(
+      "section",
+      { class: "card isetup" },
+      h("h2", {}, "Three steps"),
+      step(connected, "1. Connect GitHub", h("p", { class: "note" }, connected ? "Done. You are signed in." : "Sign in on github.com in your browser. Start below.")),
+      step(hasRepo, "2. Choose your repositories", h("p", { class: "note" }, hasRepo ? `${git.repos.filter((r) => r.found).length} connected. Add or remove any time.` : connected ? "Pick your account or your company below, and tick the ones you want." : "After you connect, you pick which ones to bring in: your own, or your company's.")),
+      step(hasRepo, "3. Give an agent a task on it", h("p", { class: "note" }, "Choose the repository at the top of Work in progress and assign a task. You review every change before it is kept.")),
+    ),
+    githubSection(),
+    h("section", { class: "isec" }, h("h2", {}, `Connected repositories${git.repos.length ? ` · ${git.repos.length}` : ""}`), git.repos.length ? git.repos.map(repoCard) : h("p", { class: "note" }, "None yet. Connect GitHub above and choose the ones you want.")),
+    h(
+      "details",
+      { class: "card onthis", open: ui.gitLocalOpen || auto?.local ? "" : null, ontoggle: (e) => (ui.gitLocalOpen = e.target.open) },
+      h("summary", {}, h("b", {}, "Already have a repository on this computer?"), h("span", { class: "note small" }, "Optional")),
+      h(
+        "div",
+        { class: "body" },
+        h("p", { class: "note" }, "If the code is already in a folder on this computer, you can connect that folder instead of copying it from GitHub. Nothing on this computer is looked at until you press Search."),
+        h("div", {}, searchBtn),
+        foundHere,
+        h(
+          "div",
+          { class: "iadd" },
+        h("form", { class: "card form", onsubmit: (e) => (e.preventDefault(), act(() => api("PUT", "settings", { project: { path: folder.value.trim() } }))) }, h("b", {}, "Connect a folder by its location"), h("p", { class: "note small" }, "Type where it is. Nothing is copied or moved."), folder, h("div", {}, h("button", { class: "primary" }, "Connect"))),
+        h(
+          "form",
+          {
+            class: "card form",
+            onsubmit: (e) => {
+              e.preventDefault();
+              cloneBtn.disabled = true;
+              cloneBtn.textContent = "Copying…";
+              act(() => api("POST", "integrations/git/clone", { url: url.value.trim() })).finally?.(() => ((cloneBtn.disabled = false), (cloneBtn.textContent = "Copy it here and connect")));
+            },
+          },
+          h("b", {}, "Copy one from a web address"),
+          h("p", { class: "note small" }, `Paste its address from GitHub or another host. A copy is made in ${git.cloneFolder}. A private repository needs this computer to be signed in to that host already.`),
+          url,
+          h("div", {}, cloneBtn),
+        ),
+        ),
+        h("p", { class: "note small" }, `Git ${git.version} is installed. ${git.identity.name ? `Changes you keep are recorded as ${git.identity.name}${git.identity.email ? ` <${git.identity.email}>` : ""}.` : "Git has no name for you yet; connecting GitHub sets it from your account."}`),
+      ),
+    ),
+    h(
+      "section",
+      { class: "isec" },
+      h("h2", {}, "What agents can and cannot do"),
+      h(
+        "div",
+        { class: "willrow" },
+        h("div", { class: "willbox will" }, h("div", { class: "label" }, "✓ With this integration"), h("ul", {}, ...["Work on a repository in a branch and working copy made for that one task", "Read the code and its history, and run the project's tests", "Show you every change, file by file, before anything is kept", "Read GitHub issues and pull requests when a token is saved"].map((x) => h("li", {}, x)))),
+        h("div", { class: "willbox wont" }, h("div", { class: "label" }, "✕ Never"), h("ul", {}, ...["Touch your own branches or your unsaved changes", "Commit to your branch: keeping a task makes one commit on the task's own branch", "Push, merge or deploy: those stay with you", "See your GitHub token"].map((x) => h("li", {}, x)))),
+      ),
+      h("p", { class: "note" }, git.coders.length ? `Agents that can change files, and so get a branch of their own: ${git.coders.map((b) => b.name).join(", ")}. Others can read a repository but not change it.` : "No agent on your team can change files yet. Add one from the marketplace, such as a developer."),
+      h("p", { class: "note" }, "To use it: connect a repository, choose it in the Repository box at the top of Work in progress, then assign a task. When the task stops, its page shows the changes with Keep the changes and Undo."),
+    ),
+    git.repos.length || git.github.tokenSaved
+      ? h(
+          "section",
+          { class: "card removeint" },
+          h("div", { class: "grow" }, h("b", {}, "Remove this integration"), h("p", { class: "note" }, `Disconnects ${git.repos.length ? `all ${git.repos.length} repositor${git.repos.length === 1 ? "y" : "ies"}` : "everything"} and forgets the GitHub sign-in. Folders on your computer and everything on GitHub are left as they are. You can set it up again at any time.`)),
+          h(
+            "button",
+            {
+              class: "danger",
+              onclick: () => {
+                if (!confirm(`Remove the Git integration?\n\n${git.repos.length} repositor${git.repos.length === 1 ? "y is" : "ies are"} disconnected and the GitHub sign-in is forgotten. Nothing on GitHub changes.`)) return;
+                const deleteCopies = (git.copies ?? []).length > 0 && confirm(`Also delete the ${git.copies.length} cop${git.copies.length === 1 ? "y" : "ies"} this app made on this computer?\n\n${git.copies.join("\n")}\n\nOK deletes those files. Cancel keeps them. Folders you connected yourself are never deleted.`);
+                state.project = "";
+                remember("talqava.project", "");
+                ui.gitAuto = null;
+                ui.githubPick = null;
+                ui.githubSignIn = null;
+                act(() => api("POST", "integrations/git/remove", { deleteCopies }));
+              },
+            },
+            "Remove integration",
+          ),
+        )
+      : null,
+  ];
 }
 
 // ---------- the marketplace ----------
@@ -1492,6 +2865,7 @@ async function teamView() {
 async function loadMarket() {
   const market = await api("GET", "marketplace");
   state.market = market.bots;
+  state.marketTeams = market.teams ?? [];
   return market;
 }
 
@@ -1535,7 +2909,7 @@ async function marketView() {
   if (!market || state.view !== "market") return;
   const bots = market.bots;
   const categories = [...new Set(bots.map((b) => b.listing.category))].sort();
-  const search = h("input", { type: "search", placeholder: "Search by bot name or what you need done", "aria-label": "Search bots", value: ui.marketSearch || "" });
+  const search = h("input", { type: "search", placeholder: "Search by agent name or what you need done", "aria-label": "Search agents", value: ui.marketSearch || "" });
   const pills = h("div", { class: "pills", role: "group", "aria-label": "Categories" });
   const results = h("div", { class: "msections" });
   const draw = () => {
@@ -1570,7 +2944,7 @@ async function marketView() {
       return h(
         "article",
         { class: "mcard tcard" },
-        h("div", { class: "mhead" }, h("div", {}, h("b", {}, t.name), h("div", { class: "by" }, `${list.length} bots · lead: ${list[0]?.listing.title ?? ""}`))),
+        h("div", { class: "mhead" }, h("div", {}, h("b", {}, t.name), h("div", { class: "by" }, `${list.length} agents · lead: ${list[0]?.listing.title ?? ""}`))),
         h("div", { class: "tbots" }, list.map((b) => h("button", { class: "plain", title: `${b.name}: ${b.listing.title}`, "aria-label": b.name, style: botStyle(b), onclick: () => go("marketbot", b.id) }, keycap(b.character, 36, "", b.type)))),
         h("p", { class: "mdesc" }, t.summary),
         h("div", { class: "mfoot" }, h("span", { class: "mono small muted" }, "Free · added with their reporting lines"), add),
@@ -1592,15 +2966,15 @@ async function marketView() {
             ),
           )
         : null,
-      teams.length ? h("section", {}, h("h2", {}, "Teams"), h("p", { class: "note", style: "margin: -6px 0 12px" }, "A lead and the bots that report to it, added to your organization together."), h("div", { class: "mgrid wide" }, teams.map(teamCard))) : null,
+      teams.length ? h("section", {}, h("h2", {}, "Teams"), h("p", { class: "note", style: "margin: -6px 0 12px" }, "A lead and the agents that report to it, added to your organization together."), h("div", { class: "mgrid wide" }, teams.map(teamCard))) : null,
       cat || needle ? section(cat === "+mine" ? "On my team" : cat || "Results", shown) : categories.map((c) => section(c, shown.filter((b) => b.listing.category === c))),
-      shown.length ? null : h("p", { class: "note" }, cat === "+mine" ? "You have not added a marketplace bot yet." : "No bot matches that. Try other words, or hatch your own bot from the Bots page."),
+      shown.length ? null : h("p", { class: "note" }, cat === "+mine" ? "You have not added a marketplace agent yet." : "No agent matches that. Try other words, or create your own agent from the Work in progress page."),
     );
   };
   search.addEventListener("input", () => ((ui.marketSearch = search.value), draw()));
   col.append(
     h("h1", {}, "Marketplace"),
-    h("p", { class: "lead" }, "Free bots, each built for one job. Read exactly what a bot is told to do before you add it to your team."),
+    h("p", { class: "lead" }, "Agents for every department, each built for one role. Read exactly what an agent is instructed to do before you add it to your organization."),
     pills,
     search,
     ...(market.problems?.length ? [h("div", { class: "banner error small" }, market.problems.map((p) => h("div", {}, p)))] : []),
@@ -1647,7 +3021,7 @@ async function marketBotView() {
           "div",
           { class: "row" },
           bot.added
-            ? [h("span", { class: "mpill on" }, "✓ On your team"), h("button", { class: "primary", onclick: () => chatWith(bot, col) }, `Chat with ${bot.name}`), h("button", { onclick: () => go("bot", bot.id) }, "Edit your copy"), h("button", { onclick: () => ((state.selectedBot = bot.id), remember("talqava.bot", bot.id), go("home")) }, `Send ${bot.name} on a quest`)]
+            ? [h("span", { class: "mpill on" }, "✓ On your team"), h("button", { class: "primary", onclick: () => chatWith(bot, col) }, `Chat with ${bot.name}`), h("button", { onclick: () => go("bot", bot.id) }, "Edit your copy"), h("button", { onclick: () => ((state.selectedBot = bot.id), remember("talqava.bot", bot.id), go("home")) }, `Assign a task to the ${bot.name}`)]
             : h("button", { class: "primary big", onclick: () => addFromMarket(bot, col) }, "Add to my team · Free"),
         ),
       ),
@@ -1665,10 +3039,11 @@ async function marketBotView() {
     h(
       "section",
       { class: "minstr" },
-      h("div", { class: "row" }, h("h2", { class: "grow" }, "Instructions"), h("span", { class: "mono small muted" }, "shown in full · nothing hidden"), copy),
+      h("div", { class: "row" }, h("h2", { class: "grow" }, "Instructions"), h("span", { class: "mono small muted" }, "Shown in full · nothing hidden"), copy),
       h("div", { class: "instructions" }, bot.instructions.split(/\n+/).filter((para) => para.trim()).map((para) => h("p", {}, para.trim()))),
       h("div", { class: "willrow" }, list("✓ Will do", bot.listing.will, "will"), list("✕ Will not do", bot.listing.wont, "wont")),
-      h("p", { class: "note" }, bot.added ? "This bot is on your team. Your copy is yours to edit, and it never changes unless you change it." : "After you add a bot, these instructions are yours to edit. Your copy never changes unless you change it."),
+      governanceBox(bot),
+      h("p", { class: "note" }, bot.added ? "This agent is on your team. Your copy is yours to edit, and it never changes unless you change it." : "After you add an agent, these instructions are yours to edit. Your copy never changes unless you change it."),
     ),
   );
 }
@@ -1710,13 +3085,13 @@ async function refreshQuest(first = false) {
   const [label, tone] = standing(q);
   const where = q.branch ? ["on branch ", h("code", {}, q.branch), " · your own branch is untouched"] : q.project ? [`in ${basename(q.project)}`] : ["in the workspace folder"];
   fill(ui.qhead, 
-    h("button", { onclick: () => go("home") }, "Back to bots"),
+    h("button", { onclick: () => go("home") }, "Back to agents"),
     keycap(q.bot.character, 40, mood(q), q.bot.type),
     h(
       "div",
       { class: "titles" },
       h("h1", {}, q.title),
-      h("div", { class: "sub" }, `${q.bot.name}${roleOf(q.bot.id) ? `, ${roleOf(q.bot.id).title}` : ` the ${cap(q.bot.type)}`} · `, ...where, q.parent ? [" · assigned by ", h("button", { class: "plain link", onclick: () => go(q.parent.isQuest ? "quest" : "chat", q.parent.id) }, q.parent.by)] : null),
+      h("div", { class: "sub" }, `${q.bot.name}${roleOf(q.bot.id) ? `, ${roleOf(q.bot.id).title}` : (q.bot.title && q.bot.title !== q.bot.name ? `, ${q.bot.title}` : "")} · `, ...where, q.parent ? [" · assigned by ", h("button", { class: "plain link", onclick: () => go(q.parent.isQuest ? "quest" : "chat", q.parent.id) }, q.parent.by)] : null),
     ),
     ui.meta,
     h("span", { class: `pill solid ${tone}` }, label),
@@ -1724,9 +3099,9 @@ async function refreshQuest(first = false) {
       "button",
       {
         class: "plain danger",
-        title: "Delete this quest",
+        title: "Delete this task",
         onclick: () =>
-          confirm(q.branch && !q.outcome ? "Delete this quest and undo its changes?" : "Delete this quest from the log?") &&
+          confirm(q.branch && !q.outcome ? "Delete this task and undo its changes?" : "Delete this task from the log?") &&
           attempt(async () => {
             await api("DELETE", `quests/${q.id}`);
             await loadQuests();
@@ -1769,11 +3144,11 @@ async function renderChanges(q) {
     return;
   }
   if (q.outcome) {
-    fill(panel, h("div", { class: "decide" }, h("b", {}, q.outcome === "undone" ? "Quest undone." : "The quest changed nothing."), h("p", { class: "note" }, "Its branch and working copy were removed.")));
+    fill(panel, h("div", { class: "decide" }, h("b", {}, q.outcome === "undone" ? "Task undone." : "The task changed nothing."), h("p", { class: "note" }, "Its branch and working copy were removed.")));
     return;
   }
   if (isLive(q)) {
-    fill(panel, h("p", { class: "note" }, "You can review the changes when the quest stops. Its work so far is in the Conversation tab."));
+    fill(panel, h("p", { class: "note" }, "You can review the changes when the task stops. Its work so far is in the Conversation tab."));
     return;
   }
   const changes = await attempt(() => api("GET", `quests/${q.id}/changes`), panel);
@@ -1799,12 +3174,12 @@ async function renderChanges(q) {
             ),
           );
         })
-      : [h("p", { class: "note" }, "The quest changed no files.")]),
+      : [h("p", { class: "note" }, "The task changed no files.")]),
     changes.truncated ? h("p", { class: "note" }, "Some of the changes are too long to show here.") : null,
     h(
       "div",
       { class: "decide" },
-      h("div", {}, h("b", {}, changes.files.length ? "Ready for your review. " : "Nothing to keep. "), h("span", { class: "muted" }, "Keeping makes one commit on the quest's branch; your current branch stays as it is.")),
+      h("div", {}, h("b", {}, changes.files.length ? "Ready for your review. " : "Nothing to keep. "), h("span", { class: "muted" }, "Keeping makes one commit on the task's branch; your current branch stays as it is.")),
       h(
         "div",
         { class: "row" },
@@ -1812,8 +3187,8 @@ async function renderChanges(q) {
         changes.files.length ? h("button", { onclick: () => (renderTabs(q, false), ui.tabs.querySelector('[data-key="conversation"]').click(), (ui.input.placeholder = `Tell ${q.bot.name} what to change…`)) }, "Ask for changes") : null,
         h(
           "button",
-          { class: "danger", onclick: () => confirm("Throw away everything this quest changed?") && attempt(async () => (await api("POST", `quests/${q.id}/undo`), afterDecision()), panel) },
-          changes.files.length ? "Undo whole quest" : "Close the branch",
+          { class: "danger", onclick: () => confirm("Throw away everything this task changed?") && attempt(async () => (await api("POST", `quests/${q.id}/undo`), afterDecision()), panel) },
+          changes.files.length ? "Undo whole task" : "Close the branch",
         ),
       ),
     ),
@@ -1871,7 +3246,7 @@ function renderSteps(q, conversation) {
       { class: "note" },
       q.branch
         ? `Works on its own branch and copy of ${basename(q.project)}, started from your last commit. Undo removes every trace.`
-        : "Works in the workspace folder. Shell commands and file changes ask first unless the bot runs everything.",
+        : "Works in the workspace folder. Shell commands and file changes ask first unless the agent runs everything.",
     ),
     h("p", { class: "note" }, `Powers: ${powers.map((p) => (POWER_NAMES[p] || p).toLowerCase()).join(", ") || "none"}.${missing.length ? ` No ${missing.map((p) => ({ web: "web", files: "files", shell: "shell", api: "API calls" })[p]).join(", no ")}.` : ""}`),
     q.readOutside ? h("p", { class: "note" }, "It has read outside content, so every change asks first.") : null,
@@ -1904,14 +3279,14 @@ function checkBlock(q) {
     { class: "panel-block" },
     h("h2", { class: "label" }, "Check"),
     q.checking
-      ? h("p", { class: "mono small" }, "◌ checking the result…")
+      ? h("p", { class: "mono small" }, "◌ Checking the result…")
       : q.check
         ? h(
             "ul",
             { class: "checks-list" },
             q.check.items.map((item) => h("li", {}, h("span", { class: "mark" }, item.passed ? "✓" : "✕"), h("span", {}, item.label, item.detail && !item.passed ? h("pre", {}, item.detail) : null))),
           )
-        : h("p", { class: "note" }, isLive(q) ? "Runs when the bot says it is done. A failed check goes back to the bot to fix." : "Not checked."),
+        : h("p", { class: "note" }, isLive(q) ? "Runs when the agent says it is done. A failed check goes back to the agent to fix." : "Not checked."),
     q.template.tries ? h("p", { class: "note" }, `Sent back to fix ${q.template.tries} time${q.template.tries === 1 ? "" : "s"} (up to ${q.template.maxTries}).`) : null,
     q.handedTo ? h("p", { class: "note" }, `Handed to ${q.handedTo}.`) : null,
     handOver ? [h("p", { class: "note" }, "The check still fails. A stronger model can pick up where this one stopped."), handOver] : null,
@@ -1943,8 +3318,8 @@ function renderQuestRight(q) {
       "section",
       { class: "panel-block" },
       h("h2", { class: "label" }, q.bot.name),
-      h("div", { class: "mono small muted" }, `${q.bot.type} · [${legendOf(q.bot.character, q.bot.type)}] · ${(TEXTURES[textureOf(q.bot.character, q.bot.type)] || "").toLowerCase()} base`),
-      h("p", { class: "note" }, q.bot.source === "project" ? "From the repository's .crew/ folder." : q.bot.source === "personal" ? "Your own bot." : "A starter bot."),
+      h("div", { class: "mono small muted" }, roleLine(q.bot, roleOf(q.bot.id)?.title)),
+      h("p", { class: "note" }, q.bot.source === "project" ? "From the repository's .crew/ folder." : q.bot.source === "personal" ? "Your own agent." : "A standard agent."),
       bot ? h("button", { onclick: () => go("bot", bot.id) }, `Edit ${q.bot.name}`) : null,
     ),
   );
@@ -1961,7 +3336,9 @@ function botView() {
       id: "",
       name: "",
       type: "scout",
-      character: { legend: "?", texture: "dots", color: "cyan" },
+      title: "",
+      group: "",
+      character: { legend: "", texture: "dots", color: "green" },
       instructions: "",
       model: undefined,
       powers: ["web", "memory"],
@@ -1978,15 +3355,15 @@ function botView() {
   const head = h(
     "div",
     { class: "subhead" },
-    h("button", { onclick: () => go("home") }, "Back to bots"),
-    h("div", { class: "titles" }, h("h1", {}, isNew ? "Hatch a bot" : `Edit ${existing.name}`), h("div", { class: "sub mono" }, fileNote)),
+    h("button", { onclick: () => go("home") }, "Back to agents"),
+    h("div", { class: "titles" }, h("h1", {}, isNew ? "Create an agent" : `Edit ${existing.name}`), h("div", { class: "sub mono" }, fileNote)),
     !isNew && existing.source === "personal"
       ? h(
           "button",
           {
             class: "plain danger",
             onclick: () =>
-              confirm(`Remove your ${existing.name}? A starter bot of the same name comes back.`) &&
+              confirm(`Remove your version of ${existing.name}? The standard agent of the same name comes back.`) &&
               attempt(async () => {
                 await api("DELETE", `crew/${existing.id}`);
                 await loadCrew();
@@ -2001,16 +3378,25 @@ function botView() {
 
   // ----- portrait -----
   const portrait = h("aside", { class: "portrait" });
-  draft.character.legend = legendOf(draft.character, draft.type);
+  // An agent with no initials yet gets them from its title or name as it is typed.
+  const initialsOf = (text) => String(text).trim().split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w) && !/^(of|the|and|for)$/i.test(w)).map((w) => w[0].toUpperCase()).slice(0, 3).join("");
+  let ownLegend = Boolean(draft.character.legend) && !isNew;
+  if (!draft.character.legend) draft.character.legend = isNew ? "?" : legendOf(draft.character, draft.type);
+  const autoLegend = () => {
+    if (ownLegend) return;
+    const made = initialsOf(draft.title || draft.name);
+    if (made) (draft.character.legend = made), (legendInput.value = made);
+  };
   const legendInput = h("input", {
     id: "legend",
     value: draft.character.legend,
     maxlength: 6,
     autocomplete: "off",
-    style: "text-align: center; font-family: var(--mono); font-size: 18px; max-width: 120px",
+    style: "text-align: center; font-weight: 600; font-size: 16px; max-width: 120px",
     oninput: (e) => {
       const chars = [...e.target.value.replace(/\s/g, "")].slice(0, 3).join("");
       if (chars) {
+        ownLegend = true;
         draft.character.legend = chars;
         portrait.querySelector(".keychar")?.replaceWith(keycap(draft.character, 150, "", draft.type));
       }
@@ -2021,10 +3407,10 @@ function botView() {
     draft.character.color = colorName(draft.character, draft.type);
     fill(portrait,
       keycap(draft.character, 150, "", draft.type),
-      h("h2", {}, draft.name || "New bot"),
-      h("div", { class: "type" }, cap(draft.type || "bot")),
-      h("p", { class: "label", style: "margin-top: 22px" }, `Glow · ${NEON[draft.character.color][0]}`),
-      swatches(draft.character.color, (name) => ((draft.character.color = name), drawPortrait()), "Glow colour"),
+      h("h2", {}, draft.name || "New agent"),
+      h("div", { class: "type" }, roleLine({ name: draft.name, group: draft.group }, draft.title) || "Role not set"),
+      h("p", { class: "label", style: "margin-top: 22px" }, `Colour · ${NEON[draft.character.color][0]}`),
+      swatches(draft.character.color, (name) => ((draft.character.color = name), drawPortrait()), "Colour"),
       ...[
         ["shape", "Body", SHAPES],
         ["eyes", "Eyes", EYES],
@@ -2043,9 +3429,9 @@ function botView() {
           ),
         ),
       ]),
-      h("label", { class: "label", for: "legend", style: "display: block; margin-top: 22px" }, "Key legend"),
+      h("label", { class: "label", for: "legend", style: "display: block; margin-top: 22px" }, "Initials"),
       legendInput,
-      h("p", { class: "note small" }, "One to three characters printed on the key, such as ? or </>."),
+      h("p", { class: "note small" }, "One to three characters printed on its key, such as HS for Head of Sales."),
       h("p", { class: "label", style: "margin-top: 16px" }, "Texture on its base"),
       h(
         "div",
@@ -2069,24 +3455,23 @@ function botView() {
   drawPortrait();
 
   // ----- job -----
-  const name = h("input", { value: draft.name, placeholder: "e.g. Pip", maxlength: 40, oninput: (e) => ((draft.name = e.target.value), drawPortrait()) });
+  const name = h("input", { value: draft.name, placeholder: "e.g. Head of Partnerships", maxlength: 40, oninput: (e) => ((draft.name = e.target.value), autoLegend(), drawPortrait()) });
+  const title = h("input", { value: draft.title && draft.title !== cap(draft.type) ? draft.title : "", placeholder: "e.g. Head of Partnerships", maxlength: 50, oninput: (e) => ((draft.title = e.target.value), autoLegend(), drawPortrait()) });
   const types = ["scout", "scribe", "maker", "keeper", "counter", "spark"];
-  const TYPE_WORDS = { scout: "finds things out", scribe: "writes", maker: "builds code", keeper: "remembers and checks", counter: "works with numbers", spark: "comes up with ideas" };
+  const TYPE_WORDS = { scout: "Research and analysis", scribe: "Writing and communications", maker: "Software engineering", keeper: "Operations and oversight", counter: "Numbers and data", spark: "Strategy and planning" };
   const type = h(
     "select",
     {
       onchange: (e) => {
-        if (draft.character.legend === LEGENDS[draft.type]) draft.character.legend = LEGENDS[e.target.value] ?? draft.character.legend;
         if (draft.character.texture === TYPE_TEXTURES[draft.type]) draft.character.texture = TYPE_TEXTURES[e.target.value] ?? draft.character.texture;
         if (draft.character.color === TYPE_COLORS[draft.type]) draft.character.color = TYPE_COLORS[e.target.value] ?? draft.character.color;
         draft.type = e.target.value;
-        legendInput.value = draft.character.legend;
         drawPortrait();
       },
     },
-    [...new Set([...types, draft.type])].map((t) => h("option", { value: t, selected: t === draft.type }, `${cap(t)}${TYPE_WORDS[t] ? ` · ${TYPE_WORDS[t]}` : ""}`)),
+    [...new Set([...types, draft.type])].map((t) => h("option", { value: t, selected: t === draft.type }, TYPE_WORDS[t] ?? cap(t))),
   );
-  const instructions = h("textarea", { rows: 7, placeholder: "What this bot does and how. Plain sentences work best." }, draft.instructions);
+  const instructions = h("textarea", { rows: 7, placeholder: "What this role is responsible for and how it works. Plain sentences work best." }, draft.instructions);
 
   // ----- model -----
   const providers = state.config.providers;
@@ -2119,7 +3504,7 @@ function botView() {
               [result.tools, "Uses tools"],
               [result.multiStep, "Chains several steps"],
             ].map(([ok, label]) => h("div", {}, h("span", { class: ok ? "yes" : "no" }, ok ? "✓ " : "! "), label)),
-            h("div", { class: "muted" }, result.recommended.includes(cap(draft.type)) ? `Good enough for a ${cap(draft.type)}.` : `Not recommended for a ${cap(draft.type)}. Good for: ${result.recommended.join(", ")}.`),
+            h("div", { class: "muted" }, result.recommended.includes(cap(draft.type)) ? `Suitable for ${(TYPE_WORDS[draft.type] ?? "this kind of work").toLowerCase()}.` : `Not recommended for ${(TYPE_WORDS[draft.type] ?? "this kind of work").toLowerCase()}. Suitable for: ${result.recommended.map((r) => (TYPE_WORDS[r.toLowerCase()] ?? r).toLowerCase()).join(", ")}.`),
           )
         : h("p", { class: "note" }, "This model has not been checked yet. Check it under Settings."),
     );
@@ -2140,7 +3525,7 @@ function botView() {
   const spend = h("input", { type: "number", min: 0, max: 100, step: 0.05, value: draft.budget?.spend ?? "" });
   const steps = h("input", { type: "number", min: 1, max: 500, step: 1, value: draft.budget?.steps ?? "" });
 
-  const group = h("input", { value: draft.group || "", placeholder: "e.g. Research", maxlength: 30, list: "team-groups", autocomplete: "off" });
+  const group = h("input", { value: draft.group || "", placeholder: "e.g. Sales", maxlength: 30, list: "team-groups", autocomplete: "off", oninput: (e) => ((draft.group = e.target.value), drawPortrait()) });
   const groupList = h("datalist", { id: "team-groups" }, [...new Set((state.crew?.bots ?? []).map((b) => b.group))].map((g) => h("option", { value: g })));
   const monthly = h("input", { type: "number", min: 0, max: 10000, step: 0.5, value: draft.monthly ?? "", placeholder: "No limit" });
   save.addEventListener("click", () =>
@@ -2149,6 +3534,7 @@ function botView() {
         group: group.value.trim(),
         ...(monthly.value !== "" ? { monthly: Number(monthly.value) } : {}),
         name: name.value.trim(),
+        title: title.value.trim() || name.value.trim(),
         type: type.value,
         character: draft.character,
         instructions: instructions.value.trim(),
@@ -2174,7 +3560,7 @@ function botView() {
       h(
         "div",
         { class: "editcards" },
-        h("section", { class: "card" }, h("h3", {}, "Job"), h("label", { class: "field" }, "Name", name), h("label", { class: "field" }, "Type", type), h("label", { class: "field" }, "Instructions", instructions)),
+        h("section", { class: "card" }, h("h3", {}, "Role"), h("label", { class: "field" }, "Name", name), h("label", { class: "field" }, "Job title", title), h("label", { class: "field" }, "Department", group, groupList), h("label", { class: "field" }, "Kind of work", type), h("label", { class: "field" }, "Instructions", instructions)),
         h(
           "section",
           { class: "card" },
@@ -2188,16 +3574,16 @@ function botView() {
           { class: "card" },
           h("h3", {}, "Powers"),
           powerBoxes.map(([p, box]) => h("label", { class: "power" }, box, POWER_NAMES[p])),
-          h("p", { class: "note" }, "A bot only gets the tools its powers grant. Changes ask first by default, and always after reading the web."),
+          h("p", { class: "note" }, "An agent only gets the tools its powers grant. Changes ask first by default, and always after reading the web."),
         ),
         h(
           "section",
           { class: "card" },
           h("h3", {}, "Limits"),
           h("label", { class: "field" }, "Approvals", approvals),
-          h("div", { class: "row" }, h("label", { class: "field grow" }, "Budget per quest ($)", spend), h("label", { class: "field grow" }, "Steps per quest", steps)),
-          h("div", { class: "row" }, h("label", { class: "field grow" }, "Budget per month ($)", monthly), h("label", { class: "field grow" }, "Team group", group, groupList)),
-          h("p", { class: "note small" }, existing?.month ? `Spent this month: ${money(existing.month.spent)}. At its monthly budget a bot starts no new work until you raise it or the month turns.` : "At its monthly budget a bot starts no new work until you raise it or the month turns."),
+          h("div", { class: "row" }, h("label", { class: "field grow" }, "Budget per task ($)", spend), h("label", { class: "field grow" }, "Steps per task", steps)),
+          h("div", { class: "row" }, h("label", { class: "field grow" }, "Budget per month ($)", monthly)),
+          h("p", { class: "note small" }, existing?.month ? `Spent this month: ${money(existing.month.spent)}. At its monthly budget an agent starts no new work until you raise it or the month turns.` : "At its monthly budget an agent starts no new work until you raise it or the month turns."),
         ),
       ),
     ),
@@ -2243,7 +3629,7 @@ function chatView() {
   ui.pin = h("button", { class: "plain", hidden: true, onclick: () => pinChat({ id: state.convId }, !state.convs.find((c) => c.id === state.convId)?.pinned) }, "Pin");
   syncPin();
   const pane = conversationPane();
-  fill(ui.body, ui.chatSide, h("main", { class: "center flush" }, h("div", { class: "chathead", style: withBot ? botStyle(withBot) : "" }, withBot ? keycap(withBot.character, 28, "", withBot.type) : null, ui.title, withBot ? h("span", { class: "mono small muted", title: "This chat is with one bot, in its role. It uses that bot's instructions, powers, model and limits." }, roleOf(withBot.id)?.title ?? cap(withBot.type)) : null, ui.meta, ui.move, withBot ? null : modelPicker(), ui.pin, ui.remove), pane));
+  fill(ui.body, ui.chatSide, h("main", { class: "center flush" }, h("div", { class: "chathead", style: withBot ? botStyle(withBot) : "" }, withBot ? keycap(withBot.character, 28, "", withBot.type) : null, ui.title, withBot ? h("span", { class: "small muted", title: "This chat is with one agent, in its role. It uses that agent's instructions, powers, model and limits." }, roleLine(withBot, roleOf(withBot.id)?.title)) : null, ui.meta, ui.move, withBot ? null : modelPicker(), ui.pin, ui.remove), pane));
   renderChatList();
   setRunning(false);
   if (state.convId) connect(state.convId);
@@ -2263,7 +3649,7 @@ function chatView() {
           { class: "ideas" },
           ideas.map((idea) => h("button", { onclick: () => ((ui.input.value = `${idea}: `), ui.input.focus()) }, idea)),
         ),
-        h("p", { class: "note small" }, "Want a task done in the background? ", h("button", { class: "plain link", onclick: () => go("home") }, "Send a bot"), " instead."),
+        h("p", { class: "note small" }, "Want a task done in the background? ", h("button", { class: "plain link", onclick: () => go("home") }, "Assign an agent"), " instead."),
       ),
     );
   }
@@ -2488,7 +3874,7 @@ const chatBotOf = (id = state.convId) => {
   const botId = state.convs.find((c) => c.id === id)?.bot;
   return botId ? (state.crew?.bots ?? []).find((b) => b.id === botId) : undefined;
 };
-const speaker = () => (state.view === "quest" ? (state.quests.find((q) => q.id === state.convId)?.bot.name ?? "the bot") : (chatBotOf()?.name ?? state.config.agentName));
+const speaker = () => (state.view === "quest" ? (state.quests.find((q) => q.id === state.convId)?.bot.name ?? "the agent") : (chatBotOf()?.name ?? state.config.agentName));
 
 /** Opens a chat with one bot, in its role. */
 async function chatWith(bot, where) {
@@ -2781,7 +4167,7 @@ function settingsView() {
   drawAccent();
   col.append(
     h("h3", {}, "Look"),
-    h("p", { class: "note" }, "Accent colour: ", accentLabel, ". Used for buttons, highlights and the cursor. Each bot glows in its own colour, which you can change when you edit the bot."),
+    h("p", { class: "note" }, "Accent colour: ", accentLabel, ". Used for buttons and highlights. Each agent has a colour and a look of its own, which you can change when you edit the agent."),
     accentRow,
   );
 
@@ -2905,7 +4291,7 @@ function settingsView() {
       pKey,
       h("div", { class: "row" }, pIn, pOut),
       pContext,
-      h("p", { class: "note small" }, "Set the context size to what the model really holds. Long quests are shortened to fit it, so a small local model keeps the task in view instead of losing track."),
+      h("p", { class: "note small" }, "Set the context size to what the model really holds. Long tasks are shortened to fit it, so a small local model keeps the task in view instead of losing track."),
       h("div", {}, h("button", {}, "Add provider")),
     ),
   );
@@ -2923,7 +4309,8 @@ function settingsView() {
   const repoPath = h("input", { placeholder: "Folder of a git repository, e.g. /home/you/code/my-app" });
   col.append(
     h("h3", {}, "Repositories"),
-    h("p", { class: "note" }, "Bots can work on these. A quest that changes code gets its own branch and working copy, so your files and branches are untouched until you keep its changes. Bots in a repository's .crew/ folder join the crew when it is chosen."),
+    h("p", { class: "note" }, "Repositories and GitHub are set up under ", h("button", { class: "plain link", onclick: () => ((ui.integration = "git"), go("integrations")) }, "Integrations → Git"), ", which also shows each repository's branch and state."),
+    h("p", { class: "note" }, "Agents can work on these. A task that changes code gets its own branch and working copy, so your files and branches are untouched until you keep its changes. Agents in a repository's .crew/ folder join the team when it is chosen."),
     ...c.projects.map((p) => h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("code", {}, p)), h("button", { class: "plain danger", onclick: () => save({ project: { path: p, remove: true } }) }, "Remove")))),
     h("form", { class: "form", onsubmit: (e) => (e.preventDefault(), save({ project: { path: repoPath.value.trim() } })) }, repoPath, h("div", {}, h("button", {}, "Add repository"))),
   );
@@ -2934,7 +4321,7 @@ function settingsView() {
   const mCommand = h("input", { placeholder: "Or a program to run, e.g. npx -y @some/mcp-server", class: "mono" });
   col.append(
     h("h3", {}, "Connectors (MCP servers)"),
-    h("p", { class: "note" }, "Connectors give agents ready-made tools for other services. The app connects to them from this computer, so they work with every model. A connector can be on the web, or a program this computer runs. Their tools ask before changing anything unless the connector marks them read-only, and agents give them only to bots with the connectors power."),
+    h("p", { class: "note" }, "Connectors give agents ready-made tools for other services. The app connects to them from this computer, so they work with every model. A connector can be on the web, or a program this computer runs. Their tools ask before changing anything unless the connector marks them read-only, and agents give them only to agents with the connectors power."),
     ...c.mcpServers.map((s) =>
       h(
         "div",

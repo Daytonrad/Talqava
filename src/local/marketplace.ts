@@ -11,6 +11,7 @@ import type { Bot } from "../core/index.ts";
 import { ROOT } from "./store.ts";
 import { loadCrew, saveBot } from "./crew.ts";
 import { orgs } from "./orgs.ts";
+import { STRUCTURES, industryOf, seatsFor } from "./structures.ts";
 
 export const MARKET_DIR = path.join(ROOT, "marketplace");
 const TEAMS_FILE = "teams.yaml";
@@ -58,8 +59,9 @@ export function loadMarketplace(): { bots: MarketBot[]; problems: string[] } {
       const raw = (parse(text) as { listing?: Record<string, unknown> }).listing ?? {};
       const summary = String(raw.summary ?? "").trim();
       if (!summary) throw new Error(`${name}: the listing needs a summary.`);
+      const title = String(raw.title ?? bot.name).trim().slice(0, 50) || bot.name;
       bots.push({
-        bot,
+        bot: { ...bot, title },
         listing: {
           category: String(raw.category ?? "Other").trim() || "Other",
           by: String(raw.by ?? "Talqava").trim() || "Talqava",
@@ -67,7 +69,7 @@ export function loadMarketplace(): { bots: MarketBot[]; problems: string[] } {
           featured: raw.featured === true,
           will: lines(raw.will),
           wont: lines(raw.wont),
-          title: String(raw.title ?? bot.name).trim().slice(0, 50) || bot.name,
+          title,
           reportsTo: typeof raw.reports_to === "string" && raw.reports_to.trim() ? raw.reports_to.trim() : null,
         },
       });
@@ -95,10 +97,14 @@ export const onTeam = (id: string) => loadCrew().bots.some((b) => b.id === id);
 export function addMarketBot(id: string): Bot {
   const { bot, listing } = findMarketBot(id);
   const mine = loadCrew().bots.find((b) => b.id === id);
-  if (mine) return mine;
+  if (mine) {
+    // Already on the person's team: their own copy is left as it is, and it takes its place on this chart if it is not there.
+    orgs.welcome(mine, { title: listing.title, department: listing.category, manager: listing.reportsTo });
+    return mine;
+  }
   // It joins the team group named after its marketplace category, and takes its place on the org chart.
   orgs.active(); // the organization exists before the bot does, so the bot arrives with its marketplace title
-  const saved = saveBot(id, { name: bot.name, type: bot.type, character: bot.character, instructions: bot.instructions, model: bot.model, powers: bot.powers, approvals: bot.approvals, budget: bot.budget, group: listing.category });
+  const saved = saveBot(id, { name: bot.name, type: bot.type, title: listing.title, lead: bot.lead, governance: bot.governance, character: bot.character, instructions: bot.instructions, model: bot.model, powers: bot.powers, approvals: bot.approvals, budget: bot.budget, group: listing.category });
   orgs.welcome(saved, { title: listing.title, department: listing.category, manager: listing.reportsTo });
   return saved;
 }
@@ -127,13 +133,90 @@ export function addTeam(id: string): Bot[] {
   const market = new Map(loadMarketplace().bots.map((m) => [m.bot.id, m]));
   // A bot is added after the one it reports to.
   const order = [...team.bots].sort((a, b) => Number(Boolean(market.get(a)!.listing.reportsTo)) - Number(Boolean(market.get(b)!.listing.reportsTo)));
-  const added = order.map((botId) => addMarketBot(botId));
-  // A bot that was already here, reporting to the person, now reports to the team's lead.
+  // The team's lead is the first one listed. It goes on first, so the others find it there.
+  const lead = team.bots[0];
+  const sequence = [lead, ...order.filter((botId) => botId !== lead)];
+  const added = sequence.map((botId) => addMarketBot(botId));
+  // Each member takes its place in the team: under whoever it usually reports to if that one is in this team, else under the team's lead.
+  // An agent that was already on the chart somewhere else joins the team too, since adding the team is asking for exactly that.
   const org = orgs.active();
-  for (const botId of order) {
+  for (const botId of sequence) {
     const { listing } = market.get(botId)!;
-    const member = org.members.find((m) => m.bot === botId);
-    if (member && !member.manager && listing.reportsTo && team.bots.includes(listing.reportsTo)) orgs.setMember(org.id, { bot: botId, manager: listing.reportsTo });
+    const manager = listing.reportsTo && team.bots.includes(listing.reportsTo) ? listing.reportsTo : botId !== lead ? lead : null;
+    if (botId === lead) continue; // the lead stays where it is: under the person, or wherever it was dropped
+    const fresh = orgs.active().members.find((m) => m.bot === botId);
+    if (!fresh) orgs.setMember(org.id, { bot: botId, title: listing.title, department: listing.category, manager });
+    else if (fresh.manager !== manager) {
+      try {
+        orgs.setMember(org.id, { bot: botId, manager });
+      } catch {
+        // It is above its would-be lead on this chart; it is left where it is.
+      }
+    }
   }
   return added;
+}
+
+/**
+ * Sets an organization up as a structure for its kind of business: brings in
+ * the agents that chart calls for (those the person does not have yet), seats
+ * everyone in its layers, and places the agents already there under the lead
+ * exactly: agents that were on the chart and have no seat in this structure
+ * leave it (they stay on the person's team), so the chart holds exactly what
+ * the structure calls for and its counts match. With `exact` off, those
+ * agents are kept and placed under the lead of their department instead. The agents' own files are
+ * untouched; an agent the person edited stays as they made it.
+ */
+export function buildStructure(orgId: string, structure: string, industry?: string, exact = true): { added: string[] } {
+  if (!STRUCTURES.some((s) => s.id === structure)) throw new Error("There is no such structure.");
+  orgs.setActive(orgId);
+  if (industry !== undefined) orgs.update(orgId, { industry });
+  const seatsOf = seatsFor(structure, industryOf(orgs.active().industry));
+  // The chart ends up with exactly the agents this structure calls for, so its numbers match the recipe.
+  // (With exact off, agents the person put there themselves are kept and placed under a lead instead.)
+  if (exact && seatsOf.length) {
+    const keep = new Set(seatsOf.map((seat) => seat.bot));
+    for (const m of orgs.active().members) if (!keep.has(m.bot)) orgs.removeMember(orgId, m.bot);
+  }
+  if (!seatsOf.length) {
+    orgs.arrange(orgId, structure);
+    return { added: [] };
+  }
+  const market = new Map(loadMarketplace().bots.map((m) => [m.bot.id, m]));
+  const before = new Map(orgs.active().members.map((m) => [m.bot, m]));
+  const added: string[] = [];
+  for (const seat of seatsOf) {
+    if (!onTeam(seat.bot) && market.has(seat.bot)) {
+      addMarketBot(seat.bot);
+      added.push(seat.bot);
+    }
+  }
+  orgs.update(orgId, { structure });
+  // Agents an earlier structure brought in, which this one has no seat for, leave the chart (they stay on the team).
+  const wanted = new Set(seatsOf.map((seat) => seat.bot));
+  for (const m of orgs.active().members) if (m.placed && !wanted.has(m.bot)) orgs.removeMember(orgId, m.bot);
+  // Everyone to the top first, so no old reporting line can make a loop with a new one.
+  let org = orgs.active();
+  for (const m of org.members) orgs.setMember(orgId, { bot: m.bot, manager: null, also: null });
+  const seated = new Set<string>();
+  for (const seat of seatsOf) {
+    const listing = market.get(seat.bot)?.listing;
+    const mine = before.get(seat.bot);
+    // An agent this set-up brings onto the chart is marked as placed; one the person had already put there is not.
+    orgs.setMember(orgId, { bot: seat.bot, manager: seat.manager, title: listing?.title, department: seat.department ?? listing?.category, placed: exact || added.includes(seat.bot) || !mine || Boolean(mine.placed) });
+    seated.add(seat.bot);
+  }
+  for (const seat of seatsOf) if (seat.also) orgs.setMember(orgId, { bot: seat.bot, also: seat.also });
+  // Agents that were already here and are not on this chart join the lead of their department, else the one at the top.
+  org = orgs.active();
+  const crew = new Map(loadCrew().bots.map((b) => [b.id, b]));
+  const tops = seatsOf.filter((seat) => seat.manager === null);
+  const top = tops.find((seat) => seat.bot === "general-manager")?.bot ?? (tops.length === 1 ? tops[0].bot : null);
+  for (const m of org.members) {
+    if (seated.has(m.bot)) continue;
+    const home = crew.get(m.bot)?.group ?? m.department;
+    const lead = seatsOf.find((seat) => seat.bot !== m.bot && (market.get(seat.bot)?.listing.category ?? "") === home && crew.get(seat.bot)?.lead)?.bot ?? top;
+    orgs.setMember(orgId, { bot: m.bot, manager: lead, department: home, title: crew.get(m.bot)?.title });
+  }
+  return { added };
 }

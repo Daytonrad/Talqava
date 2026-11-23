@@ -23,7 +23,10 @@ import {
 import type { Bot, Conversation, JobBook, Power, RunSpec, Tool } from "../core/index.ts";
 import { MAX_DEPTH, MAX_OPEN_HANDOFFS, questStore, quests } from "./quests.ts";
 import { loadCrew } from "./crew.ts";
-import { memberOf, oneLine, orgs, reportsOf, rolePrompt } from "./orgs.ts";
+import { assignableBy, memberOf, oneLine, orgs, reportsOf, requestableBy, rolePrompt } from "./orgs.ts";
+import { orgMemoryPrompt, teamMemoryTool } from "./orgmemory.ts";
+import { libraryPrompt, libraryTool } from "./library.ts";
+import { structureOf } from "./structures.ts";
 import { WORKSPACE, conversations, getConfig, memory, skills, spaces } from "./store.ts";
 import { resolveModel } from "./models.ts";
 import { connectorTools } from "./connectors.ts";
@@ -267,9 +270,9 @@ async function botTools(bot: Bot, root: string, jobs: JobBook, claude: boolean):
 export const assignTool: Tool = defineTool<{ to: string; task: string }>({
   name: "assign_task",
   description:
-    "Hand a task to another bot in the organization. It works on its own and does not see this conversation, so put everything it needs in the task: the goal, the facts, and what a good result looks like. Its report arrives here later as a message. After assigning, do not wait or guess the result: finish anything that does not depend on it, then end your turn.",
+    "Hand a task to another agent in the organization. It works on its own and does not see this conversation, so put everything it needs in the task: the goal, the facts, and what a good result looks like. Its report arrives here later as a message. After assigning, do not wait or guess the result: finish anything that does not depend on it, then end your turn.",
   properties: {
-    to: { type: "string", description: "The name of the bot to assign to." },
+    to: { type: "string", description: "The name of the agent to assign to, e.g. its job title." },
     task: { type: "string", description: "The whole task, written so it can be done without any other context." },
   },
   required: ["to", "task"],
@@ -279,22 +282,169 @@ export const assignTool: Tool = defineTool<{ to: string; task: string }>({
     const quest = questStore.get(conversation.id);
     const callerId = quest?.bot.id ?? conversation.bot ?? null;
     const caller = callerId ? crew.find((b) => b.id === callerId) : undefined;
-    const allowed = (callerId ? reportsOf(org, callerId) : org.members).map((m) => crew.find((b) => b.id === m.bot)).filter((b): b is Bot => Boolean(b));
-    if (!allowed.length) throw new Error(callerId ? "Nobody reports to you, so there is no one to assign to. Do the work yourself, or say in your report who it belongs to." : "The organization has no bots yet.");
+    const allowed = (callerId ? assignableBy(org, callerId) : org.members).map((m) => crew.find((b) => b.id === m.bot)).filter((b): b is Bot => Boolean(b));
+    if (!allowed.length) throw new Error(callerId ? "Nobody takes tasks from you, so there is no one to assign to. Do the work yourself, or say in your report who it belongs to." : "The organization has no agents yet.");
     const wanted = String(input.to ?? "").trim().toLowerCase();
-    const target = allowed.find((b) => b.id === wanted || b.name.toLowerCase() === wanted);
+    const target = findColleague(allowed, org, wanted);
     if (!target) throw new Error(`You can assign only to ${allowed.map((b) => b.name).join(", ")}.`);
     const task = String(input.task ?? "").trim();
-    if (task.length < 10) throw new Error("Say what the task is, with everything the bot needs to know.");
+    if (task.length < 10) throw new Error("Say what the task is, with everything the agent needs to know.");
     if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error(`Tasks can be handed down ${MAX_DEPTH} levels at most. Do this one yourself.`);
     const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
     if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks you assigned are still open. Wait for their reports before assigning more.`);
     const by = caller?.name ?? getConfig().agentName;
-    const text = `${task}\n\n[Assigned by ${by}${caller ? `, the ${memberOf(org, caller.id)?.title ?? caller.type}` : ", on the user's behalf"}. You cannot see their conversation, so work from this task alone. End with a short report of what you did and what you found: it is sent back to ${by}.]`;
+    const text = `${task}\n\n[Assigned by ${by}${caller ? `, the ${memberOf(org, caller.id)?.title ?? caller.title}` : ", on the user's behalf"}. You cannot see their conversation, so work from this task alone. End with a short report of what you did and what you found: it is sent back to ${by}.]`;
     await quests.start({ bot: target, text, title: task, project: quest?.project, parent: { id: conversation.id, by } });
-    return `Assigned to ${target.name} (${memberOf(org, target.id)?.title ?? target.type}). Its report will arrive here as a message when it is done. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
+    return `Assigned to ${target.name} (${memberOf(org, target.id)?.title ?? target.title}). Its report will arrive here as a message when it is done. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
   },
 });
+
+/** A colleague by its file name, its name or its title in this organization. */
+function findColleague(among: Bot[], org: ReturnType<typeof orgs.active>, wanted: string): Bot | undefined {
+  return among.find((b) => b.id === wanted || b.name.toLowerCase() === wanted) ?? among.find((b) => memberOf(org, b.id)?.title.toLowerCase() === wanted);
+}
+
+/** The agent a conversation belongs to: a task's agent, or the one a chat is with. None for the general chat agent. */
+function agentOf(conversationId: string): Bot | undefined {
+  const id = questStore.get(conversationId)?.bot.id ?? conversations.get(conversationId)?.bot ?? null;
+  return id ? loadCrew().bots.find((b) => b.id === id) : undefined;
+}
+
+/**
+ * Puts a question to a colleague. Any member may ask any other, whatever the
+ * structure: the chart decides who hands out work, not who may talk. The
+ * question runs as a short task of its own with a small budget, and the
+ * answer comes back to this conversation as a message.
+ */
+export const askTool: Tool = defineTool<{ to: string; question: string }>({
+  name: "ask_colleague",
+  description:
+    "Ask another agent in the organization a question. Use it when a colleague knows something you need: a fact from their department, their view on your plan, what they decided earlier. They answer briefly from what they know and the answer arrives here as a message, so finish anything that does not depend on it and end your turn. It is for questions, not for handing over work (use assign_task for that). Leave the name out to see who you can ask.",
+  properties: {
+    to: { type: "string", description: "The colleague's name or job title." },
+    question: { type: "string", description: "The question, with the context needed to answer it. They cannot see this conversation." },
+  },
+  required: ["question"],
+  async run(input, { conversation }) {
+    const org = orgs.active();
+    const crew = loadCrew().bots;
+    const quest = questStore.get(conversation.id);
+    const caller = agentOf(conversation.id);
+    const others = org.members.filter((m) => m.bot !== caller?.id).map((m) => crew.find((b) => b.id === m.bot)).filter((b): b is Bot => Boolean(b));
+    const directory = () => others.map((b) => `- ${b.name}${memberOf(org, b.id)!.title.toLowerCase() === b.name.toLowerCase() ? "" : ` (${memberOf(org, b.id)!.title})`}, ${memberOf(org, b.id)!.department}: ${oneLine(b)}`).join("\n");
+    if (!others.length) throw new Error("There is nobody else in the organization to ask.");
+    const wanted = String(input.to ?? "").trim().toLowerCase();
+    const target = wanted ? findColleague(others, org, wanted) : undefined;
+    if (!target) return `${wanted ? "Nobody by that name. " : ""}You can ask:\n${directory()}`;
+    const question = String(input.question ?? "").trim();
+    if (question.length < 8) throw new Error("Say what you are asking, with the context needed to answer it.");
+    if (quest?.kind) throw new Error("You are answering a question yourself. Answer from what you know, and say what you are unsure of.");
+    if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error("This task is already several hand-offs deep. Work from what you have, and say what you could not confirm.");
+    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
+    if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks and questions of yours are still open. Wait for them before asking more.`);
+    const by = caller?.name ?? getConfig().agentName;
+    const text = `${question}\n\n[A question from ${by}${caller ? `, the ${memberOf(org, caller.id)?.title ?? caller.title}` : ", on the user's behalf"}. Answer it in a few sentences from what you know, the organization's memory and a quick look if one is needed. Do not start a piece of work or change anything. If you do not know, say so and say who might. Your answer is sent back to ${by}.]`;
+    await quests.start({ bot: target, text, title: `Question: ${question}`, parent: { id: conversation.id, by }, kind: "question" });
+    return `Asked ${target.name}. The answer will arrive here as a message. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
+  },
+});
+
+/**
+ * Requests work from another department or team. Unlike assign_task this is
+ * not an order: the one asked accepts and does it (handing parts to its own
+ * team) or declines with a reason. Who may be asked depends on the structure:
+ * see requestableBy.
+ */
+export const requestTool: Tool = defineTool<{ to: string; request: string; why?: string }>({
+  name: "request_work",
+  description:
+    "Request work from another department or team, when a task needs something that is not your department's job. It is a request, not an order: they accept and do it, or decline and say why. Their answer or report arrives here as a message, so finish what does not depend on it and end your turn. Use assign_task for your own reports and ask_colleague for a question.",
+  properties: {
+    to: { type: "string", description: "The name or job title of the lead you are asking." },
+    request: { type: "string", description: "What you need, written so it can be done without any other context, and what a good result looks like." },
+    why: { type: "string", description: "Why it is needed and by when, so they can weigh it against their own priorities." },
+  },
+  required: ["to", "request"],
+  async run(input, { conversation }) {
+    const org = orgs.active();
+    const crew = loadCrew().bots;
+    const quest = questStore.get(conversation.id);
+    const caller = agentOf(conversation.id);
+    if (!caller) throw new Error("You speak for the owner, so hand the work over with assign_task instead.");
+    const allowed = requestableBy(org, caller.id).map((m) => crew.find((b) => b.id === m.bot)).filter((b): b is Bot => Boolean(b));
+    if (!allowed.length) throw new Error("In this organization, work for another department goes through your lead. Use escalate to raise it with them.");
+    const wanted = String(input.to ?? "").trim().toLowerCase();
+    const target = findColleague(allowed, org, wanted);
+    if (!target) throw new Error(`You can request work only from ${allowed.map((b) => b.name).join(", ")}. For anyone else, use escalate to raise it with your lead.`);
+    const request = String(input.request ?? "").trim();
+    if (request.length < 10) throw new Error("Say what you need, with everything they need to know.");
+    if (quest?.kind) throw new Error("You are answering a question yourself. Say in your answer what work is needed and from whom.");
+    if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error("This task is already several hand-offs deep. Say in your report what is needed from the other department.");
+    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
+    if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks and requests of yours are still open. Wait for them before making more.`);
+    const why = String(input.why ?? "").trim();
+    const text = `${request}${why ? `\n\nWhy and by when: ${why}` : ""}\n\n[A request from ${caller.name}, the ${memberOf(org, caller.id)?.title ?? caller.title} in ${memberOf(org, caller.id)?.department ?? "another department"}. This is a request from a colleague, not an order from your lead. Weigh it against your own priorities and decision rights. If you accept, do it or hand its parts to your team, and end with a short report. If you decline, say so in one line with the reason and what would change your answer. You cannot see their conversation. Your reply is sent back to ${caller.name}.]`;
+    await quests.start({ bot: target, text, title: `Request: ${request}`, project: quest?.project, parent: { id: conversation.id, by: caller.name } });
+    return `Requested from ${target.name}. Their answer or report will arrive here as a message. Do not wait for it or assume they will accept: end your turn once anything that does not depend on it is finished.`;
+  },
+});
+
+/**
+ * Takes a decision that is not the agent's own to its lead: a conflict
+ * between two leads, something above its decision rights, a block. The lead
+ * decides on a small budget, or says it must go higher.
+ */
+export const escalateTool: Tool = defineTool<{ issue: string; options: string; recommendation: string }>({
+  name: "escalate",
+  description:
+    "Take a decision to your lead when it is not yours to make: two leads want different things from you, the task needs something above your decision rights, or you are blocked on another department. Give the issue, the options and your recommendation. Their decision arrives here as a message. Do not use it for things you may decide yourself.",
+  properties: {
+    issue: { type: "string", description: "What needs deciding and why you cannot decide it, with the facts they need." },
+    options: { type: "string", description: "The options, each with what it costs or risks." },
+    recommendation: { type: "string", description: "Which option you would choose and why." },
+  },
+  required: ["issue", "options", "recommendation"],
+  async run(input, { conversation }) {
+    const org = orgs.active();
+    const quest = questStore.get(conversation.id);
+    const caller = agentOf(conversation.id);
+    const me = caller ? memberOf(org, caller.id) : null;
+    const boss = me?.manager ? loadCrew().bots.find((b) => b.id === me.manager) : undefined;
+    const issue = String(input.issue ?? "").trim();
+    if (issue.length < 10) throw new Error("Say what needs deciding, with the facts needed to decide it.");
+    if (!caller || !boss) return "You report to the owner. Stop here and put this to them at the top of your report, under the heading “Needs your decision”: the issue, the options and your recommendation.";
+    if (quest?.kind) throw new Error("You are answering a question or deciding an escalation yourself. If it is not yours to decide either, say so and say who must.");
+    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
+    if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks and requests of yours are still open. Wait for them first.`);
+    const text = `${issue}\n\nOptions: ${String(input.options ?? "").trim()}\n\nTheir recommendation: ${String(input.recommendation ?? "").trim()}\n\n[Escalated to you by ${caller.name}, the ${me!.title}, who reports to you. Decide it if it is within what you decide yourself: say which option, in one line why, and anything they must do differently. If it is above your decision rights too, do not decide: say that it must go to your own lead or to the owner, and what they will need to know. Save a decision others will need to the organization's memory. Your answer is sent back to ${caller.name}.]`;
+    await quests.start({ bot: boss, text, title: `Decision needed: ${issue}`, parent: { id: conversation.id, by: caller.name }, kind: "decision" });
+    return `Escalated to ${boss.name}. Their decision will arrive here as a message. Carry on with anything that does not depend on it, then end your turn.`;
+  },
+});
+
+/** Organization memory for whoever is running in a conversation. */
+const teamMemory = teamMemoryTool((conversationId) => {
+  const bot = agentOf(conversationId);
+  return bot ? { id: bot.id, name: bot.name } : null;
+});
+
+/** What a member of the organization gets for working with others: hand-offs to those it leads, requests across departments, escalation to its lead, questions, and the shared memory. */
+function teamworkTools(org: ReturnType<typeof orgs.active>, botId: string): Tool[] {
+  return [
+    ...(assignableBy(org, botId).length ? [assignTool] : []),
+    ...(requestableBy(org, botId).length ? [requestTool] : []),
+    ...(memberOf(org, botId)?.manager ? [escalateTool] : []),
+    ...(org.members.length > 1 ? [askTool] : []),
+    teamMemory,
+    libraryForAgents,
+  ];
+}
+
+/** The organization's library of documents, for whoever is running in a conversation. */
+const libraryForAgents = libraryTool((conversationId) => agentOf(conversationId)?.id ?? null);
+
+/** A question is answered on a small budget: a few steps, and no hand-offs of its own. */
+const QUESTION_BUDGET = { steps: 6, spend: 0.15 };
 
 /** What a bot is told when the person chats with it directly, in place of the line about being sent on a quest. */
 function botChatPrompt(bot: Bot): string {
@@ -316,7 +466,7 @@ function orgOverview(): string[] {
     return `  - ${crew.get(m.bot)!.name} (${m.title}, ${m.department}${leads ? `, leads ${leads}` : ""}): ${oneLine(crew.get(m.bot)!)}`;
   });
   return [
-    `The user runs an organization of bots called ${org.name}${org.mission ? ` (mission: ${org.mission})` : ""}. When a job fits one of them better than doing it yourself, or the user asks for a bot, hand it over with assign_task; a job for a whole department goes to the bot that leads it, which hands the parts to its own reports. Their reports come back here as messages. The bots:\n${lines.join("\n")}`,
+    `The user runs an organization of agents called ${org.name}${org.mission ? ` (mission: ${org.mission})` : ""}, structured as ${structureOf(org.structure).name.toLowerCase()}. When a job fits one of them better than doing it yourself, or the user asks for an agent, hand it over with assign_task; a job for a whole department or team goes to the agent that leads it, which hands the parts to its own reports. Use ask_colleague for a quick question. Their reports and answers come back here as messages. The agents:\n${lines.join("\n")}`,
   ];
 }
 
@@ -343,18 +493,22 @@ export function localRunSpec(jobs: JobBook) {
       const where = quest.copy
         ? [`You are working in your own copy of the repository ${quest.project}, on the branch ${quest.copy.branch}. The user reviews your changes before they keep them, so make the changes directly here; do not commit, push or switch branches.`]
         : [];
-      const role = rolePrompt(bot);
-      const leads = reportsOf(orgs.active(), bot.id).length > 0;
+      const org = orgs.active();
+      const role = rolePrompt(bot, org);
+      const onChart = Boolean(memberOf(org, bot.id));
+      const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id)].filter(Boolean).join("\n\n") : "";
+      const question = Boolean(quest.kind);
+      // Whoever may hand work to someone gets assign_task; every member can ask a colleague and use the shared memory.
+      const teamwork = !onChart ? [] : question ? [teamMemory, libraryForAgents] : teamworkTools(org, bot.id);
       return {
         model,
-        system: `${localPrompt(root, bot.name, [...where, ...linked.note], conversation)}\n\n${botPrompt(bot)}${role ? `\n\n${role}` : ""}`,
-        // A bot with reports on the org chart can hand tasks to them.
-        tools: [...(await botTools(bot, root, jobs, claude)), ...(leads ? [assignTool] : []), ...linked.tools],
+        system: `${localPrompt(root, bot.name, [...where, ...linked.note], conversation)}\n\n${botPrompt(bot)}${role ? `\n\n${role}` : ""}${remembered ? `\n\n${remembered}` : ""}`,
+        tools: [...(await botTools(bot, root, jobs, claude)), ...teamwork, ...linked.tools],
         hostedTools: claude && bot.powers.includes("web") ? HOSTED_WEB : [],
         // Connectors are reached from this machine (see connectors.ts), so every model can use them.
         mcpServers: [],
         approvalMode: bot.approvals,
-        budget: { ...cfg.budget, ...bot.budget },
+        budget: question ? QUESTION_BUDGET : { ...cfg.budget, ...bot.budget },
         // What a connector returns is outside content too.
         cautionAfter: [...CAUTION_TOOLS, ...linked.names],
       };
@@ -366,12 +520,15 @@ export function localRunSpec(jobs: JobBook) {
       const model = resolveModel(cfg, chatBot.model ?? cfg.model);
       const claude = model.kind === "anthropic";
       const linked = await connectors(chatBot.powers.includes("connectors"));
-      const role = rolePrompt(chatBot);
-      const leads = reportsOf(orgs.active(), chatBot.id).length > 0;
+      const org = orgs.active();
+      const role = rolePrompt(chatBot, org);
+      const onChart = Boolean(memberOf(org, chatBot.id));
+      const remembered = onChart ? [orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id)].filter(Boolean).join("\n\n") : "";
+      const teamwork = onChart ? teamworkTools(org, chatBot.id) : [];
       return {
         model,
-        system: `${localPrompt(WORKSPACE, chatBot.name, linked.note, conversation)}\n\n${botChatPrompt(chatBot)}${role ? `\n\n${role}` : ""}`,
-        tools: [...(await botTools(chatBot, WORKSPACE, jobs, claude)), ...(leads ? [assignTool] : []), ...linked.tools],
+        system: `${localPrompt(WORKSPACE, chatBot.name, linked.note, conversation)}\n\n${botChatPrompt(chatBot)}${role ? `\n\n${role}` : ""}${remembered ? `\n\n${remembered}` : ""}`,
+        tools: [...(await botTools(chatBot, WORKSPACE, jobs, claude)), ...teamwork, ...linked.tools],
         hostedTools: claude && chatBot.powers.includes("web") ? HOSTED_WEB : [],
         mcpServers: [],
         approvalMode: chatBot.approvals,
@@ -381,12 +538,12 @@ export function localRunSpec(jobs: JobBook) {
     }
 
     const model = resolveModel(cfg);
-    const tools = [...(await localTools(jobs)), ...(orgs.active().members.length ? [assignTool] : [])];
+    const tools = [...(await localTools(jobs)), ...(orgs.active().members.length ? [assignTool, askTool, teamMemory] : []), libraryForAgents];
     const claude = model.kind === "anthropic";
     const linked = await connectors(true);
     return {
       model,
-      system: localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation),
+      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", libraryPrompt(orgs.active(), null)].filter(Boolean).join("\n\n"))}`,
       // Other models read the web with our own page reader; Claude uses Anthropic's.
       tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],
