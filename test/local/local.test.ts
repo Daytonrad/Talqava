@@ -1368,3 +1368,25 @@ test("agents start from the library passages that match their task (never privat
     orgs.remove(org0.id);
   }
 });
+
+test("undo puts the whole chart back from a snapshot, refusing one with a loop or an agent that is gone", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const org = orgs.create("Undo Co", "", "custom");
+  market.addTeam("finance-team");
+  const before = structuredClone({ members: orgs.active().members, groups: orgs.active().groups });
+  orgs.setMember(org.id, { bot: "bookkeeper", manager: null, department: "Elsewhere" });
+  orgs.addGroup(org.id, { name: "Extra" });
+  assert.equal(orgs.active().members.find((m) => m.bot === "bookkeeper")!.department, "Elsewhere");
+  const back = orgs.replaceChart(org.id, before);
+  assert.deepEqual(back.members.map((m) => [m.bot, m.manager, m.department]).sort(), before.members.map((m) => [m.bot, m.manager, m.department]).sort());
+  assert.ok(!back.groups.some((g) => g.name === "Extra"));
+  // A snapshot that would make a loop, or name an agent that no longer exists, changes nothing.
+  const loop = structuredClone(before);
+  const head = loop.members.find((m) => m.manager === null)!;
+  head.manager = loop.members.find((m) => m.manager === head.bot)!.bot;
+  assert.throws(() => orgs.replaceChart(org.id, loop), /loop/);
+  assert.throws(() => orgs.replaceChart(org.id, { members: [...before.members, { bot: "no-such-agent", title: "X", department: "Finance", manager: null }], groups: before.groups }), /no agent called/);
+  assert.deepEqual(orgs.active().members.map((m) => m.bot).sort(), before.members.map((m) => m.bot).sort());
+  orgs.remove(org.id);
+});

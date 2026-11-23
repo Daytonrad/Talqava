@@ -1046,6 +1046,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     }
     // The app no longer redraws an owner's chart from a structure: lines are only ever drawn by the owner.
     if (route === "POST orgs" && sub === "arrange") throw new HttpError(410, "The chart is no longer redrawn from a structure. Drag positions to set who reports to whom.");
+    if (route === "PUT orgs" && sub === "chart") return send(res, 200, await attempt(() => orgs.replaceChart(orgId, body)));
     if (route === "POST orgs" && sub === "groups") return send(res, 200, await attempt(() => orgs.addGroup(orgId, body)));
     if (route === "PATCH orgs" && sub === "groups" && memberId) return send(res, 200, await attempt(() => orgs.updateGroup(orgId, memberId, body)));
     if (route === "DELETE orgs" && sub === "groups" && memberId) return send(res, 200, await attempt(() => orgs.removeGroup(orgId, memberId, url.searchParams.get("moveTo") ?? body.moveTo)));

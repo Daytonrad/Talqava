@@ -284,6 +284,49 @@ export const orgs = {
     return tidy(org);
   },
 
+  /**
+   * Puts the whole chart back as it was in a snapshot the page took (for undo). Checked like any change: every
+   * agent must exist, every manager and dotted line must be on the chart, and the chart must stay a tree.
+   */
+  replaceChart(id: string, snapshot: { members?: unknown; groups?: unknown }): Org {
+    const data = read();
+    const org = find(data, id);
+    const known = new Set(loadCrew().bots.map((b) => b.id));
+    const members = (Array.isArray(snapshot.members) ? snapshot.members : []).map((m: Record<string, unknown>) => ({
+      bot: String(m.bot ?? ""),
+      title: clean(m.title, 50),
+      department: clean(m.department, 30),
+      manager: m.manager ? String(m.manager) : null,
+      also: m.also ? String(m.also) : null,
+      ...(m.placed ? { placed: true } : {}),
+      ...(m.responsibilities ? { responsibilities: String(m.responsibilities).replace(/\s+/g, " ").trim().slice(0, 400) } : {}),
+    })) as Member[];
+    const ids = new Set(members.map((m) => m.bot));
+    if (ids.size !== members.length) throw new Error("An agent appears twice in that chart.");
+    for (const m of members) {
+      if (!known.has(m.bot)) throw new Error(`There is no agent called "${m.bot}" any more.`);
+      if (!m.title || !m.department) throw new Error("Every position needs a title and a group.");
+      if (m.manager && !ids.has(m.manager)) throw new Error("A manager in that chart is not on it.");
+      if (m.also && !ids.has(m.also)) m.also = null;
+      for (let at: string | null = m.manager, steps = 0; at; steps++) {
+        if (at === m.bot || steps > members.length) throw new Error("That chart has a loop in its reporting lines.");
+        at = members.find((x) => x.bot === at)?.manager ?? null;
+      }
+    }
+    const groups = (Array.isArray(snapshot.groups) ? snapshot.groups : []).map((g: Record<string, unknown>) => ({
+      id: /^[a-f0-9]{16}$/.test(String(g.id ?? "")) ? String(g.id) : newId(),
+      name: clean(g.name, 30),
+      lead: g.lead && ids.has(String(g.lead)) ? String(g.lead) : null,
+      leadChosen: g.leadChosen === true,
+      ...(g.goal ? { goal: clean(g.goal, 300) } : {}),
+      ...budgetOf(g.budget ?? undefined),
+    })).filter((g) => g.name) as Group[];
+    org.members = members;
+    org.groups = groups;
+    save(data);
+    return tidy(org);
+  },
+
   /** A new group (team or department), with a lead if one is given. */
   addGroup(id: string, input: { name: unknown; lead?: unknown; goal?: unknown; budget?: unknown }): Org {
     const data = read();

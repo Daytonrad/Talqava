@@ -1402,3 +1402,72 @@ details.trysearch[open] summary { margin-bottom: 10px; }
 .auditmore pre { margin: 0; padding: 10px 12px; border-radius: var(--r-m); background: var(--bg); border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--mono); color: var(--soft); }
 .sysavatar.small { width: 20px; height: 20px; border-radius: 5px; font-size: 10px; }
 @media (max-width: 1100px) { .auditrow summary { grid-template-columns: 120px 150px minmax(0, 1fr) 56px; } .akind { display: none; } .auditmore { padding-left: 14px; } .auditstats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* The Organization page: the owner's chart, built and edited by hand. */
+.orgx { max-width: 1400px; display: flex; flex-direction: column; gap: 12px; }
+.orghead { display: flex; gap: 12px; align-items: flex-start; }
+.orghead h1 { margin: 0; }
+.orghead .lead { margin: 4px 0 0; }
+.orgstrip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-l); background: var(--panel); font-size: 13px; color: var(--soft); }
+.orgstrip b { color: var(--text); font-variant-numeric: tabular-nums; }
+.orgproblems { display: flex; flex-direction: column; gap: 6px; }
+.orgproblem { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid color-mix(in srgb, #ff6b6b 40%, var(--line)); border-radius: var(--r-m); background: color-mix(in srgb, #ff6b6b 6%, var(--panel)); font-size: 13px; color: #ffb0b0; }
+.orgwork { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 14px; align-items: start; }
+.orgwork.withpanel { grid-template-columns: 240px minmax(0, 1fr) 320px; }
+.addbar { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-l); background: var(--panel); max-height: calc(100vh - 160px); overflow-y: auto; }
+.addbar .note { margin: 0; }
+.addlist { display: flex; flex-direction: column; gap: 4px; }
+.addlist .label { margin: 8px 0 2px; }
+.additem { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: var(--r-m); border: 1px solid transparent; cursor: grab; }
+.additem:hover { background: var(--raised); border-color: var(--line); }
+.posmain { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.posmain b { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.possub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leadtag { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 8px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.orgcanvas { min-width: 0; }
+.orgboard { display: flex; flex-direction: column; gap: 12px; }
+.youbar { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px dashed var(--line2); border-radius: var(--r-l); background: var(--bg); }
+.youmark { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: #0a0a0a; font-weight: 700; font-size: 12px; flex: none; }
+.frames { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; align-items: start; }
+.groupframe { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-l); background: var(--panel); min-height: 120px; }
+.groupframe.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.groupframe header { display: flex; gap: 8px; align-items: flex-start; padding: 12px 14px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.groupframe header h2 { margin: 0; font-size: 15px; }
+.groupgoal { margin-top: 4px; font-size: 12.5px; color: var(--soft); }
+.groupbody { display: flex; flex-direction: column; gap: 4px; padding: 8px; flex: 1; }
+.dropnote { margin: auto; text-align: center; }
+.newgroup { align-items: center; justify-content: center; gap: 4px; border-style: dashed; background: none; color: var(--soft); min-height: 120px; }
+.newgroup .plus { font-size: 22px; color: var(--accent); }
+.poscard { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-m); background: var(--bg); cursor: pointer; position: relative; }
+.poscard:hover { border-color: var(--line2); background: var(--raised); }
+.poscard.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.poscard.lead { border-color: color-mix(in srgb, var(--bot) 45%, var(--line)); }
+.poscard.dragging { opacity: 0.4; }
+.poscard.you { cursor: default; background: var(--panel); }
+.dragging-on .poscard, .dragging-on .groupframe, .dragging-on .youbar { transition: box-shadow 0.1s; }
+.dropover { box-shadow: 0 0 0 2px var(--accent) !important; background: color-mix(in srgb, var(--accent) 8%, var(--panel)) !important; }
+.treewrap { overflow-x: auto; padding-bottom: 8px; }
+.tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+.tree ul { margin-left: 18px; padding-left: 14px; border-left: 1px solid var(--line2); }
+.tree li { padding: 4px 0; position: relative; }
+.tree ul > li::before { content: ""; position: absolute; left: -14px; top: 24px; width: 12px; border-top: 1px solid var(--line2); }
+.tree .poscard { max-width: 420px; }
+.poslist { border: 1px solid var(--line); border-radius: var(--r-l); background: var(--panel); overflow: hidden; }
+.posrow { display: grid; grid-template-columns: minmax(200px, 1.4fr) 1fr 1fr 1fr 110px; gap: 10px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); }
+.posrow:first-child { border-top: 0; }
+.posrow.head { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); background: var(--bg); }
+.posrow select { width: 100%; min-width: 0; }
+.poslink { display: flex; align-items: center; gap: 8px; text-align: left; min-height: 0; padding: 0; color: var(--text); }
+.orgpanel2 { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-l); background: var(--panel); max-height: calc(100vh - 160px); overflow-y: auto; }
+.orgpanel2 label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.orgpanel2 label textarea, .orgpanel2 label input, .orgpanel2 label select { font-weight: 400; }
+.panelhead { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.groupmark { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 14%, var(--bg)); color: var(--accent); font-weight: 700; }
+.panelrules { padding: 10px 12px; border-radius: var(--r-m); background: var(--bg); border: 1px solid var(--line); font-size: 13px; }
+.panelrules p { margin: 4px 0 0; color: var(--soft); }
+.panelline { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.panelline.danger-zone { flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line); }
+.panelline select { width: auto; }
+.orgempty { text-align: center; padding: 48px 20px; }
+@media (max-width: 1200px) { .orgwork.withpanel { grid-template-columns: 220px minmax(0, 1fr); } .orgwork.withpanel .orgpanel2 { grid-column: 1 / -1; position: static; } }
+@media (max-width: 900px) { .orgwork, .orgwork.withpanel { grid-template-columns: minmax(0, 1fr); } .addbar { position: static; max-height: 280px; } .posrow { grid-template-columns: 1fr 1fr; } }

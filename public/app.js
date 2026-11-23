@@ -1983,695 +1983,468 @@ function structureDiagram(id) {
 async function teamView() {
   ui.body.className = "body";
   ui.log = null;
-  const col = h("div", { class: "team" });
-  fill(ui.body, h("main", { class: "center" }, col));
+  ui.orgx ??= { view: "groups", sel: null, undo: [], note: "" };
+  const col = h("div", { class: "orgx" });
+  fill(ui.body, h("main", { class: "center wide" }, col));
   await Promise.all([loadCrew(), loadOrgs()]);
   if (state.view !== "team") return;
-  const again = () => teamView();
+  ui.orgxCol = col;
+  if (!state.market) loadMarket().then(() => state.view === "team" && renderOrg()).catch(() => {});
+  renderOrg();
+}
+
+/** Takes a copy of the chart as it is, so the change about to be made can be undone. */
+const chartSnapshot = (org) => ({ orgId: org.id, members: structuredClone(org.members), groups: structuredClone(org.groups ?? []) });
+
+/** Makes one change to the chart: remembers how it was first (for undo), saves, and redraws. */
+async function orgChange(label, fn) {
   const org = activeOrg();
-  const structures = state.orgs.structures ?? [];
-  const assignRules = state.orgs.assignRules ?? {};
-  const requestRules = state.orgs.requestRules ?? {};
-  const industries = state.orgs.industries ?? [];
-  const industry = industries.find((i) => i.id === org.industry) ?? industries[0] ?? { id: "", name: "", examples: "", recommended: [], why: "", seats: {} };
-  const structure = structures.find((x) => x.id === org.structure) ?? structures[0] ?? { id: "", name: "", summary: "", philosophy: "", bestFor: "", watchOut: "", shape: "" };
-  const orgMemory = (ui.orgView ?? "teams") === "memory" && org.id ? await api("GET", `orgs/${org.id}/memory`).catch(() => []) : [];
-  if (state.view !== "team") return;
+  const before = chartSnapshot(org);
+  await attempt(async () => {
+    await fn();
+    ui.orgx.undo.push({ ...before, label });
+    ui.orgx.undo = ui.orgx.undo.slice(-40);
+    ui.orgx.note = label;
+    await loadOrgs();
+    renderOrg();
+  }, ui.orgxCol);
+}
+
+async function orgUndo() {
+  const last = ui.orgx.undo.pop();
+  if (!last) return;
+  await attempt(async () => {
+    await api("PUT", `orgs/${last.orgId}/chart`, { members: last.members, groups: last.groups });
+    ui.orgx.note = `Undone: ${last.label}`;
+    await loadOrgs();
+    renderOrg();
+  }, ui.orgxCol);
+}
+
+// Cmd-Z (Ctrl-Z) undoes the last change on the Organization page, unless the cursor is in a text box.
+document.addEventListener("keydown", (e) => {
+  if (state.view !== "team" || !(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z" || e.shiftKey) return;
+  if (/^(input|textarea|select)$/i.test(document.activeElement?.tagName ?? "")) return;
+  e.preventDefault();
+  orgUndo();
+});
+
+function renderOrg() {
+  const col = ui.orgxCol;
+  if (!col || state.view !== "team") return;
+  const o = ui.orgx;
+  const org = activeOrg();
   const bots = state.crew?.bots ?? [];
   const byId = new Map(bots.map((b) => [b.id, b]));
   const members = org.members.filter((m) => byId.has(m.bot));
+  const groups = org.groups ?? [];
+  const memberOf_ = (id) => members.find((m) => m.bot === id);
+  const groupOfMember = (m) => groups.find((g) => g.name === m.department);
+  const live = new Map((state.quests ?? []).filter(isLive).map((q) => [q.bot.id, q]));
   const outside = bots.filter((b) => !members.some((m) => m.bot === b.id));
-  const budgets = state.crew?.budgets;
-  const live = new Map(state.quests.filter(isLive).map((q) => [q.bot.id, q]));
-  const total = budgets?.total ?? { spent: 0, limit: null, state: "ok" };
-  const needs = inboxItems().needs.length;
-  const save = (fn) => attempt(async () => (await fn(), await loadOrgs(), again()), col);
-  const bar = (line, color) => {
-    if (line?.limit == null) return null;
-    const pct = line.limit > 0 ? Math.min(100, Math.round((line.spent / line.limit) * 100)) : 100;
-    return h("div", { class: `track ${line.state}`, role: "img", "aria-label": `${pct} percent of the budget used` }, h("span", { style: `width: ${pct}%; background: ${line.state === "stopped" ? "var(--text)" : line.state === "warned" ? "#ffb020" : color || "var(--accent)"}` }));
+  const below = (id) => {
+    const out = [];
+    for (let wave = members.filter((m) => m.manager === id); wave.length; wave = members.filter((m) => m.manager && wave.some((w) => w.bot === m.manager))) out.push(...wave);
+    return out;
   };
-  const statusOf = (bot) => {
-    const q = live.get(bot.id);
-    return q ? (q.status === "waiting" ? ["◌ Needs you", true] : ["● Working", true]) : bot.month?.state === "stopped" ? ["■ At budget", true] : ["Available", false];
-  };
+  const nameOf = (id) => (id ? (memberOf_(id)?.title ?? byId.get(id)?.name ?? id) : "you");
+  const set = (bot, patch, label) => orgChange(label, () => api("PUT", `orgs/${org.id}/members`, { bot, ...patch }));
+  const select = (sel) => ((o.sel = o.sel && sel && o.sel.kind === sel.kind && o.sel.id === sel.id ? null : sel), renderOrg());
 
-  // ----- which organization -----
-  const newName = h("input", { placeholder: "Name, e.g. your company", maxlength: 50, "aria-label": "Name of the new organization" });
-  const newMission = h("input", { placeholder: "What it is for, in a sentence (optional)", maxlength: 300, "aria-label": "Mission" });
-  const newStructure = h("select", { "aria-label": "Structure" }, structures.map((x) => h("option", { value: x.id, selected: x.id === "functional" }, `${x.name}: ${x.summary}`)));
-  const newForm = h("form", { class: "card orgform", hidden: true, onsubmit: (e) => (e.preventDefault(), save(() => api("POST", "orgs", { name: newName.value, mission: newMission.value, structure: newStructure.value }))) }, h("b", {}, "New organization"), h("p", { class: "note small" }, "It starts empty. Add agents to it from below or from the marketplace; an agent can be in more than one organization."), newName, newMission, h("label", { class: "field" }, "How it is run", newStructure), h("div", { class: "row" }, h("button", { class: "primary" }, "Create organization"), h("button", { type: "button", onclick: () => (newForm.hidden = true) }, "Cancel")));
-  const rename = h("input", { value: org.name, maxlength: 50, "aria-label": "Organization name" });
-  const mission = h("input", { value: org.mission, maxlength: 300, placeholder: "What the organization is for, in a sentence. Every agent is told it.", "aria-label": "Mission" });
-  const editForm = h(
-    "form",
-    { class: "card orgform", hidden: true, onsubmit: (e) => (e.preventDefault(), save(() => api("PATCH", `orgs/${org.id}`, { name: rename.value, mission: mission.value }))) },
-    h("b", {}, "Name and mission"),
-    rename,
-    mission,
-    h(
-      "div",
-      { class: "row" },
-      h("button", { class: "primary" }, "Save"),
-      h("button", { type: "button", onclick: () => (editForm.hidden = true) }, "Cancel"),
-      state.orgs.orgs.length > 1 ? h("button", { type: "button", class: "plain danger", onclick: () => confirm(`Delete the organization “${org.name}”? Its chart is deleted. The agents themselves are kept.`) && save(() => api("DELETE", `orgs/${org.id}`)) }, "Delete organization") : null,
-    ),
-  );
-  const pick = h("select", { "aria-label": "Organization", class: "orgpick" }, state.orgs.orgs.map((o) => h("option", { value: o.id, selected: o.id === org.id }, o.name)));
-  pick.addEventListener("change", () => save(() => api("PATCH", `orgs/${pick.value}`, { active: true })));
-
-  // ----- how the organization is run: its structure and the philosophy behind it -----
-  const ownPhilosophy = h("textarea", { rows: 4, maxlength: 1200, placeholder: "How your organization works, in your own words. For example: decisions are made by whoever is closest to the customer; anything over $500 comes to me first." }, org.philosophy ?? "");
-  const ownRule = h("select", {}, Object.entries(assignRules).map(([id, words]) => h("option", { value: id, selected: id === (org.assign ?? "reports") }, words)));
-  // What setting a structure up will do, said before it is done.
-  const setUpWords = (x) => {
-    const missing = (industry.seats?.[x.id] ?? []).filter((id) => !byId.has(id)).length;
-    const layers = { hierarchical: "a general manager, then department heads, then their specialists", functional: "department heads reporting to you, with their specialists beneath them", matrix: "departments under a general manager, with a project lead on dotted lines", team: "teams that each own an outcome, a lead with its mix of specialists", flat: "one small level: a specialist from each department, all reporting to you, and no managers" }[x.id];
-    const size = industry.sizes?.[x.id];
-    const adding = (industry.seats?.[x.id] ?? []).filter((id) => !members.some((m) => m.bot === id)).length;
-    return `Copy the “${x.name}” example onto ${org.name}?\n\nThe example is ${layers}. ${adding ? `${adding} position${adding === 1 ? "" : "s"} from it that you don't have yet ${adding === 1 ? "is" : "are"} added, with the example's reporting lines.` : "You already have every position in it."}${missing ? ` ${missing} of them come${missing === 1 ? "s" : ""} from the marketplace.` : ""} Nothing on your chart is removed, moved or redrawn. To begin from a clean chart, use Start over first.`;
-  };
-  const structureCard = (x) => {
-    const current = x.id === org.structure;
-    return h(
-      "div",
-      { class: `scard ${current ? "on" : ""}` },
-      h("div", { class: "sdiagram", role: "img", "aria-label": `A sample ${x.name} chart: ${x.shape}` }, structureDiagram(x.id)),
-      h("div", { class: "shead" }, h("b", {}, x.name), h("span", { class: "row" }, industry.recommended?.includes(x.id) ? h("span", { class: "chip rec", title: industry.why }, industry.recommended[0] === x.id ? "Recommended" : "Also suits you") : null, current ? h("span", { class: "chip on" }, "In use") : null)),
-      h("p", { class: "ssum" }, x.summary),
-      ((size) => h("div", { class: "ssize" }, size?.agents ? [h("span", {}, h("b", {}, String(size.agents)), " agents"), h("span", {}, h("b", {}, String(size.departments)), x.id === "team" ? " teams" : " departments"), h("span", {}, h("b", {}, String(size.levels)), size.levels === 1 ? " level" : " levels")] : h("span", {}, "You decide who is on it")))(industry.sizes?.[x.id]),
-      h("div", { class: "ssec" }, h("div", { class: "label" }, "Philosophy"), x.id === "custom" ? h("label", { class: "field" }, "Write yours. Every agent is told this.", ownPhilosophy) : h("p", {}, x.philosophy)),
-      h("div", { class: "ssec" }, h("div", { class: "label" }, "Recommended for"), h("div", { class: "sbiz" }, (x.businesses ?? []).map((b) => h("span", { class: "chip" }, b))), h("p", {}, x.bestFor)),
-      h("div", { class: "ssec" }, h("div", { class: "label" }, "Watch out for"), h("p", {}, x.watchOut)),
-      h("div", { class: "ssec" }, h("div", { class: "label" }, "How work moves"), x.id === "custom" ? ownRule : h("p", {}, assignRules[x.assign] ?? ""), x.id === "custom" || x.assign === "anyone" ? null : h("p", { class: "gap" }, requestRules[x.request] ?? "")),
-      h("div", { class: "ssec" }, h("div", { class: "label" }, "When two leads disagree"), h("p", {}, x.tieBreak)),
-      h(
-        "div",
-        { class: "sactions" },
-        x.id === "custom"
-          ? h("button", { class: "primary", onclick: () => save(() => api("PATCH", `orgs/${org.id}`, { structure: "custom", philosophy: ownPhilosophy.value, assign: ownRule.value })) }, current ? "Save" : "Use my own structure")
-          : [
-              h("button", { class: "primary", onclick: () => confirm(setUpWords(x)) && ((ui.orgStructures = false), (ui.orgOpen = ""), (ui.orgView = "teams"), (ui.orgSel = null), save(async () => (await api("POST", `orgs/${org.id}/build`, { structure: x.id }), await loadCrew()))) }, current ? "Set up the chart this way" : "Set up this structure"),
-            ],
-      ),
-    );
-  };
-  // A new organization that still has only the standard agents opens on this choice.
-  ui.orgStructures ??= org.structure === "flat" && members.length > 0 && members.every((m) => byId.get(m.bot).source === "starter");
-  const industryPick = h("select", { "aria-label": "Your kind of business", onchange: (e) => save(() => api("PATCH", `orgs/${org.id}`, { industry: e.target.value })) }, industries.map((i) => h("option", { value: i.id, selected: i.id === industry.id }, i.name)));
-  const structurePanel = h(
-    "section",
-    { class: "card structures", hidden: !ui.orgStructures },
-    h("div", { class: "row" }, h("h2", { class: "grow" }, "How should this organization be run?"), h("button", { class: "plain", "aria-label": "Close", onclick: () => ((ui.orgStructures = false), again()) }, "✕")),
-    h("p", { class: "note" }, "Two choices. Your kind of business decides which departments and roles the chart is staffed with. The structure is the management philosophy: what every agent is told about how to work, who may hand work to whom, and who settles a disagreement. The chart stays yours to edit."),
-    h("div", { class: "sbusiness" }, h("label", { class: "field" }, "1. Your kind of business", industryPick), h("div", { class: "grow" }, h("p", { class: "note" }, industry.examples), h("p", { class: "note" }, h("b", {}, "Our recommendation: "), `${(industry.recommended ?? []).map((id) => structures.find((x) => x.id === id)?.name).filter(Boolean).join(", or ")}. ${industry.why}`))),
-    h("div", { class: "label", style: "margin-top: 18px" }, "2. The structure"),
-    h("div", { class: "sgrid" }, [...structures].sort((a, b) => ((i) => (i < 0 ? 9 : i))((industry.recommended ?? []).indexOf(a.id)) - ((i) => (i < 0 ? 9 : i))((industry.recommended ?? []).indexOf(b.id))).map(structureCard)),
-  );
-
-  // Everything on this page is arranged by dragging. What is being dragged is one of:
-  // a member already on the chart, an agent on the team that is not on it, an agent
-  // or a ready-made team from the marketplace. Dropping it on an agent makes it report
-  // there (a team brings its own reports along); dropping it on You makes it report to you.
-  const dropOn = (managerId) => {
-    const d = ui.orgDrag;
-    ui.orgDrag = null;
-    if (!d) return;
-    if (d.kind === "member") {
-      const m = members.find((x) => x.bot === d.id);
-      if (!m || d.id === managerId || (m.manager ?? null) === (managerId ?? null)) return;
-      return save(() => api("PUT", `orgs/${org.id}/members`, { bot: d.id, manager: managerId }));
+  // ----- drag and drop: a position onto a position (reports to it; with Option held, a dotted line), onto a group (joins it), onto You -----
+  const drag = (payload) => ({
+    draggable: "true",
+    ondragstart: (e) => ((o.drag = payload), e.dataTransfer.setData("text/plain", payload.id ?? ""), (e.dataTransfer.effectAllowed = "move"), e.currentTarget.classList.add("dragging"), col.classList.add("dragging-on")),
+    ondragend: (e) => ((o.drag = null), e.currentTarget.classList.remove("dragging"), col.classList.remove("dragging-on")),
+  });
+  const addDropped = async (d) => {
+    // Something from the add bar becomes a position first, reporting to you.
+    if (d.kind === "agent") return d.id;
+    if (d.kind === "market") {
+      await api("POST", `marketplace/${d.id}/add`);
+      await loadCrew();
+      state.market = null;
+      return d.id;
     }
-    if (d.kind === "agent") return save(() => api("PUT", `orgs/${org.id}/members`, { bot: d.id, manager: managerId }));
-    if (d.kind === "market") return save(async () => (await api("POST", `marketplace/${d.id}/add`), await loadCrew(), await api("PUT", `orgs/${org.id}/members`, { bot: d.id, manager: managerId }), (state.market = null)));
     if (d.kind === "team") {
-      return save(async () => {
-        await api("POST", `marketplace/teams/${d.id}/add`);
-        await loadCrew();
-        // The team's lead takes the place it was dropped on; its own reports came with it.
-        if (d.lead && d.lead !== managerId) await api("PUT", `orgs/${org.id}/members`, { bot: d.lead, manager: managerId }).catch(() => {});
-        state.market = null;
+      await api("POST", `marketplace/teams/${d.id}/add`);
+      await loadCrew();
+      state.market = null;
+      return d.lead;
+    }
+    return d.id;
+  };
+  const dropOn = (target, e) => {
+    const d = o.drag;
+    o.drag = null;
+    col.classList.remove("dragging-on");
+    if (!d) return;
+    const dotted = e?.altKey;
+    if (target.kind === "position") {
+      if (d.kind === "position" && d.id === target.id) return;
+      if (d.kind === "position" && below(d.id).some((m) => m.bot === target.id)) return ((o.note = `${nameOf(d.id)} is above ${nameOf(target.id)}, so it cannot report to it.`), renderOrg());
+      return orgChange(dotted ? `${nameOf(d.id)} also works with ${nameOf(target.id)}` : `${d.kind === "position" ? nameOf(d.id) : "A new position"} now reports to ${nameOf(target.id)}, in ${memberOf_(target.id)?.department ?? "its group"}`, async () => {
+        const bot = await addDropped(d);
+        // Dropped on someone: it reports to them and joins their group (a dotted line changes neither).
+        await api("PUT", `orgs/${org.id}/members`, dotted ? { bot, also: target.id } : { bot, manager: target.id, department: memberOf_(target.id)?.department });
       });
     }
+    if (target.kind === "you") return orgChange(`${d.kind === "position" ? nameOf(d.id) : "A new position"} reports to you`, async () => api("PUT", `orgs/${org.id}/members`, { bot: await addDropped(d), manager: null }));
+    if (target.kind === "group") return orgChange(`${d.kind === "position" ? nameOf(d.id) : "A new position"} joins ${target.name}`, async () => api("PUT", `orgs/${org.id}/members`, { bot: await addDropped(d), department: target.name }));
   };
-  const dropZone = (managerId) => ({
+  const drop = (target) => ({
     ondragover: (e) => {
-      if (!ui.orgDrag || (ui.orgDrag.kind === "member" && ui.orgDrag.id === managerId)) return;
+      if (!o.drag) return;
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = "move";
-      e.currentTarget.classList.add("drop");
+      e.currentTarget.classList.add("dropover");
     },
-    ondragleave: (e) => e.currentTarget.classList.remove("drop"),
-    ondrop: (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      e.currentTarget.classList.remove("drop");
-      dropOn(managerId);
-    },
+    ondragleave: (e) => e.currentTarget.classList.remove("dropover"),
+    ondrop: (e) => (e.preventDefault(), e.stopPropagation(), e.currentTarget.classList.remove("dropover"), dropOn(target, e)),
   });
-  /** Makes something draggable, carrying what it is. The page shows where it may be dropped while it is in the air. */
-  const draggable = (payload) => ({
-    draggable: "true",
-    ondragstart: (e) => {
-      ui.orgDrag = payload;
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", payload.id);
-      e.currentTarget.classList.add("dragging");
-      col.classList.add("dragging-on");
-      col.classList.toggle("dragging-member", payload.kind === "member");
-    },
-    ondragend: (e) => {
-      ui.orgDrag = null;
-      e.currentTarget.classList.remove("dragging");
-      col.classList.remove("dragging-on", "dragging-member");
-    },
-  });
-  // Dropping a member here takes it off the chart.
-  const removeZone = () =>
+
+  // ----- a position, as a card -----
+  const card = (m, { showGroup = false, depth = 0 } = {}) => {
+    const bot = byId.get(m.bot);
+    const q = live.get(m.bot);
+    const g = groupOfMember(m);
+    const leads = g?.lead === m.bot;
+    const outsideBoss = m.manager && memberOf_(m.manager)?.department !== m.department;
+    return h(
+      "div",
+      { class: `poscard ${o.sel?.kind === "position" && o.sel.id === m.bot ? "on" : ""} ${leads ? "lead" : ""}`, style: `${botStyle(bot)}; margin-left: ${depth * 22}px`, role: "button", tabindex: "0", title: "Click to edit. Drag onto someone to report to them; hold Option for a dotted line.", onclick: () => select({ kind: "position", id: m.bot }), onkeydown: (e) => e.key === "Enter" && select({ kind: "position", id: m.bot }), ...drag({ kind: "position", id: m.bot }), ...drop({ kind: "position", id: m.bot }) },
+      keycap(bot.character, 30, mood(q), bot.type),
+      h(
+        "span",
+        { class: "posmain" },
+        h("b", {}, m.title, leads ? h("span", { class: "leadtag" }, "Lead") : null),
+        h("span", { class: "possub" }, [bot.name !== m.title ? bot.name : null, showGroup && m.department ? m.department : null, outsideBoss || (showGroup && m.manager) ? `reports to ${nameOf(m.manager)}` : !m.manager && depth === 0 ? "reports to you" : null, m.also ? `also works with ${nameOf(m.also)}` : null].filter(Boolean).join(" · ")),
+      ),
+      q ? h("span", { class: "pill loud" }, q.status === "waiting" ? "Needs you" : "Working") : bot.month?.state === "stopped" ? h("span", { class: "pill loud" }, "At budget") : null,
+    );
+  };
+
+  // ----- the groups view: each group a frame, its lead on top and the lines inside it -----
+  const groupTree = (g) => {
+    const inIt = members.filter((m) => m.department === g.name);
+    const roots = inIt.filter((m) => !m.manager || !inIt.some((x) => x.bot === m.manager)).sort((a, b) => Number(b.bot === g.lead) - Number(a.bot === g.lead) || a.title.localeCompare(b.title));
+    const out = [];
+    const walk = (m, depth) => {
+      out.push(card(m, { depth }));
+      for (const r of inIt.filter((x) => x.manager === m.bot).sort((a, b) => a.title.localeCompare(b.title))) walk(r, depth + 1);
+    };
+    roots.forEach((m) => walk(m, 0));
+    return out;
+  };
+  const frame = (g) => {
+    const inIt = members.filter((m) => m.department === g.name);
+    const spend = inIt.reduce((n, m) => n + (byId.get(m.bot)?.month?.spent ?? 0), 0);
+    return h(
+      "section",
+      { class: `groupframe ${o.sel?.kind === "group" && o.sel.id === g.id ? "on" : ""}`, ...drop({ kind: "group", name: g.name }) },
+      h(
+        "header",
+        { role: "button", tabindex: "0", title: "Click to edit the group", onclick: () => select({ kind: "group", id: g.id }), onkeydown: (e) => e.key === "Enter" && select({ kind: "group", id: g.id }) },
+        h("div", { class: "grow" }, h("h2", {}, g.name), h("div", { class: "note small" }, [`${inIt.length} position${inIt.length === 1 ? "" : "s"}`, g.lead ? `led by ${nameOf(g.lead)}` : "no lead yet", g.budget != null ? `${money(spend)} of ${money(g.budget)} this month` : null].filter(Boolean).join(" · ")), g.goal ? h("div", { class: "groupgoal" }, g.goal) : null),
+        inIt.length ? h("button", { class: "plain small", title: "Its lead shares the work out and brings back one result", onclick: (e) => (e.stopPropagation(), (state.selectedTeam = g.lead ?? inIt[0].bot), go("home")) }, "Give a task") : null,
+      ),
+      h("div", { class: "groupbody" }, inIt.length ? groupTree(g) : h("p", { class: "note small dropnote" }, "Drag positions here.")),
+    );
+  };
+  const youBar = () => {
+    const direct = members.filter((m) => !m.manager).length;
+    return h(
+      "section",
+      { class: "youbar", ...drop({ kind: "you" }) },
+      h("span", { class: "youmark", "aria-hidden": "true" }, "You"),
+      h("div", { class: "grow" }, h("b", {}, "You, the owner"), h("div", { class: "note small" }, `${direct} position${direct === 1 ? "" : "s"} report${direct === 1 ? "s" : ""} to you directly. Drop a position here to have it report to you.`)),
+    );
+  };
+  const groupsView = () => h("div", { class: "orgboard" }, youBar(), h("div", { class: "frames" }, groups.map(frame), h("button", { class: "groupframe newgroup", onclick: () => newGroup() }, h("span", { class: "plus", "aria-hidden": "true" }, "+"), h("b", {}, "New group"), h("span", { class: "note small" }, "A team or department, with a lead"))));
+
+  // ----- the chart view: the whole tree, from you -----
+  const chartView = () => {
+    const branch = (m) => h("li", {}, card(m, { showGroup: true }), ((kids) => (kids.length ? h("ul", {}, kids.map(branch)) : null))(members.filter((x) => x.manager === m.bot).sort((a, b) => a.title.localeCompare(b.title))));
+    const tops = members.filter((m) => !m.manager).sort((a, b) => a.department.localeCompare(b.department) || a.title.localeCompare(b.title));
+    return h("div", { class: "treewrap" }, h("ul", { class: "tree" }, h("li", {}, h("div", { class: "poscard you", ...drop({ kind: "you" }) }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("span", { class: "posmain" }, h("b", {}, "You"), h("span", { class: "possub" }, "the owner"))), tops.length ? h("ul", {}, tops.map(branch)) : null)));
+  };
+
+  // ----- the list view: one row per position, every field editable in place -----
+  const listView = () =>
     h(
       "div",
-      {
-        class: "removezone",
-        ondragover: (e) => {
-          if (ui.orgDrag?.kind !== "member") return;
-          e.preventDefault();
-          e.currentTarget.classList.add("drop");
-        },
-        ondragleave: (e) => e.currentTarget.classList.remove("drop"),
-        ondrop: (e) => {
-          e.preventDefault();
-          e.currentTarget.classList.remove("drop");
-          const d = ui.orgDrag;
-          ui.orgDrag = null;
-          const m = d?.kind === "member" ? members.find((x) => x.bot === d.id) : null;
-          if (m) minus(m);
-        },
-      },
-      "− Drop here to remove from the chart",
+      { class: "poslist" },
+      h("div", { class: "posrow head" }, h("span", {}, "Position"), h("span", {}, "Group"), h("span", {}, "Reports to"), h("span", {}, "Also works with"), h("span", {}, "Budget")),
+      [...members]
+        .sort((a, b) => a.department.localeCompare(b.department) || a.title.localeCompare(b.title))
+        .map((m) => {
+          const bot = byId.get(m.bot);
+          const above = new Set([m.bot, ...below(m.bot).map((x) => x.bot)]);
+          return h(
+            "div",
+            { class: "posrow" },
+            h("button", { class: "plain poslink", onclick: () => select({ kind: "position", id: m.bot }) }, keycap(bot.character, 22, "", bot.type), h("span", {}, h("b", {}, m.title), bot.name !== m.title ? h("span", { class: "note small" }, ` · ${bot.name}`) : null)),
+            h("select", { "aria-label": `${m.title}'s group`, onchange: (e) => set(m.bot, { department: e.target.value }, `${m.title} joins ${e.target.value}`) }, groups.map((g) => h("option", { value: g.name, selected: g.name === m.department }, g.name))),
+            h("select", { "aria-label": `Who ${m.title} reports to`, onchange: (e) => set(m.bot, { manager: e.target.value || null }, `${m.title} reports to ${nameOf(e.target.value || null)}`) }, h("option", { value: "", selected: !m.manager }, "You"), members.filter((x) => !above.has(x.bot)).map((x) => h("option", { value: x.bot, selected: x.bot === m.manager }, x.title))),
+            h("select", { "aria-label": `Who ${m.title} also works with`, onchange: (e) => set(m.bot, { also: e.target.value || null }, e.target.value ? `${m.title} also works with ${nameOf(e.target.value)}` : `${m.title} has no dotted line`) }, h("option", { value: "", selected: !m.also }, "Nobody"), members.filter((x) => x.bot !== m.bot && x.bot !== m.manager).map((x) => h("option", { value: x.bot, selected: x.bot === m.also }, x.title))),
+            h("span", { class: "mono small" }, bot.month?.limit != null ? `${money(bot.month.spent ?? 0)} / ${money(bot.month.limit)}` : "no limit"),
+          );
+        }),
     );
 
-  // ----- one member, on the chart or in a department -----
-  const pickMember = (id) => ((ui.orgSel = ui.orgSel === id ? null : id), (ui.orgPanel = null), again());
-  const node = (m) => {
+  // ----- the side panel: what is selected, every field editable -----
+  const positionPanel = (m) => {
     const bot = byId.get(m.bot);
-    const [status, loud] = statusOf(bot);
-    const reports = members.filter((x) => x.manager === m.bot).length;
-    return h(
-      "button",
-      {
-        class: `onode ${ui.orgSel === m.bot ? "on" : ""} ${bot.month?.state === "stopped" ? "stopped" : ""}`,
-        style: botStyle(bot),
-        onclick: () => pickMember(m.bot),
-        title: `${bot.name}: ${m.title}. Drag onto another agent to change who it reports to.`,
-        ...draggable({ kind: "member", id: m.bot }),
-        ...dropZone(m.bot),
-      },
-      keycap(bot.character, 44, mood(live.get(bot.id)), bot.type),
-      h("b", {}, bot.name),
-      h("span", { class: "otitle" }, m.title.toLowerCase() === bot.name.toLowerCase() ? m.department : m.title),
-      h("span", { class: `mono small ${loud ? "" : "muted"}` }, reports ? `${status} · leads ${reports}` : status),
-      m.also && byId.get(m.also) ? h("span", { class: "odotted", title: "Project lead (dotted line)" }, `⋯ ${byId.get(m.also).name}`) : null,
-    );
-  };
-  // Everyone beneath a member on the chart.
-  const under = (botId) => {
-    const all = new Set([botId]);
-    for (let grew = true; grew; ) {
-      grew = false;
-      for (const x of members) if (x.manager && all.has(x.manager) && !all.has(x.bot)) (all.add(x.bot), (grew = true));
-    }
-    all.delete(botId);
-    return all;
-  };
-  const openPanel = (panel) => ((ui.orgPanel = panel), (ui.orgSel = null), panel ? (ui.orgOpen = "") : null, again());
-  // Minus takes an agent off the chart (asking first what to do with a lead's team); plus adds one beneath it.
-  const minus = (m) => {
-    const bot = byId.get(m.bot);
-    if (under(m.bot).size) return openPanel({ kind: "remove", bot: m.bot });
-    if (confirm(`Take the ${bot.name} off the chart of ${org.name}? It stays on your team and can be added back.`)) save(() => api("DELETE", `orgs/${org.id}/members/${m.bot}`));
-  };
-  const controls = (m) =>
-    h(
-      "span",
-      { class: "nodectl" },
-      h("button", { class: "ctl minus", title: `Remove the ${byId.get(m.bot).name} from the chart`, "aria-label": `Remove ${byId.get(m.bot).name}`, onclick: (e) => (e.stopPropagation(), minus(m)) }, "−"),
-      h("button", { class: "ctl plus", title: `Add an agent reporting to the ${byId.get(m.bot).name}`, "aria-label": `Add an agent under ${byId.get(m.bot).name}`, onclick: (e) => (e.stopPropagation(), openPanel({ kind: "add", under: m.bot })) }, "+"),
-    );
-  const nodeWrap = (m) => h("div", { class: "onodewrap" }, node(m), controls(m));
-  const branch = (managerId) => {
-    const kids = members.filter((m) => m.manager === managerId).sort((a, b) => a.department.localeCompare(b.department) || a.title.localeCompare(b.title));
-    return kids.length ? h("ul", {}, kids.map((m) => h("li", {}, nodeWrap(m), branch(m.bot)))) : null;
-  };
-
-  // ----- the panel a plus or minus opens -----
-  const panel = () => {
-    const p = ui.orgPanel;
-    if (!p) return null;
-    const close = h("button", { class: "plain", "aria-label": "Close", onclick: () => openPanel(null) }, "✕");
-    if (p.kind === "orgs") {
-      const all = state.orgs.orgs;
-      const nameOf = (id) => structures.find((x) => x.id === id)?.name ?? "";
-      return h(
-        "section",
-        { class: "card memberbox orgpanel" },
-        h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, `Your organizations · ${all.length}`), h("div", { class: "note" }, "Open one to work on it, or delete one you no longer need. Deleting removes its chart and its memory; the agents themselves stay on your team, and chats and tasks are kept.")), close),
-        h(
-          "div",
-          { class: "pickrows" },
-          all.map((o) =>
-            h(
-              "div",
-              { class: "pickrow" },
-              h("span", { class: "flowmain" }, h("b", {}, o.name, o.id === org.id ? h("span", { class: "chip on", style: "margin-left: 8px" }, "Open now") : null), h("span", { class: "flowsub" }, `${o.members.length} agent${o.members.length === 1 ? "" : "s"} · ${new Set(o.members.map((m) => m.department)).size} department${new Set(o.members.map((m) => m.department)).size === 1 ? "" : "s"} · ${nameOf(o.structure)}${o.mission ? ` · ${o.mission}` : ""}`)),
-              o.id === org.id ? null : h("button", { onclick: () => ((ui.orgPanel = null), (ui.orgSel = null), save(() => api("PATCH", `orgs/${o.id}`, { active: true }))) }, "Open"),
-              all.length > 1
-                ? h("button", { class: "danger", onclick: () => confirm(`Delete the organization “${o.name}”?\n\nIts chart (${o.members.length} agent${o.members.length === 1 ? "" : "s"}) and its memory are deleted and cannot be brought back. The agents stay on your team.`) && ((ui.orgSel = null), save(() => api("DELETE", `orgs/${o.id}`))) }, "Delete")
-                : h("span", { class: "note small", title: "Create another organization first" }, "Your only organization"),
-            ),
-          ),
-        ),
-        all.length === 1 ? h("p", { class: "note small" }, "An organization can be deleted once you have more than one. To empty this one instead, use Start over.") : null,
-      );
-    }
-    if (p.kind === "reset") {
-      const size = industry.sizes?.[org.structure];
-      const recipe = size?.agents ? `${size.agents} agents in ${size.departments} ${org.structure === "team" ? "teams" : "departments"}` : "";
-      const done = (mode) => ((ui.orgPanel = null), (ui.orgSel = null), save(async () => (await api("POST", `orgs/${org.id}/reset`, { mode }), await loadCrew())));
-      return h(
-        "section",
-        { class: "card memberbox orgpanel" },
-        h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, `Start ${org.name} over?`), h("div", { class: "note" }, `The chart has ${members.length} agent${members.length === 1 ? "" : "s"} now. Starting over changes the chart only: every agent stays on your team, and your chats, tasks and memory are kept.`)), close),
-        h(
-          "div",
-          { class: "resetchoices" },
-          recipe
-            ? h("div", { class: "resetchoice" }, h("b", {}, `Reset to the standard ${structure.name.toLowerCase()} chart`), h("p", { class: "note" }, `Exactly what ${structure.name.toLowerCase()} calls for in ${industry.name.toLowerCase()}: ${recipe}. Agents you added that are not part of it leave the chart, and every reporting line goes back to the standard.`), h("button", { class: "primary", onclick: () => done("recipe") }, `Reset to ${size.agents} agents`))
-            : null,
-          h("div", { class: "resetchoice" }, h("b", {}, "Clear the chart"), h("p", { class: "note" }, "An empty chart with nobody on it. Build it yourself by dragging in agents and teams, or choose a structure afterwards."), h("button", { class: "danger", onclick: () => done("empty") }, "Clear to 0 agents")),
-        ),
-        h("div", {}, h("button", { class: "plain", onclick: () => openPanel(null) }, "Cancel")),
-      );
-    }
-    if (p.kind === "remove") {
-      const m = members.find((x) => x.bot === p.bot);
-      if (!m) return null;
-      const bot = byId.get(m.bot);
-      const below = under(m.bot);
-      const boss = m.manager ? byId.get(m.manager)?.name : "you";
-      return h(
-        "section",
-        { class: "card memberbox orgpanel", style: botStyle(bot) },
-        h("div", { class: "row" }, keycap(bot.character, 40, "", bot.type), h("div", { class: "grow" }, h("h2", {}, `Remove the ${bot.name}?`), h("div", { class: "note" }, `${below.size} agent${below.size === 1 ? " is" : "s are"} beneath it on the chart. Agents taken off the chart stay on your team and can be added back.`)), close),
-        h(
-          "div",
-          { class: "row" },
-          h("button", { class: "danger", onclick: () => ((ui.orgPanel = null), save(() => api("DELETE", `orgs/${org.id}/teams/${m.bot}`))) }, `− Remove the whole team (${below.size + 1} agents)`),
-          h("button", { onclick: () => ((ui.orgPanel = null), save(() => api("DELETE", `orgs/${org.id}/members/${m.bot}`))) }, `− Remove only the ${bot.name}: its reports move up to ${boss}`),
-          h("button", { class: "plain", onclick: () => openPanel(null) }, "Cancel"),
-        ),
-      );
-    }
-    const lead = p.under ? byId.get(p.under) : null;
-    if (p.under && !members.some((x) => x.bot === p.under)) return null;
-    const find = h("input", { type: "search", placeholder: "Search by role, e.g. bookkeeper or marketing", "aria-label": "Search agents", value: ui.orgAddSearch ?? "" });
-    const results = h("div", { class: "addlist" });
-    const place = (botId) => save(() => api("PUT", `orgs/${org.id}/members`, { bot: botId, manager: p.under ?? null }));
-    const draw = () => {
-      const needle = find.value.trim().toLowerCase();
-      const match = (text) => !needle || text.toLowerCase().includes(needle);
-      const mine = outside.filter((b) => match(`${b.name} ${b.group} ${b.instructions}`));
-      const market = (state.market ?? []).filter((b) => !b.added && !byId.has(b.id) && match(`${b.name} ${b.listing.category} ${b.listing.summary}`));
-      const rowFor = (b, sub, onclick) => h("button", { class: "addrow", style: botStyle(b), onclick }, keycap(b.character, 30, "", b.type), h("span", { class: "flowmain" }, h("b", {}, b.name), h("span", { class: "flowsub" }, sub)), h("span", { class: "pill loud" }, "+ Add"));
-      fill(
-        results,
-        mine.length ? h("div", { class: "label" }, "On your team, not on this chart") : null,
-        mine.map((b) => rowFor(b, `${b.group} · ${b.instructions.split(/(?<=[.!?])\s/)[0].slice(0, 90)}`, () => place(b.id))),
-        market.length ? h("div", { class: "label" }, "From the marketplace") : null,
-        market.slice(0, needle ? 30 : 12).map((b) => rowFor(b, `${b.listing.category} · ${b.listing.summary.slice(0, 90)}`, () => save(async () => (await api("POST", `marketplace/${b.id}/add`), await loadCrew(), await api("PUT", `orgs/${org.id}/members`, { bot: b.id, manager: p.under ?? null }), (state.market = null))))),
-        !mine.length && !market.length ? h("p", { class: "note" }, state.market ? "Nothing matches. Try other words, or create your own agent." : "Loading the marketplace…") : null,
-        !needle && market.length > 12 ? h("p", { class: "note small" }, `${market.length - 12} more in the marketplace: search to find them.`) : null,
-      );
+    const above = new Set([m.bot, ...below(m.bot).map((x) => x.bot)]);
+    const g = groupOfMember(m);
+    const canHand = [...below(m.bot), ...members.filter((x) => x.also === m.bot)];
+    const mine = new Set(canHand.map((x) => x.bot));
+    const canRequest = members.filter((x) => x.bot !== m.bot && !mine.has(x.bot) && x.department !== m.department && groups.find((gg) => gg.name === x.department)?.lead === x.bot);
+    const title = h("input", { value: m.title, maxlength: 50, "aria-label": "Title" });
+    const resp = h("textarea", { rows: 3, maxlength: 400, placeholder: "What this position is responsible for, in a sentence or two. The agent is told.", "aria-label": "Responsibilities" }, m.responsibilities ?? "");
+    const saveText = () => {
+      const patch = {};
+      if (title.value.trim() && title.value.trim() !== m.title) patch.title = title.value.trim();
+      if (resp.value.trim() !== (m.responsibilities ?? "")) patch.responsibilities = resp.value.trim();
+      if (Object.keys(patch).length) set(m.bot, patch, `Changed ${m.title}`);
     };
-    find.addEventListener("input", () => ((ui.orgAddSearch = find.value), draw()));
-    if (!state.market) loadMarket().then(draw).catch(() => {});
-    draw();
-    setTimeout(() => find.focus(), 0);
-    return h(
-      "section",
-      { class: "card memberbox orgpanel", style: lead ? botStyle(lead) : "" },
-      h("div", { class: "row" }, lead ? keycap(lead.character, 40, "", lead.type) : h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("div", { class: "grow" }, h("h2", {}, lead ? `Add an agent under the ${lead.name}` : "Add an agent reporting to you"), h("div", { class: "note" }, "Pick one. It joins the chart at this place, and you can drag it elsewhere afterwards.")), close),
-      find,
-      results,
-      h("div", { class: "row" }, h("button", { onclick: () => go("market") }, "Add a whole team from the marketplace"), h("button", { onclick: () => go("bot", "new") }, "Create your own agent")),
+    title.addEventListener("change", saveText);
+    resp.addEventListener("change", saveText);
+    const marketBots = (state.market ?? []).filter((b) => !byId.has(b.id));
+    const swap = h(
+      "select",
+      { "aria-label": "Put another agent in this position" },
+      h("option", { value: "" }, "Put another agent in this position…"),
+      outside.length ? h("optgroup", { label: "Your agents not on the chart" }, outside.map((b) => h("option", { value: `own:${b.id}` }, b.name))) : null,
+      marketBots.length ? h("optgroup", { label: "From the marketplace" }, marketBots.map((b) => h("option", { value: `market:${b.id}` }, `${b.name} · ${b.listing.category}`))) : null,
     );
+    swap.addEventListener("change", () => {
+      const [kind, id] = swap.value.split(":");
+      if (!id) return;
+      orgChange(`${byId.get(id)?.name ?? "Another agent"} took the ${m.title} position`, async () => {
+        if (kind === "market") {
+          await api("POST", `marketplace/${id}/add`);
+          await loadCrew();
+          state.market = null;
+          // Adding an agent puts it on the chart; it is taken off again so it can step into this position.
+          await api("DELETE", `orgs/${org.id}/members/${id}`).catch(() => {});
+        }
+        await api("POST", `orgs/${org.id}/members/${m.bot}/agent`, { to: id });
+        o.sel = { kind: "position", id };
+      });
+    });
+    return [
+      h("div", { class: "panelhead", style: botStyle(bot) }, keycap(bot.character, 44, mood(live.get(m.bot)), bot.type), h("div", { class: "grow" }, h("b", {}, m.title), h("div", { class: "note small" }, `Filled by ${bot.name}`)), h("button", { class: "plain small", "aria-label": "Close", onclick: () => select(null) }, "✕")),
+      h("label", {}, "Title", title),
+      h("label", {}, "Responsible for", resp),
+      h("label", {}, "Group", h("select", { onchange: (e) => set(m.bot, { department: e.target.value }, `${m.title} joins ${e.target.value}`) }, groups.map((gg) => h("option", { value: gg.name, selected: gg.name === m.department }, gg.name)))),
+      h("label", {}, "Reports to", h("select", { onchange: (e) => set(m.bot, { manager: e.target.value || null }, `${m.title} reports to ${nameOf(e.target.value || null)}`) }, h("option", { value: "", selected: !m.manager }, "You"), members.filter((x) => !above.has(x.bot)).map((x) => h("option", { value: x.bot, selected: x.bot === m.manager }, x.title)))),
+      h("label", {}, "Also works with (dotted line)", h("select", { onchange: (e) => set(m.bot, { also: e.target.value || null }, e.target.value ? `${m.title} also works with ${nameOf(e.target.value)}` : `${m.title} has no dotted line`) }, h("option", { value: "", selected: !m.also }, "Nobody"), members.filter((x) => x.bot !== m.bot && x.bot !== m.manager).map((x) => h("option", { value: x.bot, selected: x.bot === m.also }, x.title)))),
+      h("div", { class: "panelrules" }, h("div", { class: "label" }, "How work moves for this position"), h("p", {}, canHand.length ? `Can hand work to: ${canHand.map((x) => x.title).join(", ")}.` : "Hands no work out: nobody is below it."), canRequest.length ? h("p", {}, `Can request work from: ${canRequest.map((x) => x.title).join(", ")}.`) : null, h("p", {}, m.manager ? `Takes decisions up to: ${nameOf(m.manager)}.` : "Takes decisions up to: you."), g?.lead === m.bot ? h("p", {}, `Leads ${g.name}: work for the group comes here first.`) : null),
+      h("div", { class: "panelline" }, h("span", { class: "grow" }, "Monthly budget"), h("b", {}, bot.month?.limit != null ? `${money(bot.month.spent ?? 0)} of ${money(bot.month.limit)}` : "No limit"), h("button", { class: "plain small", onclick: () => go("bot", bot.id) }, "Change")),
+      h("div", { class: "panelline" }, h("span", { class: "grow" }, "Model"), h("b", {}, bot.model ? bot.model.split("/").pop() : "Your main model"), h("button", { class: "plain small", onclick: () => go("bot", bot.id) }, "Change")),
+      swap,
+      h("div", { class: "row wrap" }, h("button", { class: "primary small", onclick: () => ((state.selectedTeam = members.some((x) => x.manager === m.bot) ? m.bot : null), (state.selectedBot = m.bot), go("home")) }, "Give a task"), h("button", { class: "small", onclick: () => chatWith(bot) }, "Chat"), h("button", { class: "plain small danger", onclick: () => confirm(`Take ${m.title} off the chart?\n\nAnyone reporting to it moves up to ${nameOf(m.manager)}. ${bot.name} stays on your team and can be added back. You can undo this.`) && orgChange(`Took ${m.title} off the chart`, async () => (await api("DELETE", `orgs/${org.id}/members/${m.bot}`), (o.sel = null))) }, "Take off the chart")),
+    ];
   };
-
-  // ----- the selected member's role -----
-  const detail = () => {
-    const m = members.find((x) => x.bot === ui.orgSel);
-    if (!m) return null;
-    const bot = byId.get(m.bot);
-    const title = h("input", { value: m.title, maxlength: 50 });
-    const dept = h("input", { value: m.department, maxlength: 30, list: "org-depts" });
-    // Nobody below this bot can become its manager.
-    const below = new Set([m.bot]);
-    for (let grew = true; grew; ) {
-      grew = false;
-      for (const x of members) if (x.manager && below.has(x.manager) && !below.has(x.bot)) (below.add(x.bot), (grew = true));
-    }
-    const boss = h("select", {}, h("option", { value: "", selected: !m.manager }, "You"), members.filter((x) => !below.has(x.bot)).map((x) => h("option", { value: x.bot, selected: x.bot === m.manager }, `${byId.get(x.bot).name} · ${x.title}`)));
-    const reports = members.filter((x) => x.manager === m.bot || x.also === m.bot);
-    const showAlso = org.structure === "matrix" || org.structure === "custom" || Boolean(m.also);
-    const also = h("select", {}, h("option", { value: "", selected: !m.also }, "None"), members.filter((x) => x.bot !== m.bot).map((x) => h("option", { value: x.bot, selected: x.bot === m.also }, `${byId.get(x.bot).name} · ${x.title}`)));
-    const mates = m.manager ? members.filter((x) => x.manager === m.manager && x.bot !== m.bot) : [];
-    const rule = org.assignRule ?? "reports";
-    const handsTo = rule === "anyone" ? "any other agent" : [...reports, ...(rule === "team" ? mates : [])].map((r) => byId.get(r.bot).name).join(", ");
-    const month = bot.month ?? { spent: 0, limit: null, state: "ok" };
-    const boss0 = m.manager ? byId.get(m.manager) : null;
-    return h(
-      "section",
-      { class: "card memberbox personcard", style: botStyle(bot) },
-      h("div", { class: "row" }, keycap(bot.character, 56, mood(live.get(bot.id)), bot.type), h("div", { class: "grow" }, h("h2", {}, bot.name), h("div", { class: "note" }, bot.instructions.split(/(?<=[.!?])\s/)[0].replace(/^I am the organization's [^:.]*: /, "I ").replace(/^I am the organization's /, "The organization's ")), h("div", { class: "note small" }, boss0 ? `Works for the ${boss0.name}${reports.length ? ` · manages ${reports.length}` : ""}` : `Works directly for you${reports.length ? ` · manages ${reports.length}` : ""}`)), h("button", { class: "plain", onclick: () => pickMember(m.bot), "aria-label": "Close" }, "✕")),
+  const groupPanel = (g) => {
+    const inIt = members.filter((m) => m.department === g.name);
+    const name = h("input", { value: g.name, maxlength: 30, "aria-label": "Group name" });
+    const goal = h("textarea", { rows: 2, maxlength: 300, placeholder: "What this group is for, in a sentence. Its positions are told.", "aria-label": "Goal" }, g.goal ?? "");
+    const budget = h("input", { type: "number", min: "0", step: "5", value: g.budget ?? "", placeholder: "No limit", "aria-label": "Monthly budget in dollars" });
+    const patch = (body, label) => orgChange(label, () => api("PATCH", `orgs/${org.id}/groups/${g.id}`, body));
+    name.addEventListener("change", () => name.value.trim() && name.value.trim() !== g.name && patch({ name: name.value.trim() }, `Renamed ${g.name} to ${name.value.trim()}`));
+    goal.addEventListener("change", () => patch({ goal: goal.value.trim() }, `Changed ${g.name}'s goal`));
+    budget.addEventListener("change", () => patch({ budget: budget.value === "" ? null : Number(budget.value) }, `Changed ${g.name}'s budget`));
+    const others = groups.filter((x) => x.id !== g.id);
+    const moveTo = h("select", { "aria-label": "Move its positions to" }, others.map((x) => h("option", { value: x.id }, x.name)));
+    return [
+      h("div", { class: "panelhead" }, h("span", { class: "groupmark", "aria-hidden": "true" }, g.name.slice(0, 1).toUpperCase()), h("div", { class: "grow" }, h("b", {}, g.name), h("div", { class: "note small" }, `${inIt.length} position${inIt.length === 1 ? "" : "s"}`)), h("button", { class: "plain small", "aria-label": "Close", onclick: () => select(null) }, "✕")),
+      h("label", {}, "Name", name),
+      h("label", {}, "Lead", h("select", { onchange: (e) => patch({ lead: e.target.value || null }, e.target.value ? `${nameOf(e.target.value)} leads ${g.name}` : `${g.name} has no lead`) }, h("option", { value: "", selected: !g.lead }, "Nobody yet"), members.map((m) => h("option", { value: m.bot, selected: m.bot === g.lead }, `${m.title}${m.department !== g.name ? ` (moves here)` : ""}`)))),
+      h("p", { class: "note small" }, g.leadChosen ? "You chose this lead." : "Picked from the chart: the position at the top of the group. Choose one to keep it."),
+      h("label", {}, "Goal", goal),
+      h("label", {}, "Monthly budget, all its positions together ($)", budget),
+      h("div", { class: "row wrap" }, inIt.length ? h("button", { class: "primary small", onclick: () => ((state.selectedTeam = g.lead ?? inIt[0].bot), (state.selectedBot = g.lead ?? inIt[0].bot), go("home")) }, "Give this group a task") : null),
       h(
         "div",
-        { class: "row" },
-        h("button", { class: "primary big", onclick: () => chatWith(bot, col) }, "Chat with it"),
-        h("button", { class: "big", onclick: () => ((state.selectedBot = bot.id), remember("talqava.bot", bot.id), go("home")) }, "Give it a task"),
-        h("button", { class: "plain danger", onclick: () => ((ui.orgSel = null), minus(m)) }, "Remove from my team"),
+        { class: "panelline danger-zone" },
+        inIt.length && others.length ? [h("span", { class: "grow note small" }, "Remove the group, moving its positions to"), moveTo] : h("span", { class: "grow note small" }, inIt.length ? "A group with positions can be removed once there is another group to move them to." : "Remove this empty group."),
+        h("button", { class: "plain small danger", disabled: inIt.length > 0 && !others.length, onclick: () => confirm(`Remove the group ${g.name}?${inIt.length ? ` Its ${inIt.length} position${inIt.length === 1 ? "" : "s"} move to ${others.find((x) => x.id === moveTo.value)?.name}.` : ""} You can undo this.`) && orgChange(`Removed the group ${g.name}`, async () => (await api("DELETE", `orgs/${org.id}/groups/${g.id}${inIt.length ? `?moveTo=${encodeURIComponent(moveTo.value)}` : ""}`), (o.sel = null))) }, "Remove"),
       ),
-      h(
-        "details",
-        { class: "moreabout", open: ui.orgRoleOpen ? "" : null, ontoggle: (e) => (ui.orgRoleOpen = e.target.open) },
-        h("summary", {}, h("b", {}, "Change its job, or who it works for")),
-        h(
-          "div",
-          { class: "body" },
-      h(
-        "form",
-        { class: "rolegrid", onsubmit: (e) => (e.preventDefault(), save(() => api("PUT", `orgs/${org.id}/members`, { bot: m.bot, title: title.value, department: dept.value, manager: boss.value || null, ...(showAlso ? { also: also.value || null } : {}) }))) },
-        h("label", { class: "field" }, "Job title", title),
-        h("label", { class: "field" }, "Team or department", dept),
-        h("label", { class: "field" }, "Works for", boss),
-        showAlso ? h("label", { class: "field", title: "A second lead, such as a project lead, who may also give this agent tasks" }, "Project lead (dotted line)", also) : null,
-        h("button", { class: "primary" }, "Save"),
-      ),
-      h("p", { class: "note small" }, `${handsTo ? `The ${bot.name} can hand tasks to ${handsTo}, and gets their reports back.` : `Nobody takes tasks from the ${bot.name}, so it does its work itself. Drag another agent onto it to give it a report.`} It can ask any colleague a question, and shares the organization's memory.`),
-      governanceBox(bot),
-      month.limit != null || month.spent >= 0.001 ? h("div", { class: "mono small muted" }, month.limit != null ? `${money(month.spent)} of ${money(month.limit)} this month` : `${money(month.spent)} this month · no limit`) : null,
-      bar(month, colorOf(bot.character, bot.type)),
-          h("div", {}, h("button", { onclick: () => go("bot", bot.id) }, month.state === "stopped" ? "Raise its budget" : "Edit everything about this agent")),
-        ),
-      ),
-    );
+    ];
+  };
+  const panel = () => {
+    if (o.sel?.kind === "position") {
+      const m = memberOf_(o.sel.id);
+      return m ? h("aside", { class: "orgpanel2" }, positionPanel(m)) : null;
+    }
+    if (o.sel?.kind === "group") {
+      const g = groups.find((x) => x.id === o.sel.id);
+      return g ? h("aside", { class: "orgpanel2" }, groupPanel(g)) : null;
+    }
+    return null;
   };
 
-  function depts_() {
-    return [...new Set(members.map((m) => m.department))].sort();
-  }
-  const limit = h("input", { type: "number", min: 0, step: 1, value: total.limit ?? "", placeholder: "No limit", "aria-label": "Monthly budget for all agents, in dollars" });
-  const stat = (label, value, loud) => h("div", { class: "stat" }, h("span", { class: "label" }, label), h("b", { class: loud ? "loud" : "" }, value));
-  const view = ui.orgView ?? "teams";
-  const chartView = view === "chart";
-  const tab = (id, label) => h("button", { role: "tab", class: view === id ? "on" : "", "aria-selected": String(view === id), onclick: () => ((ui.orgView = id), again()) }, label);
-  // A team is a lead and the agents that report to it.
-  const leads = members.filter((m) => members.some((x) => x.manager === m.bot));
-  // The tray: what can be dragged onto the chart. Ready-made teams, the person's agents that are not on it, and the marketplace.
-  const trayFind = h("input", { type: "search", placeholder: "Find an agent or team to drag in, e.g. bookkeeper", "aria-label": "Find an agent or team", value: ui.traySearch ?? "" });
-  const trayItems = h("div", { class: "trayitems" });
-  const drawTray = () => {
-    const needle = trayFind.value.trim().toLowerCase();
-    const match = (text) => !needle || text.toLowerCase().includes(needle);
-    const addNow = (payload) => ((ui.orgDrag = payload), dropOn(null));
-    const chip = (bot, payload, sub) => h("div", { class: "traychip", style: botStyle(bot), role: "button", tabindex: "0", title: `Click to add it reporting to you, or drag it onto an agent or a team. ${sub}`, onclick: () => addNow(payload), ...draggable(payload) }, keycap(bot.character, 26, "", bot.type), h("span", { class: "flowmain" }, h("b", {}, bot.name), h("span", { class: "flowsub" }, sub)));
-    const mine = outside.filter((b) => match(`${b.name} ${b.group}`));
+  // ----- the add bar: blank positions, the person's agents, the marketplace, ready-made teams, new groups -----
+  const addFind = h("input", { type: "search", placeholder: "Find a role or a team", value: o.find ?? "", "aria-label": "Find a role or a team" });
+  const addList = h("div", { class: "addlist" });
+  const drawAdd = () => {
+    const needle = addFind.value.trim().toLowerCase();
+    o.find = addFind.value;
+    const match = (t) => !needle || t.toLowerCase().includes(needle);
+    const item = (bot, payload, sub) => h("div", { class: "additem", style: botStyle(bot), ...drag(payload), role: "button", tabindex: "0", title: "Drag onto the chart, or click to add it reporting to you", onclick: () => ((o.drag = payload), dropOn({ kind: "you" })) }, keycap(bot.character, 24, "", bot.type), h("span", { class: "posmain" }, h("b", {}, bot.name), h("span", { class: "possub" }, sub)));
     const teams = (state.marketTeams ?? []).filter((t) => match(`${t.name} ${t.summary}`));
     const market = (state.market ?? []).filter((b) => !byId.has(b.id) && match(`${b.name} ${b.listing.category} ${b.listing.summary}`));
     const marketById = new Map((state.market ?? []).map((b) => [b.id, b]));
     fill(
-      trayItems,
+      addList,
+      outside.filter((b) => match(`${b.name} ${b.group}`)).length ? [h("div", { class: "label" }, "Your agents, not on the chart"), outside.filter((b) => match(`${b.name} ${b.group}`)).map((b) => item(b, { kind: "agent", id: b.id }, b.group))] : null,
       teams.length
-        ? h(
-            "div",
-            { class: "traygroup" },
-            h("span", { class: "label" }, "Ready-made teams"),
-            h(
-              "div",
-              { class: "trayrow" },
-              teams.map((t) => {
-                const onChart = t.bots.filter((id) => members.some((m) => m.bot === id));
-                const all = onChart.length === t.bots.length;
-                const payload = { kind: "team", id: t.id, lead: t.bots[0] };
-                return h(
-                  "div",
-                  { class: `traychip team ${all ? "have" : ""}`, title: `${t.summary} Drag it onto the board, or use + and −.`, ...draggable(payload) },
-                  h("span", { class: "teamstack" }, t.bots.slice(0, 3).map((id) => (marketById.get(id) ? keycap(marketById.get(id).character, 22, "", marketById.get(id).type) : null))),
-                  h("span", { class: "flowmain" }, h("b", {}, t.name), h("span", { class: "flowsub" }, all ? `All ${t.bots.length} on your chart` : onChart.length ? `${onChart.length} of ${t.bots.length} on your chart` : `${t.bots.length} agents · led by the ${marketById.get(t.bots[0])?.name ?? "lead"}`)),
-                  all ? null : h("button", { class: "ctl plus", title: `Add the ${t.name} to your chart`, "aria-label": `Add the ${t.name}`, onclick: (e) => (e.stopPropagation(), addNow(payload)) }, "+"),
-                  onChart.length
-                    ? h(
-                        "button",
-                        {
-                          class: "ctl minus",
-                          title: `Take the ${t.name} off your chart`,
-                          "aria-label": `Remove the ${t.name}`,
-                          onclick: (e) => {
-                            e.stopPropagation();
-                            if (!confirm(`Take the ${t.name} off your chart?\n\n${onChart.length} agent${onChart.length === 1 ? "" : "s"} leave${onChart.length === 1 ? "s" : ""} the chart. They stay on your team and can be added back with +.`)) return;
-                            // Members first, their lead last, so nobody is moved up the chart on the way out.
-                            save(async () => { for (const id of [...onChart].reverse()) await api("DELETE", `orgs/${org.id}/members/${id}`); });
-                          },
-                        },
-                        "−",
-                      )
-                    : null,
-                );
-              }),
-            ),
-          )
+        ? [
+            h("div", { class: "label" }, "Ready-made teams"),
+            teams.map((t) => {
+              const lead = marketById.get(t.bots[0]);
+              return h("div", { class: "additem team", ...drag({ kind: "team", id: t.id, lead: t.bots[0] }), role: "button", tabindex: "0", title: "Drag onto the position it should report to, or click to add it under you", onclick: () => ((o.drag = { kind: "team", id: t.id, lead: t.bots[0] }), dropOn({ kind: "you" })) }, lead ? keycap(lead.character, 24, "", lead.type) : null, h("span", { class: "posmain" }, h("b", {}, t.name), h("span", { class: "possub" }, `${t.bots.length} positions, led by ${lead?.name ?? "its lead"}`)));
+            }),
+          ]
         : null,
-      mine.length ? h("div", { class: "traygroup" }, h("span", { class: "label" }, "Your agents, not on this chart"), h("div", { class: "trayrow" }, mine.map((b) => chip(b, { kind: "agent", id: b.id }, b.group)))) : null,
-      market.length ? h("div", { class: "traygroup" }, h("span", { class: "label" }, needle ? "From the marketplace" : "From the marketplace (search for more)"), h("div", { class: "trayrow" }, market.slice(0, needle ? 24 : 8).map((b) => chip(b, { kind: "market", id: b.id }, b.listing.category)))) : null,
-      !teams.length && !mine.length && !market.length ? h("p", { class: "note" }, state.market ? "Nothing matches. Try other words." : "Loading…") : null,
+      market.length ? [h("div", { class: "label" }, needle ? "From the marketplace" : "From the marketplace (search for more)"), market.slice(0, needle ? 30 : 10).map((b) => item(b, { kind: "market", id: b.id }, b.listing.category))] : null,
+      !state.market ? h("p", { class: "note small" }, "Loading the marketplace…") : null,
     );
   };
-  trayFind.addEventListener("input", () => ((ui.traySearch = trayFind.value), drawTray()));
-  const tray = () => {
-    if (!state.market) loadMarket().then(drawTray).catch(() => {});
-    drawTray();
-    return h("section", { class: "card tray" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("b", {}, "Add to my team"), h("div", { class: "note small" }, "Click one to add it. Or drag it onto a team to put it there.")), trayFind), trayItems, removeZone());
-  };
+  addFind.addEventListener("input", drawAdd);
+  drawAdd();
 
-  // The team builder: each lead's team as a card, the agents working alone under the person, and a place to start a new team.
-  const solo = members.filter((m) => !m.manager && !leads.includes(m));
-  // One person on a list: a badge, a name, a line on what it does. Click to open it; drag to move it; drop on it to put someone under it.
-  const blurb = (bot) => {
-    // What it does, in its own words. A first sentence that only states its title ("I am a recruiter.") is skipped for the next one.
-    const sentences = bot.instructions.split(/(?<=[.!?])\s+/);
-    const first = /^I am (a|an|the) [^,:]{0,60}\.$/i.test(sentences[0] ?? "") && sentences[1] ? sentences[1] : (sentences[0] ?? "");
-    return first.replace(/^I am the organization's [^:.]*: /, "").replace(/^./, (c) => c.toUpperCase()).slice(0, 110);
-  };
-  const personRow = (m, tag) => {
-    const bot = byId.get(m.bot);
-    const [status, loud] = statusOf(bot);
-    return h(
-      "div",
-      { class: "onodewrap personwrap" },
-      h(
-        "button",
-        { class: `person ${ui.orgSel === m.bot ? "on" : ""}`, style: botStyle(bot), title: "Click to chat with it or give it work. Drag to move it.", onclick: () => pickMember(m.bot), ...draggable({ kind: "member", id: m.bot }), ...dropZone(m.bot) },
-        keycap(bot.character, 34, mood(live.get(bot.id)), bot.type),
-        h("span", { class: "flowmain" }, h("b", {}, bot.name, tag ? h("span", { class: "chip", style: "margin-left: 8px" }, tag) : null), h("span", { class: "flowsub" }, blurb(bot))),
-        loud ? h("span", { class: "pill loud" }, status.replace(/^[●◌■] /, "")) : null,
-      ),
-      controls(m),
-    );
-  };
-  const teamCard = (lead) => {
-    const bot = byId.get(lead.bot);
-    const list = members.filter((x) => x.manager === lead.bot);
-    const dotted = members.filter((x) => x.also === lead.bot);
-    const parent = lead.manager ? byId.get(lead.manager) : null;
-    // A team is named after what it does: its department, or the outcome it owns.
-    const name = lead.department && lead.department !== "Leadership" ? lead.department : bot.name;
-    return h(
-      "div",
-      { class: "dept teamcard", style: botStyle(bot), ...dropZone(lead.bot) },
-      h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, name), h("div", { class: "note small" }, `${list.length + 1} agent${list.length ? "s" : ""}${parent ? ` · part of the ${parent.name}'s team` : ""}`)), h("button", { class: "ctl plus", title: "Add someone to this team", "aria-label": `Add someone to ${name}`, onclick: () => openPanel({ kind: "add", under: lead.bot }) }, "+"), h("button", { class: "ctl minus", title: "Remove this team", "aria-label": `Remove ${name}`, onclick: () => openPanel({ kind: "remove", bot: lead.bot }) }, "−")),
-      h("div", { class: "people" }, personRow(lead, "Manager"), list.map((x) => personRow(x, members.some((y) => y.manager === x.bot) ? "Manages a team" : "")), dotted.map((x) => personRow(x, "Also helps here"))),
-      h("div", {}, h("button", { class: "teamtask", title: "The manager shares the work out across the team and brings back one result", onclick: () => ((state.selectedTeam = lead.bot), go("home")) }, "Give this team a task")),
-    );
-  };
-  const teamsView = () =>
+  // ----- what it costs, and what needs fixing -----
+  const limits = members.map((m) => byId.get(m.bot)?.month?.limit).filter((x) => x != null);
+  const unlimited = members.length - limits.length;
+  const problems = [
+    ...groups.filter((g) => !g.lead && members.some((m) => m.department === g.name)).map((g) => [`${g.name} has no lead, so requests from other groups have nowhere to go.`, "Choose a lead", () => select({ kind: "group", id: g.id })]),
+    ...members.filter((m) => !groups.some((g) => g.name === m.department)).map((m) => [`${m.title} is not in a group.`, "Choose a group", () => select({ kind: "position", id: m.bot })]),
+  ];
+
+  const side = panel();
+  const views = [["groups", "Groups"], ["chart", "Chart"], ["list", "List"], ["memory", "Memory"]];
+  fill(
+    col,
     h(
       "div",
-      { class: "teamboard" },
-      solo.length || !leads.length
-        ? h(
-            "div",
-            { class: "dept youlane", ...dropZone(null) },
-            h("div", { class: "row" }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("div", { class: "grow" }, h("h2", {}, "Works directly for you"), h("div", { class: "note small" }, `${solo.length} agent${solo.length === 1 ? "" : "s"}`)), h("button", { class: "ctl plus", title: "Add someone who works directly for you", "aria-label": "Add someone who works directly for you", onclick: () => openPanel({ kind: "add", under: null }) }, "+")),
-            h("div", { class: "people two" }, solo.map((x) => personRow(x, ""))),
-          )
-        : null,
-      leads.length ? h("section", { class: "depts" }, leads.map((lead) => ((card) => (card.setAttribute("data-team", lead.bot), card))(teamCard(lead)))) : null,
-    );
-  const shelfOf = (e) => (e.shelf === "org" ? "Whole organization" : e.shelf === "dept" ? `${e.key} department` : `${byId.get(e.key)?.name ?? e.key}${e.kind === "log" ? " · past work" : " · notes"}`);
-  const memText = h("textarea", { rows: 2, maxlength: 800, placeholder: "Something every agent should know. For example: our fiscal year starts in April; never promise delivery dates without checking with Operations." });
-  const memShelf = h("select", { "aria-label": "Who should know this" }, h("option", { value: "org:" }, "Whole organization"), depts_().map((d) => h("option", { value: `dept:${d}` }, `${d} department`)));
-  const memoryView = () => {
-    const groups = new Map();
-    for (const e of orgMemory) groups.set(shelfOf(e), [...(groups.get(shelfOf(e)) ?? []), e]);
-    const order = [...groups.keys()].sort((a, b) => Number(b === "Whole organization") - Number(a === "Whole organization") || a.localeCompare(b));
-    return h(
-      "section",
-      { class: "orgmem" },
-      h("p", { class: "note" }, "What the organization remembers across every task. Each agent sees the organization's entries, its own department's, and its own notes and past work. Only what bears on the task in hand is sent to the model, so memory can grow without every task costing more. You can add, correct or remove anything here."),
-      h("form", { class: "card form", onsubmit: (e) => (e.preventDefault(), save(() => api("POST", `orgs/${org.id}/memory`, { text: memText.value, shelf: memShelf.value.startsWith("dept:") ? "dept" : "org", key: memShelf.value.slice(memShelf.value.indexOf(":") + 1) }))) }, h("b", {}, "Add to memory"), memText, h("div", { class: "row" }, memShelf, h("button", { class: "primary" }, "Remember"))),
-      orgMemory.length
-        ? order.map((name) =>
-            h(
-              "div",
-              { class: "memgroup" },
-              h("h2", { class: "label" }, `${name} · ${groups.get(name).length}`),
-              groups.get(name).slice().reverse().map((e) =>
-                h("div", { class: "card memrow" }, h("div", { class: "grow mtext" }, e.text), h("span", { class: "mono small muted" }, e.kind === "log" ? "Recorded automatically" : `Saved by ${e.by}`), h("button", { class: "plain danger", "aria-label": "Remove this entry", onclick: () => save(() => api("DELETE", `orgs/${org.id}/memory/${e.id}`)) }, "Remove")),
-              ),
-            ),
-          )
-        : h("div", { class: "card" }, h("b", {}, "Nothing remembered yet."), h("p", { class: "note" }, "Agents save decisions, facts and how jobs are done as they work, and each finished task is recorded here automatically.")),
-    );
-  };
-  const depts = depts_();
-  // A wide chart opens centred on the top of the tree, not on its left edge.
-  setTimeout(() => {
-    const wrap = col.querySelector(".chartwrap");
-    if (wrap && wrap.scrollWidth > wrap.clientWidth) wrap.scrollLeft = ui.orgScroll?.[org.id + org.structure] ?? (wrap.scrollWidth - wrap.clientWidth) / 2;
-    wrap?.addEventListener("scroll", () => (ui.orgScroll = { [org.id + org.structure]: wrap.scrollLeft }), { passive: true });
-  }, 0);
-  // ----- the simple set-up: two plain questions, then one button -----
-  const PLAIN = {
-    flat: ["Small and simple", "A handful of agents who all report to you. The easiest way to start."],
-    functional: ["Departments", "A head for each department with its specialists under it. You manage the heads."],
-    hierarchical: ["A manager runs it for me", "A general manager looks after the department heads. You mostly deal with one agent."],
-    team: ["Teams built around goals", "Small mixed teams, each owning one result, such as winning customers."],
-    matrix: ["Shared specialists on projects", "Specialists belong to a department and also work for a project lead."],
-    custom: ["My own way", "Start from an empty board, build it yourself and write your own rules."],
-  };
-  const plainName = (id) => PLAIN[id]?.[0] ?? structure.name;
-  const fresh = org.structure === "flat" && members.length > 0 && members.every((m) => byId.get(m.bot).source === "starter");
-  const open = ui.orgOpen ?? (fresh || !members.length ? "run" : "");
-  const show = (what) => ((ui.orgOpen = open === what ? "" : what), (ui.orgPanel = null), again());
-  const wizard = () => {
-    const picked = ui.wizStructure ?? (fresh || !members.length ? (industry.recommended ?? []).find((id) => ["flat", "functional", "hierarchical"].includes(id)) ?? "functional" : org.structure);
-    const size = industry.sizes?.[picked];
-    const choice = (id) =>
-      h(
-        "button",
-        { class: `waychoice ${picked === id ? "on" : ""}`, "aria-pressed": String(picked === id), onclick: () => ((ui.wizStructure = id), again()) },
-        h("span", { class: "waydiagram", "aria-hidden": "true" }, structureDiagram(id)),
-        h("span", { class: "flowmain" }, h("b", {}, PLAIN[id][0], industry.recommended?.[0] === id ? h("span", { class: "chip rec", style: "margin-left: 8px" }, "Recommended") : null), h("span", { class: "waywords" }, PLAIN[id][1]), industry.sizes?.[id]?.agents ? h("span", { class: "flowsub" }, `${industry.sizes[id].agents} agents · ${industry.sizes[id].departments} ${id === "team" ? "teams" : "departments"}`) : null),
-      );
-    const basic = ["flat", "functional", "hierarchical"];
-    const more = ["team", "matrix", "custom"];
-    const showMore = ui.wizMore || more.includes(picked);
-    const go = h("button", { class: "primary big" }, picked === "custom" ? "Start with an empty board" : size?.agents ? `Set up my team · ${size.agents} agents` : "Set up my team");
-    go.addEventListener("click", () => {
-      const replacing = members.length && !fresh;
-      if (replacing && !confirm(`Copy “${PLAIN[picked][0]}” onto ${org.name}?\n\n${picked === "custom" ? "Your board stays as it is." : "Positions from this example that you don't have yet are added, with its reporting lines. Nothing on your board is removed, moved or redrawn. To begin from a clean board, use Start over first."}`)) return;
-      go.disabled = true;
-      go.textContent = "Setting up…";
-      ui.orgOpen = "";
-      ui.orgView = "teams";
-      ui.orgSel = null;
-      save(async () => {
-        if (picked === "custom") await api("PATCH", `orgs/${org.id}`, { structure: "custom" });
-        else await api("POST", `orgs/${org.id}/build`, { structure: picked, industry: industry.id });
-        await loadCrew();
-      });
-    });
-    return h(
-      "section",
-      { class: "card wizard" },
-      h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, fresh || !members.length ? "Set up your team" : "Change how your team is set up"), h("p", { class: "note" }, "Answer two questions and your team of AI agents is ready. You can change anything afterwards.")), fresh || !members.length ? null : h("button", { class: "plain", "aria-label": "Close", onclick: () => show("run") }, "✕")),
-      h("div", { class: "wizstep" }, h("div", { class: "wiznum" }, "1"), h("div", { class: "grow" }, h("b", {}, "What kind of business is it?"), h("div", { class: "biztiles" }, industries.map((i) => h("button", { class: `biztile ${i.id === industry.id ? "on" : ""}`, "aria-pressed": String(i.id === industry.id), title: i.examples, onclick: () => i.id !== industry.id && save(() => api("PATCH", `orgs/${org.id}`, { industry: i.id })) }, h("b", {}, i.name), h("span", {}, i.examples)))))),
-      h(
-        "div",
-        { class: "wizstep" },
-        h("div", { class: "wiznum" }, "2"),
-        h("div", { class: "grow" }, h("b", {}, "How do you want to run it?"), h("div", { class: "waychoices" }, basic.map(choice), showMore ? more.map(choice) : null), h("div", { class: "row" }, showMore ? h("button", { class: "plain link", onclick: () => ((ui.orgCompare = !ui.orgCompare), again()) }, ui.orgCompare ? "Hide the full comparison" : "Compare all of them in detail") : h("button", { class: "plain link", onclick: () => ((ui.wizMore = true), again()) }, "Not sure, or want something else? Show more ways"))),
-      ),
-      h("div", { class: "wizgo" }, go, h("span", { class: "note" }, picked === "custom" ? "Nobody is added. Drag agents and teams onto the board yourself." : size?.agents ? `This example has ${size.agents} agents in ${size.departments} ${picked === "team" ? "teams" : "departments"} for ${industry.name.toLowerCase()}. It is copied onto your board once; after that the board is yours to change.` : "")),
-      ui.orgCompare ? h("div", { class: "sgrid" }, [...structures].map(structureCard)) : null,
-    );
-  };
-
-  // ----- spending rules, kept out of the way -----
-  const rulesPanel = () =>
+      { class: "orghead" },
+      h("div", { class: "grow" }, h("div", { class: "row" }, h("h1", {}, org.name), state.orgs.orgs.length > 1 ? h("select", { class: "orgpick", "aria-label": "Organization", onchange: (e) => attempt(async () => (await api("PATCH", `orgs/${e.target.value}`, { active: true }), await loadOrgs(), (o.sel = null), (o.undo = []), renderOrg()), col) }, state.orgs.orgs.map((x) => h("option", { value: x.id, selected: x.id === org.id }, x.name))) : null), h("p", { class: "lead" }, org.mission || "Add your mission under Settings: every agent is told it.")),
+      h("button", { class: "small", onclick: () => orgSettings() }, "Settings"),
+    ),
     h(
-      "section",
-      { class: "card rulespanel" },
-      h("div", { class: "row" }, h("div", { class: "grow" }, h("h2", {}, "Spending rules"), h("p", { class: "note" }, "Agents never pay, send or sign anything themselves. These set when they must stop and ask you.")), h("button", { class: "plain", "aria-label": "Close", onclick: () => show("rules") }, "✕")),
-          h("form", { class: "row spendlimit", onsubmit: (e) => (e.preventDefault(), save(() => api("PATCH", `orgs/${org.id}`, { approvalLimit: approvalInput.value === "" ? null : Number(approvalInput.value) }))) }, h("label", { class: "note", for: "approval-limit" }, "Needs your approval: any spending or commitment above ($)"), approvalInput, h("button", {}, "Save"), h("span", { class: "note small" }, org.approvalLimit ? "" : "Blank means every one needs you.")),
-      h(
-        "section",
-        { class: `card allbudget ${total.state}` },
-        h("div", { class: "row" }, h("h2", { class: "label grow" }, `Budget for all agents · resets ${budgets?.resets ?? ""}`), total.state === "stopped" ? h("span", { class: "pill loud" }, "■ Stopped: no agent starts new work") : total.state === "warned" ? h("span", { class: "pill loud" }, "Past 80%") : null),
-        bar(total),
-        h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), attempt(async () => ((state.config = await api("PUT", "settings", { monthlyBudget: limit.value === "" ? null : Number(limit.value) })), again()), col)) }, h("span", { class: "note" }, "Per month ($)"), limit, h("button", {}, "Save")),
-        h("p", { class: "note small" }, "Agents are warned at 80% and start no new work at 100%, until you raise the budget or the month turns. Each agent can have its own monthly budget too. Spend is estimated from list prices."),
-      ),
-    );
-
-  const teamCount = leads.length;
-  const needWord = needs ? ` · ${needs} need${needs === 1 ? "s" : ""} you` : "";
-  const moreItem = (label, onclick, title) => h("button", { class: "moreitem", title: title || label, onclick }, label);
-  col.append(
-    ...[
-      h(
-        "div",
-        { class: "row orghead" },
-        h("div", { class: "grow" }, h("div", { class: "row" }, h("h1", {}, org.name || "Your team"), state.orgs.orgs.length > 1 ? pick : null), h("p", { class: "lead" }, members.length ? `${members.length} AI agent${members.length === 1 ? "" : "s"}${teamCount ? ` in ${teamCount} team${teamCount === 1 ? "" : "s"}` : ", all working directly for you"}${needWord}` : "Nobody on your team yet")),
-        h("button", { class: "primary", onclick: () => ((ui.orgTray = !ui.orgTray), (ui.orgOpen = ""), again()) }, ui.orgTray ? "Done adding" : "＋ Add to my team"),
-        h("button", { "aria-expanded": String(Boolean(ui.orgMore)), onclick: () => ((ui.orgMore = !ui.orgMore), again()) }, "More ▾"),
-      ),
-      ui.orgMore
-        ? h(
-            "div",
-            { class: "moremenu" },
-            moreItem("Change my set-up", () => ((ui.orgMore = false), show("run")), "Your kind of business and how the team is run"),
-            moreItem("Spending limits", () => ((ui.orgMore = false), show("rules")), "When agents must ask you, and the monthly budget"),
-            moreItem("What my team remembers", () => ((ui.orgMore = false), (ui.orgOpen = ""), (ui.orgView = view === "memory" ? "teams" : "memory"), again()), "Facts and decisions your agents keep"),
-            moreItem("Rename", () => ((ui.orgMore = false), show("rename"))),
-            moreItem("Add another organization", () => ((ui.orgMore = false), show("new"))),
-            moreItem(`My organizations (${state.orgs.orgs.length})`, () => ((ui.orgMore = false), (ui.orgOpen = ""), openPanel({ kind: "orgs" })), "Open or delete an organization"),
-            moreItem("Start over", () => ((ui.orgMore = false), (ui.orgOpen = ""), openPanel({ kind: "reset" })), "Reset the team to the standard set-up, or clear it"),
-          )
-        : null,
-      open === "run" ? wizard() : null,
-      open === "rules" ? rulesPanel() : null,
-      open === "rename" ? ((editForm.hidden = false), editForm) : null,
-      open === "new" ? ((newForm.hidden = false), newForm) : null,
-      ui.orgPanel?.kind === "reset" || ui.orgPanel?.kind === "orgs" ? panel() : null,
-      view === "memory"
-        ? h("div", { class: "row" }, h("h2", { class: "grow", style: "margin: 0; font-size: 16px" }, "What my team remembers"), h("button", { onclick: () => ((ui.orgView = "teams"), again()) }, "← Back to my team"))
-        : members.length
-          ? h("div", { class: "row" }, h("span", { class: "note grow" }, "Click anyone to chat with them or give them work. Drag someone onto a team to move them."), h("div", { class: "viewswitch", role: "group", "aria-label": "View" }, h("button", { class: view === "teams" ? "on" : "", "aria-pressed": String(view === "teams"), onclick: () => ((ui.orgView = "teams"), again()) }, "List"), h("button", { class: view === "chart" ? "on" : "", "aria-pressed": String(view === "chart"), onclick: () => ((ui.orgView = "chart"), again()) }, "Chart")))
-          : null,
-      view === "memory" ? null : detail(),
-      ui.orgTray && view !== "memory" ? tray() : null,
-      view === "memory"
-        ? memoryView()
-        : !members.length
-          ? h("div", { class: "card quiet" }, h("b", {}, "Nobody is on the board yet."), h("span", { class: "note" }, " Answer the two questions above, or press “Add agents or a team” and drag some in."))
-          : view === "chart"
-            ? h("div", { class: "chartwrap" }, h("div", { class: `tree ${members.length > 10 ? "dense" : ""}` }, h("ul", {}, h("li", {}, h("div", { class: "onodewrap" }, h("div", { class: "onode you", title: "Drop an agent here to have it report to you", ...dropZone(null) }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("b", {}, "You"), h("span", { class: "otitle" }, "Owner")), h("span", { class: "nodectl" }, h("button", { class: "ctl plus", title: "Add an agent reporting to you", "aria-label": "Add an agent reporting to you", onclick: () => openPanel({ kind: "add", under: null }) }, "+"))), branch(null)))))
-            : teamsView(),
-      view === "memory" || ui.orgPanel?.kind === "reset" || ui.orgPanel?.kind === "orgs" ? null : panel(),
-      h("datalist", { id: "org-depts" }, depts.map((d) => h("option", { value: d }))),
-    ].filter(Boolean),
+      "div",
+      { class: "orgstrip" },
+      h("span", {}, h("b", {}, String(members.length)), ` position${members.length === 1 ? "" : "s"}`),
+      h("span", {}, h("b", {}, String(groups.length)), ` group${groups.length === 1 ? "" : "s"}`),
+      h("span", { title: "The monthly budgets set for each agent, added up" }, limits.length ? [h("b", {}, money(limits.reduce((a, b) => a + b, 0))), " a month at most"] : "No monthly limits set", unlimited && limits.length ? h("span", { class: "note small" }, ` (+${unlimited} without a limit)`) : null),
+      h("span", { class: "grow" }),
+      h("div", { class: "viewswitch", role: "group", "aria-label": "View" }, views.map(([id, label]) => h("button", { class: o.view === id ? "on" : "", "aria-pressed": String(o.view === id), onclick: () => ((o.view = id), renderOrg()) }, label))),
+      h("button", { class: "small", disabled: !o.undo.length, title: o.undo.length ? `Undo: ${o.undo.at(-1).label} (Cmd-Z)` : "Nothing to undo", onclick: () => orgUndo() }, "Undo"),
+      h("button", { class: "plain small", title: "Every change is recorded in the audit log", onclick: () => ((ui.audit = { kind: "organization", actor: "", since: "30", q: "" }), go("audit")) }, "History"),
+    ),
+    o.note ? h("div", { class: "banner" }, o.note, o.undo.length && !o.note.startsWith("Undone") ? h("button", { class: "plain small", onclick: () => orgUndo() }, "Undo") : null) : null,
+    problems.length ? h("div", { class: "orgproblems" }, problems.map(([text, fix, fn]) => h("div", { class: "orgproblem" }, h("span", { class: "grow" }, text), h("button", { class: "small", onclick: fn }, fix)))) : null,
+    o.view === "memory"
+      ? orgMemoryPanel(org, groups)
+      : h(
+          "div",
+          { class: `orgwork ${side ? "withpanel" : ""}` },
+          h("aside", { class: "addbar" }, h("div", { class: "row" }, h("b", { class: "grow" }, "Add"), h("button", { class: "small", onclick: () => newGroup() }, "+ Group")), addFind, h("p", { class: "note small" }, "Drag onto a position to report to it, onto a group to join it, or onto You."), addList),
+          h("div", { class: "orgcanvas" }, members.length ? (o.view === "chart" ? chartView() : o.view === "list" ? listView() : groupsView()) : h("div", { class: "card quiet orgempty", ...drop({ kind: "you" }) }, h("b", {}, "Nobody is on the chart yet."), h("p", { class: "note" }, "Drag a role or a ready-made team from the left, or copy an example under Settings."))),
+          side,
+        ),
   );
+  o.note = "";
+
+  // ----- dialogs -----
+  async function newGroup() {
+    const name = h("input", { placeholder: "e.g. Sales, Customer care, Product", maxlength: 30, "aria-label": "Group name" });
+    const lead = h("select", { "aria-label": "Lead" }, h("option", { value: "" }, "Choose later"), members.map((m) => h("option", { value: m.bot }, m.title)));
+    const goal = h("input", { placeholder: "What it is for (optional)", maxlength: 300, "aria-label": "Goal" });
+    const got = await libDialog("New group", h("div", { class: "composeform" }, h("label", {}, "Name", name), h("label", {}, "Lead", lead), goal, h("p", { class: "note small" }, "The lead moves into the group. Drag other positions in afterwards.")), [["Create", () => ({ name: name.value.trim(), lead: lead.value, goal: goal.value.trim() }), true]]);
+    if (!got?.name) return;
+    orgChange(`Made the group ${got.name}`, () => api("POST", `orgs/${org.id}/groups`, { name: got.name, lead: got.lead || undefined, goal: got.goal || undefined }));
+  }
+  async function orgSettings() {
+    const name = h("input", { value: org.name, maxlength: 50, "aria-label": "Name" });
+    const mission = h("input", { value: org.mission, maxlength: 300, placeholder: "What it is for, in a sentence", "aria-label": "Mission" });
+    const philosophy = h("textarea", { rows: 3, maxlength: 1200, placeholder: "How you run it, in your own words (optional). Every agent is told.", "aria-label": "How you run it" }, org.philosophy ?? "");
+    const limit = h("input", { type: "number", min: "0", value: org.approvalLimit ?? "", placeholder: "Every commitment", "aria-label": "Approval limit" });
+    const structures = state.orgs.structures ?? [];
+    const industries = state.orgs.industries ?? [];
+    const exIndustry = h("select", { "aria-label": "Kind of business" }, industries.map((i) => h("option", { value: i.id, selected: i.id === org.industry }, i.name)));
+    const exStructure = h("select", { "aria-label": "Example" }, structures.filter((s) => s.id !== "custom").map((s) => h("option", { value: s.id, selected: s.id === org.structure }, `${s.name}: ${s.summary}`)));
+    const body = h(
+      "div",
+      { class: "composeform" },
+      h("label", {}, "Name", name),
+      h("label", {}, "Mission", mission),
+      philosophy,
+      h("label", {}, "Commitments above this many dollars need your approval", limit),
+      h("div", { class: "label", style: "margin-top: 10px" }, "Copy an example"),
+      h("p", { class: "note small" }, "Adds the example's positions you don't have yet, with its lines. Nothing you have is removed or moved."),
+      h("div", { class: "row wrap" }, exIndustry, exStructure, h("button", { class: "small", onclick: () => (dialogDone("example"), null) }, "Copy")),
+      h("div", { class: "label", style: "margin-top: 10px" }, "Other organizations"),
+      h("div", { class: "row wrap" }, h("button", { class: "small", onclick: () => dialogDone("new") }, "New organization"), h("button", { class: "small danger", onclick: () => dialogDone("clear") }, "Start over (empty chart)"), state.orgs.orgs.length > 1 ? h("button", { class: "small danger", onclick: () => dialogDone("delete") }, "Delete this organization") : null),
+    );
+    let dialogDone;
+    const choice = await new Promise((resolve) => {
+      dialogDone = (v) => (document.querySelector("dialog.libdialog")?.close(), document.querySelector("dialog.libdialog")?.remove(), resolve(v));
+      libDialog(`${org.name}: settings`, body, [["Save", () => "save", true]]).then((v) => resolve(v));
+    });
+    if (choice === "save") {
+      return orgChange("Changed the organization's settings", () => api("PATCH", `orgs/${org.id}`, { name: name.value, mission: mission.value, philosophy: philosophy.value, approvalLimit: limit.value === "" ? null : Number(limit.value) }));
+    }
+    if (choice === "example") {
+      const s = structures.find((x) => x.id === exStructure.value);
+      if (!confirm(`Copy the “${s?.name}” example for ${industries.find((i) => i.id === exIndustry.value)?.name.toLowerCase()} onto ${org.name}?\n\nPositions you don't have yet are added with the example's lines. Nothing you have is removed or moved. You can undo this.`)) return;
+      return orgChange(`Copied the ${s?.name} example`, async () => (await api("POST", `orgs/${org.id}/build`, { structure: exStructure.value, industry: exIndustry.value }), await loadCrew()));
+    }
+    if (choice === "clear") {
+      if (!confirm(`Start ${org.name} over with an empty chart?\n\nEvery agent stays on your team; chats, tasks and memory are kept. You can undo this.`)) return;
+      return orgChange("Started over with an empty chart", async () => (await api("POST", `orgs/${org.id}/reset`, { mode: "empty" }), (o.sel = null)));
+    }
+    if (choice === "delete") {
+      if (!confirm(`Delete the organization “${org.name}”?\n\nIts chart is deleted. The agents themselves are kept. This cannot be undone.`)) return;
+      return attempt(async () => (await api("DELETE", `orgs/${org.id}`), await loadOrgs(), (o.sel = null), (o.undo = []), renderOrg()), col);
+    }
+    if (choice === "new") {
+      const nm = h("input", { placeholder: "Name, e.g. your company", maxlength: 50, "aria-label": "Name" });
+      const ms = h("input", { placeholder: "What it is for, in a sentence (optional)", maxlength: 300, "aria-label": "Mission" });
+      const got = await libDialog("New organization", h("div", { class: "composeform" }, nm, ms, h("p", { class: "note small" }, "It starts with an empty chart: add positions and groups yourself, or copy an example under Settings.")), [["Create", () => ({ name: nm.value.trim(), mission: ms.value.trim() }), true]]);
+      if (!got?.name) return;
+      return attempt(async () => (await api("POST", "orgs", { name: got.name, mission: got.mission, structure: "custom" }), await loadOrgs(), (o.sel = null), (o.undo = []), renderOrg()), col);
+    }
+  }
 }
+
+/** What the organization remembers: the whole organization's notes, each group's, and each agent's own. */
+function orgMemoryPanel(org, groups) {
+  const box = h("section", { class: "orgmem" }, h("p", { class: "note" }, "Loading…"));
+  const draw = async () => {
+    const entries = await api("GET", `orgs/${org.id}/memory`).catch(() => []);
+    const byId = new Map((state.crew?.bots ?? []).map((b) => [b.id, b]));
+    const shelf = (e) => (e.shelf === "org" ? "Whole organization" : e.shelf === "dept" ? `${e.key} group` : `${byId.get(e.key)?.name ?? e.key}${e.kind === "log" ? " · past work" : " · notes"}`);
+    const text = h("textarea", { rows: 2, maxlength: 800, placeholder: "Something every agent should know. For example: our fiscal year starts in April." });
+    const where = h("select", { "aria-label": "Who should know this" }, h("option", { value: "org:" }, "Whole organization"), groups.map((g) => h("option", { value: `dept:${g.name}` }, `${g.name} group`)));
+    const grouped = new Map();
+    for (const e of entries) grouped.set(shelf(e), [...(grouped.get(shelf(e)) ?? []), e]);
+    fill(
+      box,
+      h("p", { class: "note" }, "What the organization remembers across every task. Each agent sees the organization's notes, its group's, and its own. Only what bears on the task in hand is sent to the model."),
+      h("form", { class: "card form", onsubmit: (e) => (e.preventDefault(), attempt(async () => (await api("POST", `orgs/${org.id}/memory`, { text: text.value, shelf: where.value.startsWith("dept:") ? "dept" : "org", key: where.value.slice(where.value.indexOf(":") + 1) }), draw()), box)) }, text, h("div", { class: "row" }, where, h("button", { class: "primary" }, "Remember this"))),
+      entries.length
+        ? [...grouped.keys()].sort((a, b) => Number(b === "Whole organization") - Number(a === "Whole organization") || a.localeCompare(b)).map((name) => h("div", { class: "memgroup" }, h("h2", { class: "label" }, `${name} · ${grouped.get(name).length}`), grouped.get(name).slice().reverse().map((e) => h("div", { class: "card memrow" }, h("div", { class: "grow mtext" }, e.text), h("span", { class: "mono small muted" }, e.kind === "log" ? "Recorded automatically" : `Saved by ${e.by}`), h("button", { class: "plain danger small", onclick: () => confirm("Forget this?") && attempt(async () => (await api("DELETE", `orgs/${org.id}/memory/${e.id}`), draw()), box) }, "Forget")))))
+        : h("div", { class: "card" }, h("b", {}, "Nothing remembered yet."), h("p", { class: "note" }, "Agents save decisions and facts as they work, and each finished task is recorded here.")),
+    );
+  };
+  draw();
+  return box;
+}
+
 
 // ---------- the library ----------
 // Documents the person shares with their agents. Files are dropped here (or
