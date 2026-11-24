@@ -52,6 +52,7 @@ This type-checks the code and runs every test. It must pass. The tests use stand
 
 ## How we write code
 
+- **Follow the [brand guide](docs/brand/README.md)** for the logo, colours, type and voice.
 - **Plain language in the app.** "Agents", "tasks", "groups", "reports to"; no jargon the owner has to learn. Errors say what happened and what to do next.
 - **Comments explain why**, in full sentences. Names say what.
 - **The page is plain JavaScript** (`public/app.js`) with a tiny `h()` helper for elements. No framework.
