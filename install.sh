@@ -1,5 +1,5 @@
 #!/bin/sh
-# Talqava Agents: one-line install for macOS and Linux.
+# Talqava: one-line install for macOS and Linux.
 #
 #   curl -fsSL https://raw.githubusercontent.com/Talqava/Talqava/main/install.sh | sh
 #

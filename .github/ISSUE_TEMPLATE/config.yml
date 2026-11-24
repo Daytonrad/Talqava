@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem privately
+    url: https://github.com/Talqava/Talqava/security/advisories/new
+    about: Please never report security problems in a public issue.
+  - name: Talqava website
+    url: https://talqava.com
+    about: What Talqava is, and how to get it.
