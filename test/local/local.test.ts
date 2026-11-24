@@ -1590,3 +1590,144 @@ test("an organization exports as one readable file and imports into a new one id
     orgs.remove(org.id);
   }
 });
+
+test("workspace pages: nested pages, who may see them, history, search and reading by section", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const { workspace } = await import("../../src/local/workspace.ts");
+  const org0 = orgs.create("Pages Co", "Bake bread.", "custom");
+  try {
+    market.addTeam("finance-team");
+    market.addTeam("sales-team");
+    const org = orgs.active();
+    const finance = org.members.find((m) => m.bot === "bookkeeper")!.department;
+    const top = workspace.create(org, null, { title: "Handbook", markdown: "Everything about how we work." });
+    const child = workspace.create(org, null, { parent: top.id, title: "Refunds", markdown: "# Refunds\n\nRefund within 30 days.\n\n## Exceptions\n\nCakes made to order are not refunded." });
+    assert.equal(child.access.everyone, true); // a page with no setting follows the page above it, and the top is open to everyone
+    // Only Finance may see the money pages; a private page no agent sees.
+    const money = workspace.create(org, null, { title: "Money", markdown: "Our bank is the Bread Bank." });
+    workspace.update(org, money.id, { access: { everyone: false, departments: [finance], agents: [] } });
+    const under = workspace.create(org, null, { parent: money.id, title: "Cash flow", markdown: "Weekly cash flow notes." });
+    assert.equal(workspace.get(org, under.id).accessSet, false);
+    assert.deepEqual(workspace.get(org, under.id).access.departments, [finance]);
+    const secret = workspace.create(org, null, { title: "Salaries", markdown: "Private salary notes." });
+    workspace.update(org, secret.id, { access: { private: true } });
+    const seen = (who: string) => workspace.tree(org, who).map((p) => p.title).sort();
+    assert.deepEqual(seen("bookkeeper"), ["Cash flow", "Handbook", "Money", "Refunds"]);
+    assert.deepEqual(seen("head-of-sales"), ["Handbook", "Refunds"]);
+    assert.throws(() => workspace.get(org, money.id, "head-of-sales"), /not one you may see/);
+    assert.equal(workspace.tree(org).length, 5); // the owner sees everything
+    // Search finds passages by meaning-bearing words in any form, and only on pages the agent may see.
+    assert.equal(workspace.search(org, "head-of-sales", "refunded cakes")[0].title, "Refunds");
+    assert.equal(workspace.search(org, "head-of-sales", "bank").length, 0);
+    assert.equal(workspace.search(org, "bookkeeper", "bank")[0].title, "Money");
+    assert.equal(workspace.search(org, "bookkeeper", "salary").length, 0);
+    // Reading one section.
+    const r = workspace.read(org, "head-of-sales", child.id, "exceptions");
+    assert.match(r.text, /Cakes made to order/);
+    assert.doesNotMatch(r.text, /30 days/);
+    assert.deepEqual(r.sections, ["Refunds", "Exceptions"]);
+    // The owner's quick saves are one version; an earlier one can be put back as a new version.
+    workspace.save(org, top.id, "Version two.");
+    workspace.save(org, top.id, "Version three.", workspace.get(org, top.id).rev);
+    const history = workspace.revisions(org, top.id);
+    assert.equal(history.length, 1);
+    assert.equal(workspace.get(org, top.id).markdown, "Version three.");
+    // A page cannot go inside itself; deleting takes its children too, and restoring brings it back.
+    assert.throws(() => workspace.update(org, top.id, { parent: child.id }), /inside itself/);
+    assert.equal(workspace.archive(org, top.id).archived, 2);
+    assert.ok(!workspace.tree(org).some((p) => p.id === child.id));
+    workspace.restore(org, top.id);
+    assert.ok(workspace.tree(org).some((p) => p.id === top.id));
+  } finally {
+    orgs.remove(org0.id);
+  }
+});
+
+test("agents suggest changes to pages; the owner accepts or declines; direct and protected pages are respected", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const { workspace, merge, diff } = await import("../../src/local/workspace.ts");
+  const org0 = orgs.create("Suggest Co", "", "custom");
+  try {
+    market.addTeam("sales-team");
+    const org = orgs.active();
+    const page = workspace.create(org, null, { title: "Follow-ups", markdown: "Line one\nLine two\nLine three" });
+    // A suggestion leaves the page as it was until the owner accepts it.
+    const s1 = workspace.propose(org, "head-of-sales", page.id, "Line one\nLine two, within a day\nLine three", "Faster replies", "task-1");
+    assert.equal(s1.applied, false);
+    assert.equal(workspace.get(org, page.id).markdown, "Line one\nLine two\nLine three");
+    const open = workspace.suggestions(org, page.id);
+    assert.equal(open.length, 1);
+    assert.deepEqual(open[0].diff.filter((d) => d.op !== "same").map((d) => d.op + ":" + d.text), ["del:Line two", "add:Line two, within a day"]);
+    // The owner changed a different line meanwhile: accepting keeps both changes.
+    workspace.save(org, page.id, "Line one, edited\nLine two\nLine three");
+    assert.equal(workspace.suggestions(org, page.id)[0].stale, true);
+    workspace.decide(org, open[0].id, "accept");
+    assert.equal(workspace.get(org, page.id).markdown, "Line one, edited\nLine two, within a day\nLine three");
+    assert.throws(() => workspace.decide(org, open[0].id, "decline"), /already been answered/);
+    // When both changed the same line, the owner must choose to use the agent's version.
+    const s2 = workspace.propose(org, "head-of-sales", page.id, "Line one, edited\nLine two, same day\nLine three", "", null);
+    workspace.save(org, page.id, "Line one, edited\nLine two, by Friday\nLine three");
+    assert.throws(() => workspace.decide(org, s2.suggestion!, "accept"), /changed in the same places/);
+    workspace.decide(org, s2.suggestion!, "accept", true);
+    assert.match(workspace.get(org, page.id).markdown, /same day/);
+    // Declined suggestions change nothing.
+    const s3 = workspace.propose(org, "head-of-sales", page.id, "Something else entirely", "", null);
+    workspace.decide(org, s3.suggestion!, "decline");
+    assert.match(workspace.get(org, page.id).markdown, /same day/);
+    // A page set to take agents' edits is changed directly; a protected one never is.
+    workspace.update(org, page.id, { edit: "direct" });
+    assert.equal(workspace.propose(org, "head-of-sales", page.id, "Direct edit", "", null).applied, true);
+    assert.equal(workspace.get(org, page.id).markdown, "Direct edit");
+    workspace.update(org, page.id, { protected: true });
+    assert.equal(workspace.propose(org, "head-of-sales", page.id, "Not allowed directly", "", null).applied, false);
+    assert.equal(workspace.get(org, page.id).markdown, "Direct edit");
+    // An agent cannot suggest changes to a page it may not see.
+    workspace.update(org, page.id, { access: { private: true } });
+    assert.throws(() => workspace.propose(org, "head-of-sales", page.id, "x", "", null), /not one you may see/);
+    // The merge on its own.
+    assert.equal(merge("a\nb\nc", "A\nb\nc", "a\nb\nC"), "A\nb\nC");
+    assert.equal(merge("a\nb\nc", "a\nB\nc", "a\nX\nc"), null);
+    assert.deepEqual(diff("a\nb", "a\nc").map((d) => d.op), ["same", "del", "add"]);
+  } finally {
+    orgs.remove(org0.id);
+  }
+});
+
+test("templates add ready-made pages; agents get the workspace tool, matching pages in their prompt, and the receipt names pages used", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const { workspace, workspacePrompt, fileReport } = await import("../../src/local/workspace.ts");
+  const org0 = orgs.create("Template Co", "", "custom");
+  try {
+    market.addTeam("sales-team");
+    const org = orgs.active();
+    const sales = workspace.addTemplate(org, "sales");
+    const pages = workspace.tree(org).filter((p) => p.parent === sales.id);
+    assert.deepEqual(pages.map((p) => p.title), ["Who we sell to", "Following up with a lead", "Prices"]);
+    assert.equal(pages.find((p) => p.title === "Prices")!.protected, true);
+    assert.deepEqual(sales.access.departments, ["Sales"]); // shared with the group the pack is for, since the chart has it
+    assert.throws(() => workspace.addTemplate(org, "nope"), /no such template/);
+    // The prompt names the pages that match the task, by title and summary, only those the agent may see.
+    assert.match(workspacePrompt(org, "head-of-sales", "follow up with a new lead"), /“Following up with a lead”/);
+    assert.equal(workspacePrompt(org, "bookkeeper", "follow up with a new lead"), "");
+    // The tool reads a page, and the task records that it used it.
+    const runFor = async (botId: string) => tools.localRunSpec(app.jobs)({ id: "1".repeat(16), bot: botId, messages: [] } as unknown as Conversation);
+    const spec = await runFor("head-of-sales");
+    const tool = spec.tools.find((t) => t.name === "workspace")!;
+    assert.ok(tool, "a member gets the workspace tool");
+    const follow = pages.find((p) => p.title === "Following up with a lead")!;
+    const context = { conversation: { id: "1".repeat(16) } } as unknown as Parameters<typeof tool.run>[1];
+    assert.match(String(await tool.run({ action: "read", page: follow.id }, context)), /Reply within one working day/);
+    assert.match(String(await tool.run({ action: "search", query: "prices discount" }, context)), /Prices/);
+    assert.match(String(await tool.run({ action: "suggest", page: follow.id, markdown: "New steps.", note: "Shorter" }, context)), /owner will accept or decline/);
+    assert.deepEqual(workspace.usesOf(org, "1".repeat(16)).find((u) => u.page === follow.id)!.how.sort(), ["read", "suggested"]);
+    // A finished report can be filed as a page.
+    const filed = fileReport(org, "2".repeat(16), "Lead list", "- Acme\n- Globex", sales.id);
+    assert.equal(workspace.get(org, filed.id).parent, sales.id);
+    assert.equal(workspace.usesOf(org, "2".repeat(16))[0].how[0], "filed");
+  } finally {
+    orgs.remove(org0.id);
+  }
+});

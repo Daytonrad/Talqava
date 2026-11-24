@@ -59,8 +59,8 @@ export interface LibraryDoc {
 
 const databases = new Map<string, DatabaseSync>();
 
-/** The organization's database, created on first use. */
-function open(orgId: string): DatabaseSync {
+/** The organization's database, created on first use. The workspace keeps its pages in the same file. */
+export function openOrgDb(orgId: string): DatabaseSync {
   const known = databases.get(orgId);
   if (known) return known;
   fs.mkdirSync(home(orgId), { recursive: true });
@@ -295,7 +295,7 @@ export function syncLibrary(org: Org): Promise<{ added: number; updated: number;
   if (running) return running;
   const work = (async () => {
     const root = ensureFolders(org);
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     const known = new Map((db.prepare("select * from documents").all() as unknown as Row[]).map((r) => [r.path, r]));
     const found = walk(root);
     let added = 0;
@@ -375,7 +375,7 @@ function fullOf(org: Org, rel: string): string {
   return full;
 }
 
-function parseAccess(raw: string | null): Access | null {
+export function parseAccess(raw: string | null): Access | null {
   if (!raw) return null;
   try {
     const a = JSON.parse(raw) as Partial<Access>;
@@ -409,7 +409,7 @@ function effectiveAccess(org: Org, rel: string, own: Access | null, settings: Ma
 }
 
 /** Whether someone may use a document. The owner may use everything; no agent may use a private one. */
-function mayUse(org: Org, access: Access, botId: string | null): boolean {
+export function mayUse(org: Org, access: Access, botId: string | null): boolean {
   if (botId === OWNER) return true;
   if (access.private) return false;
   if (botId === GENERAL_AGENT || access.everyone) return true;
@@ -490,7 +490,7 @@ export interface LibraryFolder {
 export const library = {
   /** Every document, or those one agent may use. */
   list(org: Org, botId: string | null = OWNER): LibraryDoc[] {
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     const settings = folderSettings(db);
     return (db.prepare("select * from documents order by path").all() as unknown as Row[]).map((r) => toDoc(org, db, r, settings)).filter((d) => mayUse(org, d.access, botId));
   },
@@ -498,7 +498,7 @@ export const library = {
   /** Every folder in the library, with what is in it and who may use it. */
   folders(org: Org): LibraryFolder[] {
     const root = ensureFolders(org);
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     const settings = folderSettings(db);
     const out: LibraryFolder[] = [];
     const visit = (dir: string, depth: number) => {
@@ -532,7 +532,7 @@ export const library = {
    * use. Words can come in any order and form ("refund" finds "refunds").
    */
   search(org: Org, botId: string | null, query: string, limit = 6): { document: number; name: string; path: string; part: number; text: string }[] {
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     const words = [...new Set(String(query).toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [])].slice(0, 16);
     if (!words.length) return [];
     const match = words.map((w) => `"${w}"*`).join(" OR ");
@@ -561,7 +561,7 @@ export const library = {
 
   /** A stretch of a document's text, starting at a part. Refused for a document the agent may not use. */
   read(org: Org, botId: string | null, id: number, from = 1, budget = 6000): { name: string; text: string; from: number; to: number; parts: number } {
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     const row = db.prepare("select * from documents where id = ?").get(id) as unknown as Row | undefined;
     if (!row || !mayUse(org, effectiveAccess(org, row.path, parseAccess(row.access), folderSettings(db)).access, botId)) throw new Error("There is no such document in the library, or it is not one you may use.");
     const parts = db.prepare("select seq, text from passages where document = ? and seq >= ? order by seq").all(id, Math.max(1, from)) as unknown as { seq: number; text: string }[];
@@ -578,7 +578,7 @@ export const library = {
 
   /** One document, for the app: its details and where it is on this computer. */
   file(org: Org, id: number): { doc: LibraryDoc; full: string } {
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     const row = db.prepare("select * from documents where id = ?").get(id) as unknown as Row | undefined;
     if (!row) throw new Error("There is no such document.");
     return { doc: toDoc(org, db, row), full: fullOf(org, row.path) };
@@ -586,7 +586,7 @@ export const library = {
 
   /** Sets who may use a document, or hands the decision back to its folder. */
   setAccess(org: Org, id: number, access: Partial<Access> | null): LibraryDoc {
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     const row = db.prepare("select * from documents where id = ?").get(id) as unknown as Row | undefined;
     if (!row) throw new Error("There is no such document.");
     db.prepare("update documents set access = ? where id = ?").run(access === null ? null : cleanAccess(org, access), id);
@@ -597,7 +597,7 @@ export const library = {
   setFolderAccess(org: Org, rel: unknown, access: Partial<Access> | null) {
     const at = cleanRel(rel);
     if (!at || !fs.existsSync(fullOf(org, at))) throw new Error("There is no such folder.");
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     if (access === null) db.prepare("delete from folder_access where path = ?").run(at);
     else db.prepare("insert into folder_access (path, access) values (?, ?) on conflict(path) do update set access = excluded.access").run(at, cleanAccess(org, access));
     return library.folders(org).find((f) => f.path === at);
@@ -625,7 +625,7 @@ export const library = {
     const dest = cleanRel(to);
     const destFull = fullOf(org, dest);
     if (!fs.existsSync(destFull) || !fs.statSync(destFull).isDirectory()) throw new Error("That folder is not there any more.");
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     const moved: string[] = [];
     for (const item of items) {
       const from = cleanRel(item.path);
@@ -676,7 +676,7 @@ export const library = {
 
   /** Moves files and folders to Deleted, where they stay for 30 days and can be put back. */
   async remove(org: Org, items: { kind: "file" | "folder"; path: string }[] | number) {
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     if (typeof items === "number") {
       const row = db.prepare("select * from documents where id = ?").get(items) as unknown as Row | undefined;
       if (!row) throw new Error("There is no such document.");
@@ -728,7 +728,7 @@ export const library = {
     writeTrash(org.id, trash.filter((t) => t !== item));
     const rel = path.relative(libraryFolder(org.id), target).split(path.sep).join("/");
     await syncLibrary(org);
-    const db = open(org.id);
+    const db = openOrgDb(org.id);
     for (const [inner, access] of Object.entries(item.access)) db.prepare("update documents set access = ? where path = ?").run(access, inner ? `${rel}/${inner}` : rel);
     for (const [inner, access] of Object.entries(item.folderAccess)) db.prepare("insert into folder_access (path, access) values (?, ?) on conflict(path) do update set access = excluded.access").run(inner ? `${rel}/${inner}` : rel, access);
     return { path: rel };

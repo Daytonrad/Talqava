@@ -39,7 +39,7 @@ else
 fi
 
 say "Installing what it needs (a minute the first time)…"
-(cd "$APP" && npm install --omit=dev --no-audit --no-fund --loglevel=error >/dev/null)
+(cd "$APP" && npm install --omit=dev --omit=optional --no-audit --no-fund --loglevel=error >/dev/null)
 
 mkdir -p "$BIN" "$HOME_DIR/data"
 cat > "$BIN/talqava" <<LAUNCHER

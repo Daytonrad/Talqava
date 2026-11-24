@@ -1505,3 +1505,124 @@ details.trysearch[open] summary { margin-bottom: 10px; }
 .whychain li.here::before { background: var(--accent); }
 .whychain .whykind { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .whychain li.here > span:last-child { font-weight: 600; }
+
+/* =====================================================================
+   The workspace: a tree of pages, and a page edited in place.
+   ===================================================================== */
+.body.wsbody { grid-template-columns: 264px minmax(0, 1fr); }
+.wsside { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.wssidehead { display: flex; align-items: center; gap: 6px; padding: 2px 2px 8px; border-radius: var(--r-m); }
+.wshome { flex: 1; display: flex; align-items: center; gap: 8px; justify-content: flex-start; font-weight: 600; color: var(--text); padding: 6px 8px; border-radius: var(--r-m); }
+.wshome.on, .wsrow.on { background: var(--grad-soft, transparent), color-mix(in srgb, var(--text) 6%, transparent); }
+.wstree { list-style: none; margin: 0; padding: 0; }
+.wsrow { display: flex; align-items: center; gap: 2px; padding-left: calc(var(--depth) * 14px); border-radius: var(--r-m); }
+.wsrow:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.wsrow.dropover, .wssidehead.dropover { outline: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent); }
+.wscaret { width: 18px; min-height: 0; padding: 0; flex: none; color: var(--muted); font-size: 11px; text-align: center; }
+.wslink { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; justify-content: flex-start; padding: 5px 4px; color: var(--soft); text-align: left; }
+.wsrow.on .wslink { color: var(--text); font-weight: 600; }
+.wsicon { flex: none; width: 18px; text-align: center; }
+.wstitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wslink .count { font: 600 10.5px var(--mono); background: var(--grad-accent); color: var(--on-accent); border-radius: 999px; padding: 0 6px; }
+.wslock { font-size: 11px; }
+.wsadd { visibility: hidden; min-height: 0; padding: 2px 7px; color: var(--muted); }
+.wsrow:hover .wsadd, .wsrow:focus-within .wsadd { visibility: visible; }
+.wsdeleted { margin-top: auto; padding-top: 10px; }
+.wsdeleted .row { padding: 2px 4px; }
+
+.wscenter { position: relative; }
+.wshomepage .wsresults { display: flex; flex-direction: column; gap: 6px; }
+.wshit { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; height: auto; padding: 8px 12px; }
+.wsgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.wssuggestlist { display: flex; flex-direction: column; gap: 8px; }
+.wscard { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; height: auto; padding: 14px 16px; font-weight: 400; }
+.wscard b { font-weight: 600; }
+.wsbigicon { font-size: 22px; }
+.wssum { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.wstplpages { margin: 4px 0 8px; padding-left: 18px; color: var(--soft); font-size: 13px; }
+
+.wspage { display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 32px; max-width: 1180px; margin: 0 auto; }
+.wsdoc { min-width: 0; max-width: 780px; width: 100%; justify-self: center; }
+.wstrail { margin-bottom: 6px; }
+.wstrail .link { padding: 0; min-height: 0; }
+.wshead { display: flex; align-items: center; gap: 10px; }
+.wspageicon { font-size: 30px; min-height: 0; padding: 2px 4px; }
+.wstitlebox { border: 0; background: none; box-shadow: none; padding: 4px 0; font: 600 32px/1.15 var(--display, var(--sans)); letter-spacing: -0.025em; color: var(--text); }
+.wstitlebox:focus { box-shadow: none; }
+.wsmeta { margin: 4px 0 14px; }
+.wstoolbar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 2px; padding: 6px 4px; margin-bottom: 8px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 70%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.wstool { min-width: 30px; justify-content: center; color: var(--soft); }
+.wshintkey { margin-left: 8px; }
+.wsstatus { white-space: nowrap; }
+
+/* The page's text, as it is edited. */
+.wseditor .ProseMirror { outline: none; min-height: 55vh; padding: 6px 2px 40vh; font-size: 15.5px; line-height: 1.65; color: var(--text); }
+.wseditor .ProseMirror > * + * { margin-top: 0.55em; }
+.wseditor .ProseMirror h1 { font: 650 26px/1.25 var(--display, var(--sans)); letter-spacing: -0.02em; margin-top: 1.1em; }
+.wseditor .ProseMirror h2 { font: 650 21px/1.3 var(--display, var(--sans)); letter-spacing: -0.015em; margin-top: 1em; }
+.wseditor .ProseMirror h3 { font: 650 17px/1.35 var(--sans); margin-top: 0.9em; }
+.wseditor .ProseMirror ul, .wseditor .ProseMirror ol { padding-left: 1.5em; }
+.wseditor .ProseMirror ul[data-type="taskList"] { list-style: none; padding-left: 0.2em; }
+.wseditor .ProseMirror ul[data-type="taskList"] li { display: flex; gap: 8px; align-items: flex-start; }
+.wseditor .ProseMirror ul[data-type="taskList"] li > label { flex: none; margin-top: 0.25em; }
+.wseditor .ProseMirror ul[data-type="taskList"] li > div { flex: 1; min-width: 0; }
+.wseditor .ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div { color: var(--muted); text-decoration: line-through; }
+.wseditor .ProseMirror blockquote { margin-left: 0; padding: 4px 14px; border-left: 3px solid var(--accent); color: var(--soft); background: color-mix(in srgb, var(--accent) 5%, transparent); border-radius: 0 var(--r-s) var(--r-s) 0; }
+.wseditor .ProseMirror pre { background: var(--field); border: 1px solid var(--line); border-radius: var(--r-m); padding: 10px 12px; font: 13px/1.5 var(--mono); overflow-x: auto; }
+.wseditor .ProseMirror code { font-family: var(--mono); font-size: 0.9em; background: color-mix(in srgb, var(--text) 7%, transparent); padding: 1px 5px; border-radius: 4px; }
+.wseditor .ProseMirror pre code { background: none; padding: 0; }
+.wseditor .ProseMirror hr { border: 0; border-top: 1px solid var(--line2); margin: 1.4em 0; }
+.wseditor .ProseMirror a { color: var(--accent-ink); text-decoration: underline; text-underline-offset: 2px; }
+.wseditor .ProseMirror table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 14px; }
+.wseditor .ProseMirror th, .wseditor .ProseMirror td { border: 1px solid var(--line2); padding: 6px 10px; vertical-align: top; text-align: left; min-width: 60px; }
+.wseditor .ProseMirror th { background: color-mix(in srgb, var(--text) 5%, transparent); font-weight: 600; }
+.wseditor .ProseMirror .selectedCell { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.wseditor .ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder); float: left; height: 0; color: var(--muted); pointer-events: none; }
+
+/* The slash menu. */
+.wsslash { position: absolute; z-index: 20; width: 260px; max-height: 320px; overflow-y: auto; padding: 6px; border-radius: var(--r-l); background: var(--glass-strong, var(--raised)); -webkit-backdrop-filter: var(--blur, none); backdrop-filter: var(--blur, none); border: 1px solid var(--glass-line, var(--line2)); box-shadow: var(--shadow-l, none); }
+.wsslashitem { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; height: auto; padding: 6px 10px; border: 0; background: none; text-align: left; }
+.wsslashitem.on, .wsslashitem:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+/* Agents' suggested changes. */
+.wssuggestions { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.wssuggestion { padding: 12px 14px; border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.wssuggestion p { margin: 4px 0; }
+.wsdiff { margin: 8px 0; border: 1px solid var(--line); border-radius: var(--r-m); overflow: hidden; font-size: 13.5px; max-height: 320px; overflow-y: auto; }
+.wsdiffline { display: flex; gap: 8px; padding: 2px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wsdiffline.add { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.wsdiffline.del { background: color-mix(in srgb, var(--bad) 10%, transparent); color: var(--soft); text-decoration: line-through; }
+.wsdiffmark { flex: none; width: 10px; font-family: var(--mono); color: var(--muted); }
+
+/* The page's settings. */
+.wspanel { display: flex; flex-direction: column; gap: 8px; align-self: start; position: sticky; top: 0; padding: 14px; border: 1px solid var(--glass-line, var(--line)); border-radius: var(--r-l); background: var(--panel); }
+.wspanel .label { margin: 10px 0 0; }
+.wspanel .label:first-child { margin-top: 0; }
+.wspanel .note { margin: 0; }
+.wsgroupchecks { display: flex; flex-direction: column; gap: 2px; }
+.wstasks { display: flex; flex-direction: column; gap: 2px; }
+.wstaskrow { display: flex; gap: 6px; justify-content: flex-start; text-align: left; padding: 4px 2px; font-size: 13px; }
+.wspanelend { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.wshistory { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; min-width: min(760px, 80vw); max-height: 60vh; }
+.wsrevs { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.wsrevbtn { justify-content: flex-start; text-align: left; font-size: 13px; }
+.wsrevview { overflow-y: auto; padding: 0 6px; border-left: 1px solid var(--line); }
+.rpages { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 8px 0; }
+@media (max-width: 1100px) { .wspage { grid-template-columns: minmax(0, 1fr); } .wspanel { position: static; } }
+
+.wssuggestion .row { justify-content: flex-start; }
+.wseditor .ProseMirror li > p { margin: 0; }
+.wseditor .ProseMirror li + li { margin-top: 0.2em; }
+.wseditor .ProseMirror ul[data-type="taskList"] li > label { margin-top: 0.3em; }
+.wseditor .ProseMirror li p { margin: 0; }
+.wseditor .ProseMirror ul[data-type="taskList"] li > label { margin-top: 0.22em; display: inline-flex; }
+.wseditor .ProseMirror ul[data-type="taskList"] li > label input { margin: 0; }
+
+/* About and legal. */
+.legallinks { display: flex; flex-wrap: wrap; gap: 8px; }
+dialog.needs.legaldialog { width: min(820px, 92vw); max-width: none; max-height: 86vh; flex-direction: column; gap: 6px; }
+dialog.needs.legaldialog[open] { display: flex; }
+.legaldoc { overflow-y: auto; padding-right: 6px; font-size: 14.5px; line-height: 1.6; }
+.legaldoc pre { white-space: pre-wrap; font-size: 13px; }
+.legaldoc table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+.legaldoc th, .legaldoc td { border: 1px solid var(--line2); padding: 6px 8px; text-align: left; vertical-align: top; }

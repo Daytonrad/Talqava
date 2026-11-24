@@ -216,4 +216,6 @@ Talqava is open source and contributions are welcome: bug reports, ideas, new ma
 
 ## License
 
-[MIT](LICENSE). Copyright (c) 2026 Talqava. The bundled Inter and Space Grotesk fonts are under the SIL Open Font License; their licences are in `public/fonts`.
+[MIT](LICENSE). Copyright (c) 2026 GR Investments LLC, which develops Talqava. Talqava includes open-source components under their own licences, listed with their notices in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); how we choose and track them is in our [open-source policy](legal/OPEN_SOURCE_POLICY.md).
+
+Using Talqava is covered by our [Terms of Use](legal/TERMS.md), [Privacy Policy](legal/PRIVACY.md) and [Acceptable Use Policy](legal/ACCEPTABLE_USE.md). In short: Talqava runs on your computer and sends nothing to us; your data goes only to the services you connect. The app shows all of these under Settings → About and legal, and in the Mac app's Help menu.

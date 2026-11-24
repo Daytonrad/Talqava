@@ -193,8 +193,29 @@ function buildMenu() {
         submenu: [{ role: "reload" }, { type: "separator" }, { role: "resetZoom" }, { role: "zoomIn" }, { role: "zoomOut" }, { type: "separator" }, { role: "togglefullscreen" }],
       },
       { role: "windowMenu" },
+      {
+        role: "help",
+        submenu: [
+          ...[
+            ["Terms of Use", "terms"],
+            ["Privacy Policy", "privacy"],
+            ["Acceptable Use Policy", "acceptable-use"],
+            ["Licence", "license"],
+            ["Third-party Notices", "notices"],
+          ].map(([label, id]) => ({ label, click: () => showLegal(id) })),
+          { type: "separator" },
+          { label: "Talqava Website", click: () => shell.openExternal("https://talqava.com") },
+          { label: "Report a Problem", click: () => shell.openExternal("https://github.com/Talqava/Talqava/issues/new/choose") },
+        ],
+      },
     ]),
   );
+}
+
+/** Opens one of the app's documents (terms, privacy policy, licence…) in the window. */
+function showLegal(id) {
+  showWindow();
+  win?.webContents.executeJavaScript(`window.talqavaShowLegal && window.talqavaShowLegal(${JSON.stringify(id)})`).catch(() => {});
 }
 
 // ---------- start and stop ----------

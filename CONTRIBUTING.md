@@ -57,7 +57,7 @@ This type-checks the code and runs every test. It must pass. The tests use stand
 - **The page is plain JavaScript** (`public/app.js`) with a tiny `h()` helper for elements. No framework.
 - **Styles use the named theme colours** (`--text`, `--panel`, `--accent-ink`, `--warn`, `--bad` and so on, in `public/theme.css`), never a fixed colour, so both themes keep working.
 - **Agents ask before acting.** Anything that changes files, spends money or sends something waits for the owner's approval unless the owner chose otherwise. Do not add a way around that.
-- **No new dependency** without a good reason, said in the pull request.
+- **No new dependency** without a good reason, said in the pull request, and a licence our [open-source policy](legal/OPEN_SOURCE_POLICY.md) allows. Run `npm run licenses` after any dependency change and commit the notices it updates.
 
 ## Ideas, but not code, from elsewhere
 

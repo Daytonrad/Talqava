@@ -27,6 +27,7 @@ import { loadCrew } from "./crew.ts";
 import { assignableBy, memberOf, oneLine, orgs, reportsOf, requestableBy, rolePrompt } from "./orgs.ts";
 import { orgMemoryPrompt, teamMemoryTool } from "./orgmemory.ts";
 import { libraryPrompt, libraryTool, GENERAL_AGENT } from "./library.ts";
+import { workspacePrompt, workspaceTool } from "./workspace.ts";
 import { structureOf } from "./structures.ts";
 import { WORKSPACE, conversations, getConfig, memory, skills, spaces } from "./store.ts";
 import { resolveModel } from "./models.ts";
@@ -492,12 +493,15 @@ function teamworkTools(org: ReturnType<typeof orgs.active>, botId: string): Tool
     ...(org.members.length > 1 ? [askTool] : []),
     teamMemory,
     libraryForAgents,
+    workspaceForAgents,
     ...(leads ? [proposeTool] : []),
   ];
 }
 
 /** The organization's library of documents, for whoever is running in a conversation. */
 const libraryForAgents = libraryTool((conversationId) => agentOf(conversationId)?.id ?? GENERAL_AGENT);
+/** The organization's workspace of pages, for whoever is running in a conversation. */
+const workspaceForAgents = workspaceTool((conversationId) => agentOf(conversationId)?.id ?? GENERAL_AGENT);
 
 /**
  * Which model an agent's run uses, and how hard it thinks. An agent with a
@@ -600,12 +604,12 @@ export function localRunSpec(jobs: JobBook) {
       const org = orgs.active();
       const role = rolePrompt(bot, org);
       const onChart = Boolean(memberOf(org, bot.id));
-      const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
+      const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), workspacePrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const question = Boolean(quest.kind);
       // Why the task exists, from the mission down: so a hand-off three levels deep still knows what it is for.
       const why = question ? "" : whyPrompt(quest);
       // Whoever may hand work to someone gets assign_task; every member can ask a colleague and use the shared memory.
-      const teamwork = !onChart ? [] : question ? [teamMemory, libraryForAgents] : teamworkTools(org, bot.id);
+      const teamwork = !onChart ? [] : question ? [teamMemory, libraryForAgents, workspaceForAgents] : teamworkTools(org, bot.id);
       if (question) {
         // Answering a colleague is a small job, so it is run as one: a short prompt with only who the agent is and
         // what the organization knows, the two look-up tools, low effort and a few steps. This is what keeps a
@@ -656,7 +660,7 @@ export function localRunSpec(jobs: JobBook) {
       const org = orgs.active();
       const role = rolePrompt(chatBot, org);
       const onChart = Boolean(memberOf(org, chatBot.id));
-      const remembered = onChart ? [orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
+      const remembered = onChart ? [orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), workspacePrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const teamwork = onChart ? teamworkTools(org, chatBot.id) : [];
       return {
         model,
@@ -671,12 +675,12 @@ export function localRunSpec(jobs: JobBook) {
     }
 
     const model = resolveModel(cfg);
-    const tools = [...(await localTools(jobs)), ...(orgs.active().members.length ? [assignTool, askTool, teamMemory] : []), libraryForAgents];
+    const tools = [...(await localTools(jobs)), ...(orgs.active().members.length ? [assignTool, askTool, teamMemory] : []), libraryForAgents, workspaceForAgents];
     const claude = model.kind === "anthropic";
     const linked = await connectors(true);
     return {
       model,
-      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", libraryPrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation))].filter(Boolean).join("\n\n"))}`,
+      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", workspacePrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation)), libraryPrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation))].filter(Boolean).join("\n\n"))}`,
       // Other models read the web with our own page reader; Claude uses Anthropic's.
       tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],
