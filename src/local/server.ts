@@ -60,6 +60,10 @@ const TYPES: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".webm": "video/webm",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
 };
 
 // The local edition wires the shared core to file storage and local tools.
@@ -207,7 +211,7 @@ function serveStatic(res: ServerResponse, urlPath: string) {
   }
   send(res, 200, fs.readFileSync(file), {
     "content-type": TYPES[path.extname(file)] || "application/octet-stream",
-    "content-security-policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+    "content-security-policy": "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
   });
 }
 

@@ -134,7 +134,7 @@ function showWindow() {
     minWidth: 980,
     minHeight: 600,
     title: NAME,
-    backgroundColor: "#0a0a0a",
+    backgroundColor: "#f3f5f3", // the light theme is the default; the page then follows the theme chosen in Settings
     show: false,
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, plugins: true }, // plugins: the built-in PDF viewer, for previews in the library
   });

@@ -232,6 +232,24 @@ function renderSide() {
 // ---------- the window frame ----------
 // One layout for every page: a navigation rail on the left, and beside it a
 // top bar (search and page tools) over the page itself.
+/** The brand video (soft green light over a fine grid) behind a welcome or empty screen. Returns the elements to put first in a `.hero`. */
+function heroVideo() {
+  const theme = () => (document.documentElement.dataset.theme === "light" ? "light" : "dark");
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const poster = h("img", { class: "heroposter", src: `/media/brand-loop-${theme()}.jpg`, alt: "", "aria-hidden": "true" });
+  if (still) return [poster];
+  const video = h("video", { class: "herovideo", src: `/media/brand-loop-${theme()}.webm`, poster: `/media/brand-loop-${theme()}.jpg`, autoplay: "", muted: "", loop: "", playsinline: "", "aria-hidden": "true", tabindex: "-1" });
+  video.muted = true; // set as a property too, which is what lets it start on its own
+  video.addEventListener("loadeddata", () => (poster.hidden = true));
+  return [poster, video];
+}
+// When the theme changes, every brand video on screen switches with it.
+window.addEventListener("talqava-theme", () => {
+  const t = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+  for (const v of document.querySelectorAll(".herovideo")) (v.src = `/media/brand-loop-${t}.webm`), (v.poster = `/media/brand-loop-${t}.jpg`), v.play?.().catch(() => {});
+  for (const i of document.querySelectorAll(".heroposter")) i.src = `/media/brand-loop-${t}.jpg`;
+});
+
 function render() {
   ui.rail = h("nav", { class: "rail", "aria-label": "Main" });
   ui.top = h("header", { class: "top" });
@@ -292,6 +310,18 @@ function go(view, id = null) {
   closePalette();
   renderTop();
   renderBody();
+  enterPage();
+}
+
+/** Plays the page's short entrance once. It is taken off again, so later refreshes of the same page do not replay it. */
+function enterPage() {
+  const body = ui.body;
+  if (!body) return;
+  body.classList.remove("enter");
+  void body.offsetWidth; // restart the animation
+  body.classList.add("enter");
+  clearTimeout(enterPage.timer);
+  enterPage.timer = setTimeout(() => body.classList.remove("enter"), 700);
 }
 
 // The repository picker and quest spending only matter on the bot pages.
@@ -2441,7 +2471,8 @@ function renderOrg() {
     mission.addEventListener("keydown", (e) => e.key === "Enter" && mission.value.trim() && suggestNow(mission.value));
     return h(
       "section",
-      { class: "startpanel", ...drop({ kind: "you" }) },
+      { class: "startpanel hero", ...drop({ kind: "you" }) },
+      heroVideo(),
       h("div", { class: "startyou" }, h("span", { class: "youmark", "aria-hidden": "true" }, "You"), h("div", {}, h("b", {}, "Right now it's just you."), h("p", { class: "note" }, "Build your organization one position at a time. Nothing is added unless you choose it."))),
       h("div", { class: "startstep" }, h("span", { class: "wiznum" }, "1"), h("div", { class: "grow" }, h("b", {}, "What is your organization for?"), h("p", { class: "note small" }, "One sentence. Every agent is told it, and it shapes the suggestions."), h("div", { class: "row" }, mission, h("button", { class: "primary", onclick: () => (mission.value.trim() ? suggestNow(mission.value) : mission.focus()) }, "Suggest positions")))),
       h("div", { class: "startstep" }, h("span", { class: "wiznum" }, "2"), h("div", { class: "grow" }, h("b", {}, "Add positions your way"), h("ul", { class: "startways" }, h("li", {}, "Accept or skip the suggestions"), h("li", {}, "Drag a role or a ready-made team from the left onto this panel"), h("li", {}, h("span", {}, "Or "), h("button", { class: "plain link", onclick: () => orgSettings() }, "copy an example"), h("span", {}, ", then make it yours"))))),
@@ -4704,7 +4735,8 @@ function chatView() {
     ui.log.append(
       h(
         "div",
-        { class: "empty" },
+        { class: "empty hero" },
+        heroVideo(),
         h("h2", {}, `Hello. I'm ${state.config.agentName}.`),
         h("p", {}, "Ask me anything. I can search the web, work with files and remember what matters to you. Pick any AI model at the top right."),
         state.space
@@ -5244,8 +5276,20 @@ function settingsView() {
   const accentRow = h("div");
   const drawAccent = () => fill(accentRow, swatches(accent, (name) => (applyAccent(name), (accentLabel.textContent = NEON[name][0]), drawAccent()), "Accent colour"));
   drawAccent();
+  const themeRow = h("div", { class: "themepick", role: "radiogroup", "aria-label": "Appearance" });
+  const drawTheme = () =>
+    fill(
+      themeRow,
+      [["light", "Light"], ["dark", "Dark"], ["system", "Match my computer"]].map(([id, label]) => {
+        const on = (window.talqavaTheme?.choice ?? "light") === id;
+        return h("button", { class: on ? "on" : "", role: "radio", "aria-checked": String(on), onclick: () => (window.talqavaTheme?.set(id), drawTheme()) }, h("span", { class: `themeswatch ${id}`, "aria-hidden": "true" }), label);
+      }),
+    );
+  drawTheme();
   col.append(
     h("h3", {}, "Look"),
+    h("p", { class: "note" }, "Appearance. Light is the standard look; Match my computer switches between light and dark with it."),
+    themeRow,
     h("p", { class: "note" }, "Accent colour: ", accentLabel, ". Used for buttons and highlights. Each agent has a colour and a look of its own, which you can change when you edit the agent."),
     accentRow,
   );
