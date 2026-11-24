@@ -151,7 +151,7 @@ async function boot() {
   }
   document.title = "Talqava";
   if (!state.config.projects.includes(state.project)) state.project = "";
-  if (needsKey(state.config)) state.view = "settings";
+  if (needsKey(state.config)) (state.view = "integrations"), (ui.integration = "ai-models");
   await Promise.all([loadCrew(), loadQuests(), refreshList(), loadTemplates(), loadSpaces(), loadOrgs()]);
   render();
   clearInterval(boot.timer);
@@ -544,6 +544,7 @@ function needsDialog(needs, repositories) {
       done(null);
       if (need.fix === "integrations-git") return ((ui.integration = "git"), go("integrations"));
       if (need.fix === "integrations-openrouter") return ((ui.integration = "openrouter"), go("integrations"));
+      if (need.fix === "integrations-ai-models") return ((ui.integration = "ai-models"), go("integrations"));
       go("settings");
     };
     const canSkip = needs.every((n) => n.canSkip);
@@ -560,7 +561,7 @@ function needsDialog(needs, repositories) {
           h("p", {}, n.detail),
           n.fix === "choose-repository"
             ? h("div", { class: "row wrap" }, repositories.map((p) => h("button", { class: "primary", onclick: () => done({ project: p }) }, basename(p))))
-            : h("div", { class: "row" }, h("button", { class: "primary", onclick: () => goFix(n) }, n.fix === "integrations-git" ? "Connect a repository" : n.fix === "integrations-openrouter" ? "Connect OpenRouter" : "Open Settings")),
+            : h("div", { class: "row" }, h("button", { class: "primary", onclick: () => goFix(n) }, n.fix === "integrations-git" ? "Connect a repository" : n.fix === "integrations-openrouter" ? "Connect OpenRouter" : n.fix === "integrations-ai-models" ? "Open AI models" : "Open Settings")),
         ),
       ),
       h("div", { class: "row end" }, h("button", { class: "plain", onclick: () => done(null) }, "Cancel"), canSkip ? h("button", { onclick: () => done({ anyway: true }) }, "Start anyway") : null),
@@ -3253,12 +3254,122 @@ const INTEGRATION_MARKS = {
 };
 INTEGRATION_MARKS.mcp = `<svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><rect x="3" y="3" width="42" height="42" rx="11" fill="var(--accent)" fill-opacity="0.11" stroke="var(--accent)" stroke-opacity="0.5" stroke-width="1.25"/><g fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 24h8M26 24h8"/><rect x="20" y="18" width="8" height="12" rx="2.5" fill="var(--bg)"/><circle cx="12" cy="24" r="3" fill="var(--bg)"/><circle cx="36" cy="24" r="3" fill="var(--bg)"/><path d="M24 12v6M24 30v6"/></g></svg>`;
 INTEGRATION_MARKS.openrouter = `<svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><rect x="3" y="3" width="42" height="42" rx="11" fill="var(--accent)" fill-opacity="0.11" stroke="var(--accent)" stroke-opacity="0.45"/><g fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 24h7c3 0 4-1.5 5.5-4.5S28 14 31 14h5"/><path d="M12 24h7c3 0 4 1.5 5.5 4.5S28 34 31 34h5"/><path d="M19 24h17"/><path d="M33 11l3 3-3 3M33 21l3 3-3 3M33 31l3 3-3 3"/></g><circle cx="12" cy="24" r="2.6" fill="var(--accent)"/></svg>`;
+INTEGRATION_MARKS["ai-models"] = `<svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><rect x="3" y="3" width="42" height="42" rx="11" fill="var(--accent)" fill-opacity="0.11" stroke="var(--accent)" stroke-opacity="0.5" stroke-width="1.25"/><g fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="15" y="15" width="18" height="18" rx="3"/><path d="M20 15v-4M28 15v-4M20 37v-4M28 37v-4M15 20h-4M15 28h-4M37 20h-4M37 28h-4"/><path d="M21 24h6"/></g></svg>`;
+INTEGRATION_MARKS["api-keys"] = `<svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><rect x="3" y="3" width="42" height="42" rx="11" fill="var(--accent)" fill-opacity="0.11" stroke="var(--accent)" stroke-opacity="0.5" stroke-width="1.25"/><g fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="24" r="6"/><path d="M24 24h13M32 24v5M36 24v4"/></g></svg>`;
 const integrationMark = (id) => {
   const node = h("span", { class: "imark" });
   node.innerHTML = INTEGRATION_MARKS[id] ?? "";
   return node;
 };
 const STATE_WORDS = { connected: ["Connected", "on"], "needs-setup": ["Not set up", ""], unavailable: ["Unavailable", "bad"] };
+
+/** What the pages under Integrations share: the settings they change, saved and then shown again. */
+const connectionSaver = (col, again) => (patch) =>
+  attempt(async () => {
+    state.config = await api("PUT", "settings", patch);
+    again();
+  }, col);
+
+/** Integrations › AI models: every AI service, backups, and a service set up by hand. */
+function aiModelsPage(col, again) {
+  const c = state.config;
+  const save = connectionSaver(col, again);
+  fill(
+    col,
+    h("button", { class: "plain back", onclick: () => ((ui.integration = null), again()) }, "← All integrations"),
+    h("div", { class: "ihero" }, integrationMark("ai-models"), h("div", { class: "grow" }, h("h1", {}, "AI models"), h("p", { class: "lead" }, "The AI services your agents think with. Pick one, paste its key, and Talqava checks it and finds its models. Connect as many as you like: your team uses one, any agent can use another, and backups take over when a service is down."))),
+  );
+  aiModelsSection(col);
+  const pId = h("input", { placeholder: "Short id, e.g. lmstudio" });
+  const pName = h("input", { placeholder: "Name, e.g. LM Studio" });
+  const pUrl = h("input", { placeholder: "Address ending in /v1, e.g. http://localhost:1234/v1" });
+  const pKey = h("input", { type: "password", placeholder: "API key (blank for local runners)", autocomplete: "off" });
+  const pIn = h("input", { type: "number", min: 0, step: 0.01, placeholder: "$ per million input tokens (0 if free)" });
+  const pOut = h("input", { type: "number", min: 0, step: 0.01, placeholder: "$ per million output tokens (0 if free)" });
+  const pContext = h("input", { type: "number", min: 2000, step: 1000, placeholder: "Context size in tokens (default 32000)" });
+  const others = c.providers.filter((p) => p.kind !== "anthropic");
+  const advanced = h("details", { class: "aiadvanced" }, h("summary", {}, "Advanced: set up a service by hand, with its prices and size"));
+  col.append(advanced);
+  advanced.append(
+    h("p", { class: "note" }, "For a service that is not in the list, or to set a service's prices and how much it holds yourself. Anything that offers the common chat completions format works. Prices are optional; without them only the step budget applies."),
+    ...others.map((p) =>
+      h(
+        "div",
+        { class: "card" },
+        h(
+          "div",
+          { class: "row" },
+          h("div", { class: "grow" }, h("strong", {}, p.name), ` (${p.id}) ${p.baseUrl}`, h("div", { class: "note" }, `${p.hasKey ? "Key saved" : "No key"} · ${p.prices ? `$${p.prices.input} in / $${p.prices.output} out per million tokens` : "prices unknown"} · context ${(p.contextTokens ?? 32000).toLocaleString()} tokens`)),
+          h("button", { class: "plain danger", onclick: () => save({ provider: { id: p.id, remove: true } }) }, "Remove"),
+        ),
+      ),
+    ),
+    h(
+      "form",
+      { class: "form", onsubmit: (e) => (e.preventDefault(), save({ provider: { id: pId.value.trim(), name: pName.value.trim(), baseUrl: pUrl.value.trim(), apiKey: pKey.value, prices: { input: pIn.value, output: pOut.value }, contextTokens: pContext.value } })) },
+      pId,
+      pName,
+      pUrl,
+      pKey,
+      h("div", { class: "row" }, pIn, pOut),
+      pContext,
+      h("p", { class: "note small" }, "Set the context size to what the model really holds. Long tasks are shortened to fit it, so a small local model keeps the task in view instead of losing track."),
+      h("div", {}, h("button", {}, "Add provider")),
+    ),
+  );
+
+}
+
+/** Integrations › API keys: keys for any other service agents call, each sent only to its own address. */
+function apiKeysPage(col, again) {
+  const c = state.config;
+  const save = connectionSaver(col, again);
+  fill(
+    col,
+    h("button", { class: "plain back", onclick: () => ((ui.integration = null), again()) }, "← All integrations"),
+    h("div", { class: "ihero" }, integrationMark("api-keys"), h("div", { class: "grow" }, h("h1", {}, "API keys for other services"), h("p", { class: "lead" }, "For a service with no integration of its own, such as a weather, shipping or accounting service. Agents use a key by its name and never see it."))),
+  );
+  const sName = h("input", { placeholder: "NAME, e.g. WEATHER_KEY" });
+  const sValue = h("input", { type: "password", placeholder: "The key or token", autocomplete: "off" });
+  const sHost = h("input", { placeholder: "Host it may be sent to, e.g. api.example.com" });
+  col.append(
+    h("h3", {}, "API keys for other services"),
+    h("p", { class: "note" }, "The agent uses these by name in API calls and never sees the values. Each key is only ever sent to its own host."),
+    ...c.secrets.map((s) => h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("strong", {}, s.name), ` → ${s.host}`), h("button", { class: "plain danger", onclick: () => save({ secret: { name: s.name, remove: true } }) }, "Remove")))),
+    h("form", { class: "form", onsubmit: (e) => (e.preventDefault(), save({ secret: { name: sName.value.trim(), value: sValue.value, host: sHost.value.trim() } })) }, sName, sValue, sHost, h("div", {}, h("button", {}, "Add key"))),
+  );
+
+}
+
+/** Under Integrations › MCP: connectors added by hand, including ones that run as a program on this computer. */
+function connectorsByHand(col, again) {
+  const c = state.config;
+  const save = connectionSaver(col, again);
+  const mName = h("input", { placeholder: "Name, e.g. notion" });
+  const mUrl = h("input", { placeholder: "https://… (the connector's MCP address)" });
+  const mToken = h("input", { type: "password", placeholder: "Access token (if it needs one)", autocomplete: "off" });
+  const mCommand = h("input", { placeholder: "Or a program to run, e.g. npx -y @some/mcp-server", class: "mono" });
+  col.append(
+    h("h3", {}, "All connectors, and ones that run on this computer"),
+    h("p", { class: "note" }, "Connectors give agents ready-made tools for other services. The app connects to them from this computer, so they work with every model. A connector can be on the web, or a program this computer runs. Their tools ask before changing anything unless the connector marks them read-only, and agents give them only to agents with the connectors power."),
+    ...c.mcpServers.map((s) =>
+      h(
+        "div",
+        { class: "card" },
+        h("div", { class: "row" }, h("div", { class: "grow" }, h("strong", {}, s.name), " ", h("code", {}, s.command || s.url)), h("button", { class: "plain danger", onclick: () => save({ mcpServer: { name: s.name, remove: true } }) }, "Remove")),
+      ),
+    ),
+    h(
+      "form",
+      { class: "form", onsubmit: (e) => (e.preventDefault(), save({ mcpServer: { name: mName.value.trim(), url: mUrl.value.trim(), token: mToken.value, command: mCommand.value.trim() } })) },
+      mName,
+      mUrl,
+      mToken,
+      mCommand,
+      h("div", {}, h("button", {}, "Add connector")),
+    ),
+  );
+}
 
 async function integrationsView() {
   ui.body.className = "body";
@@ -3276,7 +3387,9 @@ async function integrationsView() {
   const act = (fn) => attempt(async () => (await fn(), (state.config = await api("GET", "state")), renderTop(), again()), col);
 
   if (ui.integration === "git" && git) return fill(col, ...gitIntegrationPage(git, act, col, again));
-  if (ui.integration === "mcp" && git) return fill(col, ...mcpIntegrationPage(git, act, col, again));
+  if (ui.integration === "ai-models") return aiModelsPage(col, again);
+  if (ui.integration === "api-keys") return apiKeysPage(col, again);
+  if (ui.integration === "mcp" && git) return (fill(col, ...mcpIntegrationPage(git, act, col, again)), connectorsByHand(col, again));
   if (ui.integration === "openrouter" && git) {
     if (ui.orWaiting && !git.connected) waitForSignIn();
     return fill(col, ...openrouterIntegrationPage(git, act, col, again));
@@ -3312,7 +3425,7 @@ async function integrationsView() {
           ),
         ),
       ),
-    h("p", { class: "note" }, "More integrations will be added here. Services that offer a connector (an MCP server) can already be added under ", h("button", { class: "plain link", onclick: () => go("settings") }, "Settings → Connectors"), "."),
+    h("p", { class: "note" }, "More integrations will be added here. Any service that offers a connector (an MCP server) can already be added under ", h("button", { class: "plain link", onclick: () => ((ui.integration = "mcp"), again()) }, "MCP"), "."),
   );
 }
 
@@ -3451,7 +3564,7 @@ function openrouterIntegrationPage(or, act, col, again) {
         { class: "card" },
         current
           ? h("div", {}, h("b", {}, `${current.name}`), h("p", { class: "note" }, `Every agent uses it, except agents you gave a model of their own. About ${current.free ? "nothing" : money(taskCost(current.prices))} for a typical task by one agent; the receipt of each task shows the real cost OpenRouter charged.`))
-          : h("div", {}, h("b", {}, `Your team uses ${state.config?.model?.startsWith("anthropic/") ? "Claude, through your Anthropic key" : state.config?.model || "the model set under Settings"}`), h("p", { class: "note" }, "Choose a model below to run your team on OpenRouter instead. You can switch back at any time under Settings.")),
+          : h("div", {}, h("b", {}, `Your team uses ${state.config?.model?.startsWith("anthropic/") ? "Claude, through your Anthropic key" : state.config?.model || "the model set under AI models"}`), h("p", { class: "note" }, "Choose a model below to run your team on OpenRouter instead. You can switch back at any time under Integrations → AI models.")),
         h("p", { class: "note small" }, "To give one agent its own model, open that agent, and under Model choose OpenRouter and the model. Cheaper models suit routine work; stronger ones suit managers and complex tasks."),
       ),
       h("div", { class: "row" }, search, sort),
@@ -3530,7 +3643,7 @@ function mcpIntegrationPage(mcp, act, col, again) {
       h("p", { class: "note", style: "margin: 0" }, "A connector lets your agents use another service, such as your documents, calendar or CRM. Their tools ask you before changing anything, and what they return is treated as outside information."),
       mcp.connectors.map((c) => h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("b", {}, c.name), h("div", { class: "mono small muted" }, c.where)), h("button", { class: "danger", onclick: () => confirm(`Remove the ${c.name} connector? Your agents can no longer use its tools.`) && act(() => api("PUT", "settings", { mcpServer: { name: c.name, remove: true } })) }, "Remove")))),
       h("form", { class: "card form", onsubmit: (e) => (e.preventDefault(), act(() => api("PUT", "settings", { mcpServer: { name: name.value.trim(), url: address.value.trim(), token: token.value } }))) }, h("b", {}, "Add a connector"), h("p", { class: "note small" }, "The service gives you its MCP address, and a token if it needs one."), name, address, token, h("div", {}, h("button", { class: "primary" }, "Add connector"))),
-      h("p", { class: "note small" }, "Connectors that run as a program on this computer are added under ", h("button", { class: "plain link", onclick: () => go("settings") }, "Settings → Connectors"), "."),
+      h("p", { class: "note small" }, "A connector that runs as a program on this computer is added below."),
     ),
   ];
 }
@@ -4859,7 +4972,7 @@ function modelPicker() {
     }),
   ).then((lists) => pick.isConnected && show(lists.flat()));
   pick.addEventListener("change", () => {
-    if (!pick.value) return go("settings");
+    if (!pick.value) return (ui.integration = "ai-models"), go("integrations");
     attempt(async () => {
       state.config = await api("PUT", "settings", { model: pick.value });
     });
@@ -5448,11 +5561,7 @@ async function jobsView() {
  */
 function aiModelsSection(col) {
   const box = h("div", { class: "aimodels" }, h("p", { class: "note" }, "Loading the AI services…"));
-  col.append(
-    h("h3", { id: "ai-models" }, "AI models"),
-    h("p", { class: "note" }, "Connect the AI services your agents use. Pick one, paste its key, and Talqava checks it and finds its models. Connect as many as you like: your team can use one, and any agent can use another."),
-    box,
-  );
+  col.append(box);
   let g = null;
   const refresh = async () => {
     g = await api("GET", "gateway").catch(() => null);
@@ -5493,7 +5602,20 @@ function aiModelsSection(col) {
               h(
                 "div",
                 { class: "aiconn" },
-                h("div", { class: "grow" }, h("strong", {}, c.name), c.inUse ? h("span", { class: "tag ok" }, "Your team's model") : null, h("div", { class: "note small" }, c.address ? short(c.address) : "Connected with your key")),
+                h(
+                  "div",
+                  { class: "grow" },
+                  h("strong", {}, c.name),
+                  c.inUse ? h("span", { class: "tag ok" }, "Your team's model") : null,
+                  // A model program on this computer is checked now: it may have been closed, or have no models yet.
+                  c.live
+                    ? h(
+                        "div",
+                        { class: `note small ${c.live.running && c.live.models ? "" : "warnline"}` },
+                        !c.live.running ? `Not running right now. Start ${c.name} to use it.` : c.live.models ? `Running · ${c.live.models} model${c.live.models === 1 ? "" : "s"} on this computer` : `Running, but no models downloaded yet. Download one in ${c.name}, then press Models.`,
+                      )
+                    : h("div", { class: "note small" }, c.address ? short(c.address) : "Connected with your key"),
+                ),
                 h("button", { class: "small", onclick: () => modelsDialog(c) }, "Models"),
                 h("button", { class: "small plain danger", onclick: () => confirm(`Disconnect ${c.name}?\n\nIts key is forgotten on this computer.${c.inUse ? " Your team goes back to Claude." : ""}`) && attempt(async () => (await api("DELETE", `gateway/${encodeURIComponent(c.id)}`), refresh()), col) }, "Disconnect"),
               ),
@@ -5687,7 +5809,7 @@ function aiModelsSection(col) {
 
 function settingsView() {
   const c = state.config;
-  const col = page("Settings", "Connect AI models, and choose how your agents work, what they may spend and how Talqava looks.");
+  const col = page("Settings", "How your agents work, what they may spend, and how Talqava looks. Connections to AI models and other services are under Integrations.");
   const save = (patch) =>
     attempt(async () => {
       state.config = await api("PUT", "settings", patch);
@@ -5698,9 +5820,8 @@ function settingsView() {
   const select = (options, value) => h("select", {}, options.map(([id, label]) => h("option", { value: id, selected: id === value }, label)));
 
   if (needsKey(c)) {
-    col.append(h("div", { class: "banner" }, "To get started, connect an AI service under AI models below: Anthropic (Claude), OpenAI, Google Gemini and many more, or free models on this computer."));
+    col.append(h("div", { class: "banner" }, "To get started, connect an AI service: ", h("button", { class: "plain link", onclick: () => ((ui.integration = "ai-models"), go("integrations")) }, "Integrations → AI models"), ". Anthropic (Claude), OpenAI, Google Gemini and many more, or free models on this computer."));
   }
-  aiModelsSection(col);
 
   // The accent is a per-person choice, kept in this browser, so it changes at once without saving.
   const accentLabel = h("span", {}, NEON[accent][0]);
@@ -5820,87 +5941,11 @@ function settingsView() {
     ),
   );
 
-  const pId = h("input", { placeholder: "Short id, e.g. lmstudio" });
-  const pName = h("input", { placeholder: "Name, e.g. LM Studio" });
-  const pUrl = h("input", { placeholder: "Address ending in /v1, e.g. http://localhost:1234/v1" });
-  const pKey = h("input", { type: "password", placeholder: "API key (blank for local runners)", autocomplete: "off" });
-  const pIn = h("input", { type: "number", min: 0, step: 0.01, placeholder: "$ per million input tokens (0 if free)" });
-  const pOut = h("input", { type: "number", min: 0, step: 0.01, placeholder: "$ per million output tokens (0 if free)" });
-  const pContext = h("input", { type: "number", min: 2000, step: 1000, placeholder: "Context size in tokens (default 32000)" });
-  const others = c.providers.filter((p) => p.kind !== "anthropic");
-  const advanced = h("details", { class: "aiadvanced" }, h("summary", {}, "Advanced: set up a service by hand, with its prices and size"));
-  col.append(advanced);
-  advanced.append(
-    h("p", { class: "note" }, "For a service that is not in the list, or to set a service's prices and how much it holds yourself. Anything that offers the common chat completions format works. Prices are optional; without them only the step budget applies."),
-    ...others.map((p) =>
-      h(
-        "div",
-        { class: "card" },
-        h(
-          "div",
-          { class: "row" },
-          h("div", { class: "grow" }, h("strong", {}, p.name), ` (${p.id}) ${p.baseUrl}`, h("div", { class: "note" }, `${p.hasKey ? "Key saved" : "No key"} · ${p.prices ? `$${p.prices.input} in / $${p.prices.output} out per million tokens` : "prices unknown"} · context ${(p.contextTokens ?? 32000).toLocaleString()} tokens`)),
-          h("button", { class: "plain danger", onclick: () => save({ provider: { id: p.id, remove: true } }) }, "Remove"),
-        ),
-      ),
-    ),
-    h(
-      "form",
-      { class: "form", onsubmit: (e) => (e.preventDefault(), save({ provider: { id: pId.value.trim(), name: pName.value.trim(), baseUrl: pUrl.value.trim(), apiKey: pKey.value, prices: { input: pIn.value, output: pOut.value }, contextTokens: pContext.value } })) },
-      pId,
-      pName,
-      pUrl,
-      pKey,
-      h("div", { class: "row" }, pIn, pOut),
-      pContext,
-      h("p", { class: "note small" }, "Set the context size to what the model really holds. Long tasks are shortened to fit it, so a small local model keeps the task in view instead of losing track."),
-      h("div", {}, h("button", {}, "Add provider")),
-    ),
+  col.append(
+    h("h3", {}, "Connections"),
+    h("p", { class: "note" }, "AI models, repositories, connectors and keys for other services are under ", h("button", { class: "plain link", onclick: () => ((ui.integration = null), go("integrations")) }, "Integrations"), "."),
   );
 
-  const sName = h("input", { placeholder: "NAME, e.g. WEATHER_KEY" });
-  const sValue = h("input", { type: "password", placeholder: "The key or token", autocomplete: "off" });
-  const sHost = h("input", { placeholder: "Host it may be sent to, e.g. api.example.com" });
-  col.append(
-    h("h3", {}, "API keys for other services"),
-    h("p", { class: "note" }, "The agent uses these by name in API calls and never sees the values. Each key is only ever sent to its own host."),
-    ...c.secrets.map((s) => h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("strong", {}, s.name), ` → ${s.host}`), h("button", { class: "plain danger", onclick: () => save({ secret: { name: s.name, remove: true } }) }, "Remove")))),
-    h("form", { class: "form", onsubmit: (e) => (e.preventDefault(), save({ secret: { name: sName.value.trim(), value: sValue.value, host: sHost.value.trim() } })) }, sName, sValue, sHost, h("div", {}, h("button", {}, "Add key"))),
-  );
-
-  const repoPath = h("input", { placeholder: "Folder of a git repository, e.g. /home/you/code/my-app" });
-  col.append(
-    h("h3", {}, "Repositories"),
-    h("p", { class: "note" }, "Repositories and GitHub are set up under ", h("button", { class: "plain link", onclick: () => ((ui.integration = "git"), go("integrations")) }, "Integrations → Git"), ", which also shows each repository's branch and state."),
-    h("p", { class: "note" }, "Agents can work on these. A task that changes code gets its own branch and working copy, so your files and branches are untouched until you keep its changes. Agents in a repository's .crew/ folder join the team when it is chosen."),
-    ...c.projects.map((p) => h("div", { class: "card" }, h("div", { class: "row" }, h("div", { class: "grow" }, h("code", {}, p)), h("button", { class: "plain danger", onclick: () => save({ project: { path: p, remove: true } }) }, "Remove")))),
-    h("form", { class: "form", onsubmit: (e) => (e.preventDefault(), save({ project: { path: repoPath.value.trim() } })) }, repoPath, h("div", {}, h("button", {}, "Add repository"))),
-  );
-
-  const mName = h("input", { placeholder: "Name, e.g. notion" });
-  const mUrl = h("input", { placeholder: "https://… (the connector's MCP address)" });
-  const mToken = h("input", { type: "password", placeholder: "Access token (if it needs one)", autocomplete: "off" });
-  const mCommand = h("input", { placeholder: "Or a program to run, e.g. npx -y @some/mcp-server", class: "mono" });
-  col.append(
-    h("h3", {}, "Connectors (MCP servers)"),
-    h("p", { class: "note" }, "Connectors give agents ready-made tools for other services. The app connects to them from this computer, so they work with every model. A connector can be on the web, or a program this computer runs. Their tools ask before changing anything unless the connector marks them read-only, and agents give them only to agents with the connectors power."),
-    ...c.mcpServers.map((s) =>
-      h(
-        "div",
-        { class: "card" },
-        h("div", { class: "row" }, h("div", { class: "grow" }, h("strong", {}, s.name), " ", h("code", {}, s.command || s.url)), h("button", { class: "plain danger", onclick: () => save({ mcpServer: { name: s.name, remove: true } }) }, "Remove")),
-      ),
-    ),
-    h(
-      "form",
-      { class: "form", onsubmit: (e) => (e.preventDefault(), save({ mcpServer: { name: mName.value.trim(), url: mUrl.value.trim(), token: mToken.value, command: mCommand.value.trim() } })) },
-      mName,
-      mUrl,
-      mToken,
-      mCommand,
-      h("div", {}, h("button", {}, "Add connector")),
-    ),
-  );
   // About Talqava, its licence, privacy policy, terms and other policies.
   const legal = h("div", { class: "legallinks" });
   api("GET", "legal").then((docs) => legal.isConnected && fill(legal, docs.map((d) => h("button", { class: "small", onclick: () => showLegal(d.id) }, d.title)))).catch(() => {});
@@ -6288,7 +6333,7 @@ async function renderWsPage(col, id) {
 
 /** Which guide explains each page. */
 const GUIDES_BY_VIEW = { chat: "chat", inbox: "inbox", tasks: "tasks", home: "work-in-progress", quest: "work-in-progress", bot: "work-in-progress", jobs: "schedules", team: "organization", market: "marketplace", marketbot: "marketplace", workspace: "workspace", library: "library", memory: "memory", skills: "skills", audit: "audit-log", integrations: "integrations", settings: "settings" };
-const guideFor = (view) => GUIDES_BY_VIEW[view] ?? null;
+const guideFor = (view) => (view === "integrations" && ui.integration === "ai-models" ? "ai-models" : GUIDES_BY_VIEW[view] ?? null);
 
 /** Shows a user guide in a reader beside the page. Links between guides open in the reader; the list of guides is on the left. */
 async function showGuide(id) {

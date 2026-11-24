@@ -23,7 +23,7 @@ export interface IntegrationInfo {
 }
 
 /** The categories integrations are filed under, in the order they are shown. */
-export const INTEGRATION_CATEGORIES = ["AI models", "Code and repositories", "AI apps and connectors"];
+export const INTEGRATION_CATEGORIES = ["AI models", "Code and repositories", "AI apps and connectors", "Other services"];
 
 const run = (cwd: string, args: string[], timeout = 15_000): Promise<{ ok: boolean; out: string; err: string }> =>
   new Promise((resolve) => {
@@ -115,7 +115,29 @@ export async function listIntegrations(): Promise<{ categories: string[]; integr
   const { openrouterIntegration } = await import("./openrouter.ts");
   const openrouter = await openrouterIntegration({ withAccount: false });
   const line = (i: IntegrationInfo): IntegrationInfo => ({ id: i.id, name: i.name, category: i.category, summary: i.summary, state: i.state, status: i.status });
-  return { categories: INTEGRATION_CATEGORIES, integrations: [line(openrouter), line(git), line(mcp)] };
+  const { gatewayState } = await import("./gateway.ts");
+  const gateway = await gatewayState({ live: false });
+  const connected = gateway.connected.filter((c) => !c.standard);
+  const using = connected.find((c) => c.inUse);
+  const aiModels: IntegrationInfo = {
+    id: "ai-models",
+    name: "AI models",
+    category: "AI models",
+    summary: "Connect the AI services your agents think with: Claude, OpenAI, Google Gemini, Mistral, DeepSeek, Azure, a LiteLLM gateway and more than 20 others, or free models on this computer. Pick one, paste its key, done. Choose backup models for when a service is down.",
+    state: connected.length ? "connected" : "needs-setup",
+    status: connected.length ? `${connected.length} connected${using ? ` · your team uses ${using.name}` : ""}` : "Connect an AI service to get started",
+  };
+  const cfg = getConfig();
+  const keys = Object.keys(cfg.secrets);
+  const apiKeys: IntegrationInfo = {
+    id: "api-keys",
+    name: "API keys for other services",
+    category: "Other services",
+    summary: "Keys for any other service your agents call, such as a weather, shipping or accounting service. Each key is only ever sent to its own address, and agents use it by name without ever seeing it.",
+    state: keys.length ? "connected" : "needs-setup",
+    status: keys.length ? `${keys.length} key${keys.length === 1 ? "" : "s"} saved` : "No keys saved",
+  };
+  return { categories: INTEGRATION_CATEGORIES, integrations: [aiModels, line(openrouter), line(git), line(mcp), apiKeys] };
 }
 
 /**

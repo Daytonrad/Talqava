@@ -76,6 +76,7 @@ const GUIDES = [
   ["skills", "Skills"],
   ["audit-log", "Audit log"],
   ["integrations", "Integrations"],
+  ["ai-models", "AI models"],
   ["settings", "Settings and AI models"],
 ].map(([id, title]) => ({ id, title, file: `guide/${id}.md` }));
 
@@ -424,7 +425,7 @@ async function updateSettings(body: any) {
 }
 
 // ---------- quests ----------
-/** A repository the user added under Settings, or null. */
+/** A repository the user connected under Integrations → Git, or null. */
 function projectOrNull(folder: string | null): string | null {
   return folder && getConfig().projects.includes(folder) ? folder : null;
 }
@@ -736,7 +737,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       if (blocked) throw new HttpError(409, blocked);
       // Say plainly what is missing, instead of the model library's error about headers.
       if (!questStore.get(id) && getConfig().model.startsWith("anthropic/") && !publicConfig().hasApiKey) {
-        throw new HttpError(400, "No AI model is set up yet. Open Settings → AI models and connect one: Anthropic (Claude), OpenAI, Gemini and many more, or a free model on this computer.");
+        throw new HttpError(400, "No AI model is set up yet. Open Integrations → AI models and connect one: Anthropic (Claude), OpenAI, Gemini and many more, or a free model on this computer.");
       }
       await engine.startRun(id, text);
       return send(res, 200, { ok: true });
@@ -844,7 +845,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       // With no repository chosen and exactly one connected, that one is meant: a task about "our repository" should find it.
       const onlyOne = !body.project && body.project !== "" && getConfig().projects.length === 1 ? getConfig().projects[0] : null;
       const project = body.project ? projectOrNull(String(body.project)) : onlyOne;
-      if (body.project && !project) throw new HttpError(400, "Add that repository under Settings first.");
+      if (body.project && !project) throw new HttpError(400, "Connect that repository under Integrations → Git first.");
       if (body.template) {
         // A core quest: its own bot unless another was chosen.
         try {
@@ -906,7 +907,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       const cfg = getConfig();
       // Hand it to Claude: the default model if that is Claude, else Claude's strongest.
       const model = typeof body.model === "string" && body.model ? body.model : cfg.model.startsWith("anthropic/") ? cfg.model : "anthropic/claude-opus-5-5";
-      if (model.startsWith("anthropic/") && !publicConfig().hasApiKey) throw new HttpError(400, "Connect Anthropic (Claude) under Settings → AI models to hand quests to Claude.");
+      if (model.startsWith("anthropic/") && !publicConfig().hasApiKey) throw new HttpError(400, "Connect Anthropic (Claude) under Integrations → AI models to hand tasks to Claude.");
       return send(res, 200, await attemptQuest(async () => (await quests.escalate(id, model), { ok: true, model })));
     }
     if (action === "changes" && req.method === "GET") return send(res, 200, await attemptQuest(() => quests.changes(id)));
@@ -984,7 +985,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       // The same checks as before any task: what it cannot do without is caught first, for free.
       const onlyOne = !body.project && body.project !== "" && getConfig().projects.length === 1 ? getConfig().projects[0] : null;
       const project = body.project ? projectOrNull(String(body.project)) : onlyOne;
-      if (body.project && !project) throw new HttpError(400, "Add that repository under Settings first.");
+      if (body.project && !project) throw new HttpError(400, "Connect that repository under Integrations → Git first.");
       const bot = loadCrew(project ?? undefined).bots.find((b) => b.id === body.owner);
       if (!bot) throw new HttpError(400, "Choose an agent for the task.");
       const text = String(body.description || body.title || "").trim();

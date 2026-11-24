@@ -1,10 +1,10 @@
 # Integrations
 
-Integrations connect Talqava to the tools your business already uses, so your agents can work where the work is. Today there are three: **OpenRouter** for AI models, **Git and GitHub** for code and documents kept in repositories, and **MCP** for using your team from Claude and for giving agents tools from other services. Each one says plainly what agents can and cannot do with it.
+Integrations connect Talqava to the tools your business already uses, so your agents can work where the work is. Today there are five: **AI models** for the AI services your agents think with, **OpenRouter** for hundreds of models through one account, **Git and GitHub** for code and documents kept in repositories, **MCP** for using your team from Claude and for giving agents tools from other services, and **API keys for other services**. Each one says plainly what agents can and cannot do with it.
 
 ## What you'll see
 
-- **Integrations** at the top, with category buttons: **All**, **AI models**, **Code and repositories**, and **AI apps and connectors**.
+- **Integrations** at the top, with category buttons: **All**, **AI models**, **Code and repositories**, **AI apps and connectors** and **Other services**.
 - A card for each integration with its name, a one-line status (for example "2 repositories connected"), a short summary and a badge: **Connected**, **Not set up** or **Unavailable**.
 - **Set up →** or **Manage →** on each card opens its own page. **← All integrations** takes you back.
 
@@ -15,6 +15,10 @@ Integrations connect Talqava to the tools your business already uses, so your ag
 - **Removing is safe.** Removing an integration forgets its sign-in here. It does not delete anything on GitHub or OpenRouter.
 
 ## How to…
+
+### Connect an AI service
+
+Open **AI models**, press **Connect** on a service, paste its key and press **Connect**. Talqava checks the key and lists the service's models. The [AI models guide](ai-models.md) covers it all: free models on your computer, choosing your team's model, backups, and setting up a service by hand.
 
 ### Connect OpenRouter (one account for hundreds of models)
 
@@ -71,7 +75,15 @@ A repository is a folder of code or documents with a full history of changes. Th
 2. Add an access token only if the service needs one.
 3. Press **Add connector**. Remove it any time with **Remove**.
 
-Connectors that run as a program on your computer are added under **Settings → Connectors**.
+A connector that runs as a program on your computer is added further down the same page, under **All connectors, and ones that run on this computer**: give it a name and the program to run, then press **Add connector**.
+
+### Store a key for another service
+
+So agents can call a service that has no integration of its own, without seeing your key:
+
+1. Open **API keys for other services**.
+2. Type a name in capitals (for example WEATHER_KEY), the key, and the host it may be sent to (for example api.example.com).
+3. Press **Add key**. Agents use it by name; the value is only ever sent to that host. Press **Remove** to forget it.
 
 ## Tips
 
