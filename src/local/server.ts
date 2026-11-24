@@ -38,6 +38,7 @@ import { execFile } from "node:child_process";
 import { needsFor } from "./preflight.ts";
 import { acceptSuggestion, suggestPositions } from "./suggest.ts";
 import { audit, readAudit, redact } from "./audit.ts";
+import { connect, disconnect, findLocal, gatewayState, listModels, setBackups } from "./gateway.ts";
 import { finishOpenRouterSignIn, openrouterIntegration, openrouterModels, removeOpenRouter, saveOpenRouterKey, startOpenRouterSignIn, useOpenRouterModel } from "./openrouter.ts";
 import { autoSetupGit, cloneRepository, disconnectRepository, gitIntegration, githubAccounts, githubRepos, installGit, listIntegrations, pollGithubSignIn, removeGitIntegration, startGithubSignIn, testGithub } from "./integrations.ts";
 import { ASSIGN_RULES, INDUSTRIES, REQUEST_RULES, STRUCTURES, seatsFor } from "./structures.ts";
@@ -691,7 +692,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       if (blocked) throw new HttpError(409, blocked);
       // Say plainly what is missing, instead of the model library's error about headers.
       if (!questStore.get(id) && getConfig().model.startsWith("anthropic/") && !publicConfig().hasApiKey) {
-        throw new HttpError(400, "No AI model is set up yet. Open Settings and paste your Anthropic API key, or choose a free local model there.");
+        throw new HttpError(400, "No AI model is set up yet. Open Settings → AI models and connect one: Anthropic (Claude), OpenAI, Gemini and many more, or a free model on this computer.");
       }
       await engine.startRun(id, text);
       return send(res, 200, { ok: true });
@@ -722,23 +723,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
 
   if (parts[0] === "providers" && parts[2] === "models" && req.method === "GET") {
-    // The models a provider has, so people choose from a list instead of typing names.
+    // The models a service has, so people choose from a list instead of typing names.
     const provider = getConfig().providers.find((p) => p.id === parts[1]);
     if (!provider) throw new HttpError(404, "No such provider.");
-    if (provider.kind === "anthropic") return send(res, 200, { models: MODELS.map((m) => m.id), reachable: true });
-    // OpenRouter lists hundreds of models; only those that can use tools are any good to an agent.
-    if (provider.id === "openrouter") return send(res, 200, { models: (await openrouterModels().catch(() => [])).map((m) => m.id), reachable: true });
-    try {
-      const r = await fetch(`${String(provider.baseUrl).replace(/\/+$/, "")}/models`, {
-        headers: provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {},
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!r.ok) return send(res, 200, { models: [], reachable: true, note: `${provider.name} answered ${r.status}.` });
-      const data = (await r.json()) as { data?: { id: string }[] };
-      return send(res, 200, { models: (data.data ?? []).map((m) => m.id).sort(), reachable: true });
-    } catch {
-      return send(res, 200, { models: [], reachable: false, note: `${provider.name} is not answering at ${provider.baseUrl}. If it is a local model runner, start it.` });
-    }
+    const listed = await listModels(provider);
+    return send(res, 200, { ...listed, details: listed.models, models: listed.models.map((m) => m.id) });
   }
 
   if (route === "GET quest-templates") {
@@ -873,7 +862,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       const cfg = getConfig();
       // Hand it to Claude: the default model if that is Claude, else Claude's strongest.
       const model = typeof body.model === "string" && body.model ? body.model : cfg.model.startsWith("anthropic/") ? cfg.model : "anthropic/claude-opus-5-5";
-      if (model.startsWith("anthropic/") && !publicConfig().hasApiKey) throw new HttpError(400, "Add an Anthropic API key under Settings to hand quests to Claude.");
+      if (model.startsWith("anthropic/") && !publicConfig().hasApiKey) throw new HttpError(400, "Connect Anthropic (Claude) under Settings → AI models to hand quests to Claude.");
       return send(res, 200, await attemptQuest(async () => (await quests.escalate(id, model), { ok: true, model })));
     }
     if (action === "changes" && req.method === "GET") return send(res, 200, await attemptQuest(() => quests.changes(id)));
@@ -896,6 +885,16 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       throw err instanceof HttpError ? err : new HttpError((err as { status?: number }).status ?? 400, (err as Error).message);
     }
   };
+
+  // The gateway to AI models: every service Talqava can connect, and the ones that are.
+  if (parts[0] === "gateway") {
+    if (req.method === "GET" && !parts[1]) return send(res, 200, await gatewayState());
+    if (req.method === "POST" && parts[1] === "find-local") return send(res, 200, await attempt(() => findLocal()));
+    if (req.method === "PUT" && parts[1] === "backups") return send(res, 200, await attempt(() => setBackups(body.backups)));
+    if (req.method === "POST" && parts[1] && parts[2] === "connect") return send(res, 200, await attempt(() => connect(parts[1], body)));
+    if (req.method === "DELETE" && parts[1]) return send(res, 200, await attempt(() => disconnect(parts[1])));
+  }
+
 
   if (route === "GET memory") return send(res, 200, memory.list());
   if (route === "POST memory") return send(res, 200, await attempt(() => memory.add(body.text, body.space ? String(body.space) : undefined)));

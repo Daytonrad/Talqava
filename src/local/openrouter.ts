@@ -91,6 +91,11 @@ export async function openrouterModels(refresh = false): Promise<OpenRouterModel
   }
 }
 
+/** The kept list, without asking OpenRouter. Empty before it was first loaded. */
+export function openrouterCatalogNow(): OpenRouterModel[] {
+  return readJson<Catalog | null>(catalogFile(), null)?.models ?? [];
+}
+
 /** What is known about one model without asking OpenRouter: its prices and size, from the kept list. */
 export function openrouterModelInfo(id: string): OpenRouterModel | undefined {
   return readJson<Catalog | null>(catalogFile(), null)?.models.find((m) => m.id === id);

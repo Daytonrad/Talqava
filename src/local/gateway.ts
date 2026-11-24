@@ -1,0 +1,382 @@
+// The gateway to AI models: one list of the AI services Talqava can use, and
+// one way to connect any of them. Pick a service, paste its key, and Talqava
+// checks the key, finds the service's models and fills in everything else.
+//
+// Nearly every service speaks one of two formats: Anthropic's (Claude) or the
+// common "chat completions" format that OpenAI started and most others copy.
+// Talqava speaks both, so a service is just an entry in this list: where it
+// is, where to get a key, and its small differences. Prices, sizes and which
+// models can use tools come from OpenRouter's public list of models, which is
+// kept up to date by OpenRouter and needs no account.
+import { getConfig, saveConfig } from "./store.ts";
+import type { ProviderConfig } from "./store.ts";
+import { OPENROUTER_ID, openrouterModels } from "./openrouter.ts";
+import type { OpenRouterModel } from "./openrouter.ts";
+import { audit } from "./audit.ts";
+import { MODELS } from "./store.ts";
+import type { Prices } from "../core/index.ts";
+
+export type ServiceGroup = "popular" | "open" | "makers" | "gateways" | "local";
+
+export interface Service {
+  id: string;
+  name: string;
+  /** One line on what it is and why someone would choose it. */
+  about: string;
+  group: ServiceGroup;
+  kind: "anthropic" | "openai";
+  /** The address; "{resource}" in it is filled from what the person types. Empty when the person gives the whole address. */
+  baseUrl: string;
+  /** What to ask for when the address depends on the person's account. */
+  addressHint?: string;
+  /** Where to get a key. */
+  keyUrl?: string;
+  /** What a key looks like, to catch a key pasted into the wrong service. */
+  keyPrefix?: string;
+  needsKey: boolean;
+  keyHeader?: "bearer" | "api-key";
+  tokenLimit?: "max_tokens" | "max_completion_tokens";
+  /** This service's models on OpenRouter's list start with this, e.g. "openai/". Their prices are the same. */
+  priceFrom?: string;
+  /** Hosts of open models: sizes and tool use are looked up by the model's name, but their prices are their own. */
+  hostsOpenModels?: boolean;
+  /** Its own sign-in screen in Talqava. */
+  ownSetup?: "openrouter";
+}
+
+export const SERVICES: Service[] = [
+  // The model makers most people know.
+  { id: "anthropic", name: "Anthropic (Claude)", about: "Claude: Talqava's standard models, the best at agent work. Web search and connectors run on Claude.", group: "popular", kind: "anthropic", baseUrl: "https://api.anthropic.com", keyUrl: "https://console.anthropic.com/settings/keys", keyPrefix: "sk-ant-", needsKey: true },
+  { id: "openai", name: "OpenAI (GPT)", about: "The GPT models from the makers of ChatGPT.", group: "popular", kind: "openai", baseUrl: "https://api.openai.com/v1", keyUrl: "https://platform.openai.com/api-keys", keyPrefix: "sk-", needsKey: true, tokenLimit: "max_completion_tokens", priceFrom: "openai/" },
+  { id: "gemini", name: "Google (Gemini)", about: "Google's Gemini models. A key from Google AI Studio has a free allowance.", group: "popular", kind: "openai", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", keyUrl: "https://aistudio.google.com/apikey", needsKey: true, priceFrom: "google/" },
+  { id: "xai", name: "xAI (Grok)", about: "The Grok models from xAI.", group: "popular", kind: "openai", baseUrl: "https://api.x.ai/v1", keyUrl: "https://console.x.ai", keyPrefix: "xai-", needsKey: true, priceFrom: "x-ai/" },
+  { id: "mistral", name: "Mistral", about: "Mistral's models, from France.", group: "popular", kind: "openai", baseUrl: "https://api.mistral.ai/v1", keyUrl: "https://console.mistral.ai/api-keys", needsKey: true, priceFrom: "mistralai/" },
+  { id: "deepseek", name: "DeepSeek", about: "Strong models at a very low price.", group: "popular", kind: "openai", baseUrl: "https://api.deepseek.com/v1", keyUrl: "https://platform.deepseek.com/api_keys", keyPrefix: "sk-", needsKey: true, priceFrom: "deepseek/" },
+  // Fast, low-cost hosts of open models (Llama, Qwen, DeepSeek, gpt-oss and others).
+  { id: "groq", name: "Groq", about: "Open models answered very fast, at a low price.", group: "open", kind: "openai", baseUrl: "https://api.groq.com/openai/v1", keyUrl: "https://console.groq.com/keys", keyPrefix: "gsk_", needsKey: true, hostsOpenModels: true },
+  { id: "together", name: "Together AI", about: "Hundreds of open models in one place.", group: "open", kind: "openai", baseUrl: "https://api.together.xyz/v1", keyUrl: "https://api.together.ai/settings/api-keys", needsKey: true, hostsOpenModels: true },
+  { id: "fireworks", name: "Fireworks AI", about: "Fast open models for business use.", group: "open", kind: "openai", baseUrl: "https://api.fireworks.ai/inference/v1", keyUrl: "https://fireworks.ai/account/api-keys", keyPrefix: "fw_", needsKey: true, hostsOpenModels: true },
+  { id: "cerebras", name: "Cerebras", about: "Very fast answers from open models.", group: "open", kind: "openai", baseUrl: "https://api.cerebras.ai/v1", keyUrl: "https://cloud.cerebras.ai", keyPrefix: "csk-", needsKey: true, hostsOpenModels: true },
+  { id: "nvidia", name: "NVIDIA", about: "Open models hosted by NVIDIA.", group: "open", kind: "openai", baseUrl: "https://integrate.api.nvidia.com/v1", keyUrl: "https://build.nvidia.com", keyPrefix: "nvapi-", needsKey: true, hostsOpenModels: true },
+  { id: "huggingface", name: "Hugging Face", about: "Open models from many hosts through one Hugging Face account.", group: "open", kind: "openai", baseUrl: "https://router.huggingface.co/v1", keyUrl: "https://huggingface.co/settings/tokens", keyPrefix: "hf_", needsKey: true, hostsOpenModels: true },
+  // More model makers.
+  { id: "moonshot", name: "Moonshot (Kimi)", about: "Moonshot AI's Kimi models.", group: "makers", kind: "openai", baseUrl: "https://api.moonshot.ai/v1", keyUrl: "https://platform.moonshot.ai/console/api-keys", keyPrefix: "sk-", needsKey: true, priceFrom: "moonshotai/" },
+  { id: "qwen", name: "Alibaba (Qwen)", about: "Alibaba's Qwen models, through Alibaba Cloud Model Studio (international).", group: "makers", kind: "openai", baseUrl: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", keyUrl: "https://modelstudio.console.alibabacloud.com", keyPrefix: "sk-", needsKey: true, priceFrom: "qwen/" },
+  { id: "cohere", name: "Cohere", about: "Cohere's Command models, made for business.", group: "makers", kind: "openai", baseUrl: "https://api.cohere.ai/compatibility/v1", keyUrl: "https://dashboard.cohere.com/api-keys", needsKey: true, priceFrom: "cohere/" },
+  // One account for many models, or a company's own gateway or cloud.
+  { id: OPENROUTER_ID, name: "OpenRouter", about: "One account for hundreds of models from every major maker, paid from one balance. Sign in with your browser: no key to copy.", group: "gateways", kind: "openai", baseUrl: "https://openrouter.ai/api/v1", keyUrl: "https://openrouter.ai/keys", keyPrefix: "sk-or-", needsKey: true, ownSetup: "openrouter" },
+  { id: "azure", name: "Microsoft Azure OpenAI", about: "OpenAI's models on your company's Azure account. Give your resource's name and key.", group: "gateways", kind: "openai", baseUrl: "https://{resource}.openai.azure.com/openai/v1", addressHint: "Your Azure resource name (the first part of its address), or its full address", keyUrl: "https://portal.azure.com", needsKey: true, keyHeader: "api-key", tokenLimit: "max_completion_tokens", priceFrom: "openai/" },
+  { id: "litellm", name: "LiteLLM gateway", about: "Your company's own LiteLLM gateway, which can reach Amazon Bedrock, Google Vertex and others.", group: "gateways", kind: "openai", baseUrl: "", addressHint: "The gateway's address, e.g. http://localhost:4000", needsKey: true },
+  { id: "custom", name: "Another service", about: "Any other service or gateway that offers the common chat completions format (Portkey, vLLM on a server, and many more).", group: "gateways", kind: "openai", baseUrl: "", addressHint: "Its address, usually ending in /v1", needsKey: false },
+  // On this computer: free, private, nothing leaves the computer.
+  { id: "ollama", name: "Ollama", about: "Free models that run on this computer. Nothing leaves it.", group: "local", kind: "openai", baseUrl: "http://localhost:11434/v1", keyUrl: "https://ollama.com/download", needsKey: false },
+  { id: "lmstudio", name: "LM Studio", about: "Free models on this computer, with an easy app to download them.", group: "local", kind: "openai", baseUrl: "http://localhost:1234/v1", keyUrl: "https://lmstudio.ai", needsKey: false },
+  { id: "llamacpp", name: "llama.cpp", about: "The llama.cpp server on this computer.", group: "local", kind: "openai", baseUrl: "http://localhost:8080/v1", needsKey: false },
+  { id: "jan", name: "Jan", about: "Free models on this computer, in the Jan app.", group: "local", kind: "openai", baseUrl: "http://localhost:1337/v1", keyUrl: "https://jan.ai", needsKey: false },
+  { id: "vllm", name: "vLLM", about: "A vLLM server on this computer.", group: "local", kind: "openai", baseUrl: "http://localhost:8000/v1", needsKey: false },
+];
+
+export const GROUP_NAMES: Record<ServiceGroup, string> = {
+  popular: "The best-known model makers",
+  open: "Fast, low-cost hosts of open models",
+  makers: "More model makers",
+  gateways: "One account for many models, or your company's own",
+  local: "On this computer: free and private",
+};
+
+/** Before a service is connected, the local model runner from the standard settings counts as Ollama. */
+const LEGACY_LOCAL = "local";
+
+export const serviceOf = (id: string) => SERVICES.find((s) => s.id === id);
+
+/** The service a saved provider came from. */
+function serviceOfProvider(p: ProviderConfig): Service | undefined {
+  if (p.kind === "anthropic") return serviceOf("anthropic");
+  if (p.id === OPENROUTER_ID) return serviceOf(OPENROUTER_ID);
+  return p.service ? serviceOf(p.service) : undefined;
+}
+
+// ---------- addresses and keys ----------
+
+/** The address to use, from the service and what the person typed. */
+export function addressFor(service: Service, typed?: unknown): string {
+  const text = String(typed ?? "").trim();
+  let address = service.baseUrl;
+  if (service.baseUrl.includes("{resource}")) {
+    if (!text) throw new Error(`${service.name} needs ${service.addressHint?.toLowerCase() ?? "an address"}.`);
+    if (/^https?:\/\//i.test(text)) {
+      const url = new URL(text);
+      address = `${url.origin}/openai/v1`;
+    } else {
+      if (!/^[a-z0-9][a-z0-9-]{1,62}$/i.test(text)) throw new Error("That does not look like an Azure resource name. It is the first part of the resource's address, e.g. my-company in my-company.openai.azure.com.");
+      address = service.baseUrl.replace("{resource}", text.toLowerCase());
+    }
+  } else if (!service.baseUrl || (text && service.group === "local")) {
+    if (!text) throw new Error(`${service.name} needs ${service.addressHint?.toLowerCase() ?? "an address"}.`);
+    address = text;
+  }
+  let url: URL;
+  try {
+    url = new URL(address);
+  } catch {
+    throw new Error("That address is not complete. It starts with http:// or https://.");
+  }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("An address starts with http:// or https://.");
+  let clean = url.href.replace(/\/+$/, "");
+  // A LiteLLM gateway answers both with and without /v1; the common form is used.
+  if (service.id === "litellm" && !/\/v1$/.test(clean)) clean += "/v1";
+  return clean;
+}
+
+function headersFor(service: Service | undefined, key: string | undefined): Record<string, string> {
+  if (!key) return {};
+  if (service?.kind === "anthropic") return { "x-api-key": key, "anthropic-version": "2023-06-01" };
+  return service?.keyHeader === "api-key" ? { "api-key": key } : { authorization: `Bearer ${key}` };
+}
+
+// ---------- models ----------
+
+/** Models that are not for chat (pictures, speech, embeddings, moderation) are left out of the lists. */
+const NOT_CHAT = /(embed|embedding|whisper|tts|speech|transcri|dall-e|image|imagen|veo|sora|audio|realtime|moderation|rerank|guard|davinci|babbage|-search|ocr|vision-preview$|text-similarity|clip)/i;
+
+export interface ListedModel {
+  id: string;
+  /** Can call tools, which agents need: true, false, or null when not known. */
+  tools: boolean | null;
+  contextTokens?: number;
+  prices?: Prices;
+}
+
+/** OpenRouter's public list, as a lookup. Kept for a day; an empty list when it cannot be reached. */
+async function catalog(): Promise<OpenRouterModel[]> {
+  return openrouterModels().catch(() => []);
+}
+
+/** What is known about one model of a service: tool use, size and prices. */
+export function infoFor(service: Service | undefined, model: string, list: OpenRouterModel[]): Omit<ListedModel, "id"> {
+  const name = model.replace(/^models\//, "").toLowerCase();
+  if (service?.priceFrom) {
+    const exact = list.find((m) => m.id.toLowerCase() === `${service.priceFrom}${name}`) ?? list.find((m) => m.id.toLowerCase() === `${service.priceFrom}${name.replace(/-latest$/, "")}`);
+    if (exact) return { tools: true, contextTokens: exact.contextTokens, prices: exact.prices };
+  }
+  if (service?.group !== "local") {
+    // A host's or gateway's own name for an open model, e.g. meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8: its size and tool use, not its price.
+    let tail = name.split("/").pop()!.replace(/:.*$/, "");
+    for (let before = ""; before !== tail; ) (before = tail), (tail = tail.replace(/[-_](instruct|turbo|chat|it|fp8|fp16|bf16|awq|int4|int8|gguf|latest)$/, ""));
+    const near = list.find((m) => m.id.split("/").pop()!.toLowerCase() === tail);
+    if (near) return { tools: true, contextTokens: near.contextTokens };
+  }
+  return { tools: null };
+}
+
+/** A service's models, as it lists them, with what is known about each. Chat models that can use tools come first. */
+export async function listModels(provider: ProviderConfig): Promise<{ models: ListedModel[]; reachable: boolean; note?: string }> {
+  if (provider.kind === "anthropic") return { models: MODELS.map((m) => ({ id: m.id, tools: true })), reachable: true };
+  if (provider.id === OPENROUTER_ID) return { models: (await catalog()).map((m) => ({ id: m.id, tools: true, contextTokens: m.contextTokens, prices: m.prices })), reachable: true };
+  const service = serviceOfProvider(provider);
+  try {
+    const r = await fetch(`${String(provider.baseUrl).replace(/\/+$/, "")}/models`, {
+      headers: headersFor(service ?? ({ keyHeader: provider.keyHeader } as Service), provider.apiKey),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (r.status === 401 || r.status === 403) return { models: [], reachable: true, note: `${provider.name} did not accept the key. Connect it again with a new key.` };
+    if (!r.ok) return { models: [], reachable: true, note: `${provider.name} did not list its models (it answered ${r.status}). Type the model's name instead.` };
+    const data = (await r.json()) as { data?: { id: string; supports_tools?: boolean }[]; models?: { name?: string; id?: string }[] };
+    const rows: { id: string; supports_tools?: boolean }[] = (data.data ?? data.models?.map((m) => ({ id: String(m.id ?? m.name ?? "") })) ?? []).filter((m) => m.id && !NOT_CHAT.test(m.id));
+    const list = await catalog();
+    const models = rows.map((m) => {
+      const id = m.id.replace(/^models\//, "");
+      const info = infoFor(service, id, list);
+      return { id, ...info, tools: typeof m.supports_tools === "boolean" ? m.supports_tools : info.tools };
+    });
+    const rank = (m: ListedModel) => (m.tools === true ? 0 : m.tools === null ? 1 : 2);
+    models.sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id));
+    return { models, reachable: true };
+  } catch {
+    const local = service?.group === "local" || /localhost|127\.0\.0\.1/.test(String(provider.baseUrl));
+    return { models: [], reachable: false, note: local ? `${provider.name} is not running at ${provider.baseUrl}. Start it, then try again.` : `${provider.name} could not be reached at ${provider.baseUrl}.` };
+  }
+}
+
+/** Prices and size for one model, when known, for counting its cost. */
+export async function knownPrices(provider: ProviderConfig, model: string): Promise<{ prices?: Prices; contextTokens?: number }> {
+  const service = serviceOfProvider(provider);
+  if (!service || service.group === "local") return {};
+  const info = infoFor(service, model, await catalog());
+  return { prices: info.prices, contextTokens: info.contextTokens };
+}
+
+/** The same, from the copy of the list kept on this computer, without waiting on the network. */
+export function knownPricesNow(provider: ProviderConfig, model: string, list: OpenRouterModel[]): { prices?: Prices; contextTokens?: number } {
+  const service = serviceOfProvider(provider);
+  if (!service || service.group === "local") return {};
+  const info = infoFor(service, model, list);
+  return { prices: info.prices, contextTokens: info.contextTokens };
+}
+
+// ---------- connecting ----------
+
+/** The provider id a service is saved under. Local runners keep the id "local" for the first one, so settings from before still work. */
+function providerIdFor(service: Service, cfg = getConfig()): string {
+  if (service.id === "ollama" && cfg.providers.some((p) => p.id === LEGACY_LOCAL && (!p.service || p.service === "ollama"))) return LEGACY_LOCAL;
+  return service.id;
+}
+
+/** Checks a key and address with the service itself, before anything is saved. */
+async function tryConnection(service: Service, baseUrl: string, key: string | undefined): Promise<{ models: number; note?: string }> {
+  const url = service.kind === "anthropic" ? `${baseUrl}/v1/models` : `${baseUrl}/models`;
+  let r: Response;
+  try {
+    r = await fetch(url, { headers: headersFor(service, key), signal: AbortSignal.timeout(12_000) });
+  } catch {
+    if (service.group === "local") throw new Error(`${service.name} is not running on this computer${service.keyUrl ? `. Install it from ${service.keyUrl.replace(/^https:\/\//, "")}, start it, then connect again` : ". Start it, then connect again"}.`);
+    throw new Error(`${service.name} could not be reached at ${baseUrl}. Check the address and your internet connection.`);
+  }
+  if (r.status === 401 || r.status === 403) throw new Error(`${service.name} did not accept that key. Check you copied all of it${service.keyUrl ? ` from ${service.keyUrl.replace(/^https:\/\//, "")}` : ""}.`);
+  // Some services do not list their models; the key is still good, and the model's name is typed instead.
+  if (r.status === 404 || r.status === 405) return { models: 0, note: `${service.name} does not list its models, so type the name of the model you want when you choose it.` };
+  if (!r.ok) throw new Error(`${service.name} answered with an error (${r.status}). Check the address and key, or try again in a minute.`);
+  const data = (await r.json().catch(() => ({}))) as { data?: unknown[]; models?: unknown[] };
+  return { models: (data.data ?? data.models ?? []).length };
+}
+
+export interface ConnectInput {
+  key?: unknown;
+  address?: unknown;
+  /** For "Another service": its name. */
+  name?: unknown;
+}
+
+/** Connects a service: checks the key with the service, then saves it. Returns how many models it has. */
+export async function connect(serviceId: string, input: ConnectInput): Promise<{ provider: string; models: number; note?: string }> {
+  const service = serviceOf(serviceId);
+  if (!service) throw new Error("There is no such AI service in the list.");
+  if (service.ownSetup) throw new Error(`${service.name} has its own sign-in under Integrations.`);
+  const key = String(input.key ?? "").trim() || undefined;
+  const cfg = getConfig();
+  const id = service.id === "custom" ? customId(String(input.name ?? ""), cfg) : providerIdFor(service, cfg);
+  const existing = cfg.providers.find((p) => p.id === id);
+  const keyToUse = key ?? (service.kind === "anthropic" ? cfg.apiKey || undefined : existing?.apiKey);
+  if (service.needsKey && !keyToUse) throw new Error(`Paste your ${service.name} key${service.keyUrl ? `. You can get one at ${service.keyUrl.replace(/^https:\/\//, "")}` : ""}.`);
+  if (key) {
+    // A key from another service is caught before it is sent anywhere: it would only be refused.
+    const other = SERVICES.filter((x) => x.id !== service.id && x.keyPrefix && x.keyPrefix.length > (service.keyPrefix?.length ?? 0) && key.startsWith(x.keyPrefix)).sort((x, y) => y.keyPrefix!.length - x.keyPrefix!.length)[0];
+    if (other) throw new Error(`That looks like a key for ${other.name}, not ${service.name}.${service.keyPrefix ? ` A key for ${service.name} starts with ${service.keyPrefix}` : ""}`.replace(/\.?$/, "."));
+    if (service.keyPrefix && !key.startsWith(service.keyPrefix)) throw new Error(`A key for ${service.name} starts with ${service.keyPrefix}. Check you copied the right one.`);
+  }
+  const baseUrl = service.kind === "anthropic" ? service.baseUrl : addressFor(service, input.address);
+  const result = await tryConnection(service, baseUrl, keyToUse);
+
+  if (service.kind === "anthropic") {
+    if (key) saveConfig({ apiKey: key });
+  } else {
+    const provider: ProviderConfig = {
+      ...existing,
+      id,
+      kind: "openai",
+      service: service.id,
+      name: service.id === "custom" ? String(input.name ?? "").trim().slice(0, 60) || "Another service" : service.name,
+      baseUrl,
+      apiKey: keyToUse,
+      ...(service.keyHeader ? { keyHeader: service.keyHeader } : {}),
+      ...(service.group === "local" ? { prices: { input: 0, output: 0 } } : {}),
+    };
+    saveConfig({ providers: [...cfg.providers.filter((p) => p.id !== id), provider] });
+  }
+  audit({ actor: "owner", actorName: "You", kind: "integration", action: `Connected ${service.id === "custom" ? String(input.name ?? "another AI service") : service.name}`, detail: result.models ? `${result.models} models` : result.note });
+  return { provider: service.kind === "anthropic" ? "anthropic" : id, ...result };
+}
+
+function customId(name: string, cfg = getConfig()): string {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
+  if (!/[a-z]/.test(base)) throw new Error("Give the service a name, e.g. Portkey.");
+  // A name that is also a listed service, or a provider already connected from elsewhere, gets a number.
+  let id = base;
+  for (let n = 2; SERVICES.some((s) => s.id === id && s.id !== "custom") || cfg.providers.some((p) => p.id === id && p.service !== "custom"); n++) id = `${base}-${n}`;
+  return id;
+}
+
+/** Disconnects a service. Its key is forgotten; agents using one of its models go back to Claude. */
+export function disconnect(providerId: string): { model: string } {
+  const cfg = getConfig();
+  const provider = cfg.providers.find((p) => p.id === providerId);
+  if (!provider) throw new Error("That AI service is not connected.");
+  const fallback = "anthropic/claude-opus-5-5";
+  const uses = (ref: string) => ref.startsWith(`${providerId}/`);
+  if (provider.kind === "anthropic") {
+    saveConfig({ apiKey: "" });
+    audit({ actor: "owner", actorName: "You", kind: "integration", action: "Removed the Anthropic key" });
+    return { model: cfg.model };
+  }
+  const model = uses(cfg.model) ? fallback : cfg.model;
+  saveConfig({ model, providers: cfg.providers.filter((p) => p.id !== providerId), backups: (cfg.backups ?? []).filter((b) => !uses(b)) });
+  audit({ actor: "owner", actorName: "You", kind: "integration", action: `Disconnected ${provider.name}`, detail: uses(cfg.model) ? "Your team went back to Claude, which it used before." : undefined });
+  return { model };
+}
+
+/** Looks for model runners on this computer and connects every one that is running. */
+export async function findLocal(): Promise<{ found: { service: string; name: string; models: number }[] }> {
+  const found: { service: string; name: string; models: number }[] = [];
+  await Promise.all(
+    SERVICES.filter((s) => s.group === "local").map(async (service) => {
+      try {
+        const r = await fetch(`${service.baseUrl}/models`, { signal: AbortSignal.timeout(1500) });
+        if (!r.ok) return;
+        const data = (await r.json()) as { data?: unknown[] };
+        found.push({ service: service.id, name: service.name, models: data.data?.length ?? 0 });
+      } catch {
+        // Not running.
+      }
+    }),
+  );
+  for (const f of found) await connect(f.service, {}).catch(() => {});
+  return { found: found.sort((a, b) => a.name.localeCompare(b.name)) };
+}
+
+// ---------- backups ----------
+
+/** Sets the backup models, in order. Each must come from a connected service. */
+export function setBackups(list: unknown): { backups: string[] } {
+  if (!Array.isArray(list)) throw new Error("Send the backups as a list.");
+  const cfg = getConfig();
+  const backups: string[] = [];
+  for (const item of list) {
+    const ref = String(item ?? "").trim();
+    const at = ref.indexOf("/");
+    if (at < 1 || !/^[\w.:@/+-]{1,160}$/.test(ref)) throw new Error("Choose each backup from the list of models.");
+    if (!cfg.providers.some((p) => p.id === ref.slice(0, at))) throw new Error(`${ref.slice(0, at)} is not connected.`);
+    if (ref !== cfg.model && !backups.includes(ref)) backups.push(ref);
+  }
+  if (backups.length > 4) throw new Error("Up to four backups.");
+  saveConfig({ backups });
+  return { backups };
+}
+
+// ---------- what the page shows ----------
+
+export async function gatewayState() {
+  const cfg = getConfig();
+  const connected = cfg.providers
+    .filter((p) => (p.kind === "anthropic" ? Boolean(cfg.apiKey || process.env.ANTHROPIC_API_KEY) : true))
+    .map((p) => {
+      const service = serviceOfProvider(p) ?? (p.id === LEGACY_LOCAL ? serviceOf("ollama") : undefined);
+      return {
+        id: p.id,
+        name: p.kind === "anthropic" ? "Anthropic (Claude)" : p.name,
+        service: service?.id ?? "custom",
+        group: service?.group ?? "gateways",
+        address: p.kind === "anthropic" ? null : p.baseUrl,
+        hasKey: p.kind === "anthropic" ? true : Boolean(p.apiKey),
+        inUse: cfg.model.startsWith(`${p.id}/`),
+        // The standard local entry is there from the start; it only counts once something answers.
+        standard: p.id === LEGACY_LOCAL && !p.service,
+      };
+    });
+  return {
+    services: SERVICES.map(({ id, name, about, group, needsKey, keyUrl, keyPrefix, addressHint, baseUrl, ownSetup }) => ({ id, name, about, group, needsKey, keyUrl, keyPrefix, addressHint: addressHint ?? null, address: group === "local" ? baseUrl : null, ownSetup: ownSetup ?? null })),
+    groups: GROUP_NAMES,
+    connected,
+    model: cfg.model,
+    backups: cfg.backups ?? [],
+  };
+}

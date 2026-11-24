@@ -28,7 +28,7 @@ Talqava gives you a team of AI agents, each in a role on an org chart that **you
 - **A full record.** An audit log of every operation, by you and by each agent, and a receipt for every task: what was done, what was not, what it cost, and which agent spent it.
 - **A library for your documents.** A file manager for your organization's files, with folders. Each file or folder is either open to agents (all of them, some groups, or named agents) or private, never seen by any AI.
 - **Memory that lasts.** Shared memory for the whole organization, each group and each agent, plus skills agents write for themselves and work on a schedule.
-- **Any AI model.** Claude on your Anthropic key, hundreds of models through [OpenRouter](https://openrouter.ai), or free local models (Ollama, LM Studio, llama.cpp) that keep everything on your computer.
+- **Any AI model, set up in a minute.** Settings → AI models lists more than 20 services: Claude, OpenAI, Google Gemini, xAI, Mistral, DeepSeek, Groq, Together, OpenRouter, Azure OpenAI, a LiteLLM gateway, and free local models (Ollama, LM Studio, llama.cpp) that keep everything on your computer. Pick one, paste its key, done. Backup models take over if a service is down.
 - **Works with the tools you have.** Git and GitHub, connectors (MCP servers) for other services, and Talqava itself as an MCP server, so Claude and other AI apps can use your team.
 - **Light and dark.** A light theme by default and a dark one, in the Talqava greens.
 - **Share an organization.** Export it as one readable file and import it on another computer. No keys, tasks, memory or documents go in the file.
@@ -97,9 +97,16 @@ Drop files on the **Library** page or straight into the library folder (`data/or
 
 ### Models
 
-- **Claude**, on your Anthropic API key from [console.anthropic.com](https://console.anthropic.com). Claude gets Anthropic's web search and connectors.
-- **OpenRouter**: sign in through the web under **Integrations**, then choose any of its models, with their prices.
-- **Any service with the common "chat completions" format**, including local model runners such as Ollama, LM Studio and llama.cpp's server, which are free and keep everything on your computer. Add one under Settings → Model providers, then press **Check this model**: three short tests show which kinds of work it can do.
+Everything is under **Settings → AI models**. Pick a service, paste its key, and Talqava checks the key with the service, finds its models and fills in the rest. Connect as many as you like: the team uses one model, and any agent can use another.
+
+- **Model makers:** Anthropic (Claude), OpenAI, Google Gemini, xAI (Grok), Mistral, DeepSeek, Moonshot (Kimi), Alibaba (Qwen) and Cohere. Claude gets Anthropic's web search and connectors.
+- **Hosts of open models:** Groq, Together AI, Fireworks, Cerebras, NVIDIA and Hugging Face.
+- **One account or your company's own:** OpenRouter (sign in through the web), Microsoft Azure OpenAI, a LiteLLM gateway (which can reach Amazon Bedrock, Google Vertex and others), or any other service with the common "chat completions" format.
+- **On this computer, free and private:** Ollama, LM Studio, llama.cpp, Jan and vLLM. **Find models on this computer** connects every one that is running.
+
+Each model's list shows which models can use tools (agents need them), how much text they hold and, where known, their prices. Prices and sizes come from OpenRouter's public list of models, which needs no account. **Backup models** take over, in the order you choose, when a service is down, busy or out of credit; each switch is noted in the audit log. Press **Check this model** for three short tests of which kinds of work a model can do.
+
+Talqava talks to these services itself, in their own formats. No gateway software is bundled or needs installing.
 
 With **cost saving** on (Settings), a lead that plans keeps your main model, an agent doing its part uses a mid-size model, and a quick question uses the small one. With it off, every agent uses your model.
 
@@ -163,7 +170,7 @@ and open <http://localhost:8787>. Tailscale, or an HTTPS reverse proxy such as C
 
 | Setting | Where | Notes |
 | --- | --- | --- |
-| AI model | Settings, Integrations | Claude, OpenRouter, or a provider you add |
+| AI model | Settings → AI models | Claude, OpenAI, Gemini, Mistral, OpenRouter, Azure, LiteLLM, local models and more |
 | API key | Settings or `ANTHROPIC_API_KEY` | For Claude |
 | Budget per task | Settings | 40 steps and $1 by default, shared with everything handed on |
 | Check before starting | Settings | On by default |

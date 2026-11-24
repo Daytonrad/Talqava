@@ -78,6 +78,10 @@ export interface ProviderConfig {
   prices?: Prices;
   /** How many tokens the model can hold; longer conversations are shortened to fit. */
   contextTokens?: number;
+  /** Which service in the list of AI services this is (e.g. "openai", "gemini"), when it was connected from that list. */
+  service?: string;
+  /** Where the key goes, for services that do not use "Authorization: Bearer" (Azure). */
+  keyHeader?: "bearer" | "api-key";
 }
 
 export const DEFAULT_PROVIDERS: ProviderConfig[] = [
@@ -98,6 +102,8 @@ export interface Config {
   budget: Budget;
   /** The most all bots together may spend in a calendar month, in US dollars. None means no limit. */
   monthlyBudget?: number;
+  /** Backup models, in order: used when the chosen model's service is down, busy or out of credit. */
+  backups?: string[];
   /** The last model check of each model, by ref. */
   modelChecks: Record<string, CheckResult>;
   /** Repositories bots may work on, by their top folder. */
@@ -168,7 +174,9 @@ export function publicConfig() {
       prices: p.prices,
       contextTokens: p.contextTokens ?? null,
       hasKey: p.kind === "anthropic" ? Boolean(apiKey(cfg)) : Boolean(p.apiKey),
+      service: p.service ?? null,
     })),
+    backups: cfg.backups ?? [],
     budget: cfg.budget,
     monthlyBudget: cfg.monthlyBudget ?? null,
     modelChecks: cfg.modelChecks,

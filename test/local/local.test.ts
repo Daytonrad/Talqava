@@ -1844,6 +1844,98 @@ function conversationText(id: string): string {
   return JSON.stringify(store.conversations.get(id)?.messages ?? []);
 }
 
+test("the gateway to AI models: connect any service with a key, list its models with prices, set backups, disconnect", async () => {
+  const http = await import("node:http");
+  const gateway = await import("../../src/local/gateway.ts");
+  const { resolveModel } = await import("../../src/local/models.ts");
+  const { FallbackModel } = await import("../../src/core/index.ts");
+  // A stand-in service: its own list of models, and OpenRouter's public list for prices.
+  const server = http.createServer((req, res) => {
+    const json = (status: number, body: unknown) => (res.writeHead(status, { "content-type": "application/json" }), res.end(JSON.stringify(body)));
+    if (req.url === "/api/v1/models?supported_parameters=tools")
+      return json(200, { data: [
+        { id: "openai/gpt-test", name: "GPT Test", pricing: { prompt: "0.000002", completion: "0.000008" }, context_length: 400000, supported_parameters: ["tools"] },
+        { id: "meta-llama/llama-test-70b", name: "Llama Test", pricing: { prompt: "0.0000001", completion: "0.0000002" }, context_length: 128000, supported_parameters: ["tools"] },
+      ] });
+    const auth = req.headers.authorization ?? req.headers["api-key"];
+    if (req.url === "/v1/models" || req.url === "/openai/v1/models") {
+      if (auth !== "Bearer good-key" && auth !== "good-key") return json(401, { error: { message: "bad key" } });
+      return json(200, { data: [{ id: "text-embedding-test" }, { id: "whisper-test" }, { id: "mystery-model" }, { id: "gpt-test" }, { id: "meta-llama/Llama-Test-70B-Instruct-Turbo" }] });
+    }
+    json(404, {});
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const address = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}`;
+  process.env.TALQAVA_OPENROUTER_API = `${address}/api/v1`;
+  const before = store.getConfig();
+  try {
+    // Another test's copy of the list is replaced with this one.
+    await (await import("../../src/local/openrouter.ts")).openrouterModels(true);
+    // Wrong keys are caught before anything is saved, with what to do about it.
+    await assert.rejects(gateway.connect("litellm", { address, key: "wrong" }), /did not accept that key/);
+    await assert.rejects(gateway.connect("openai", { key: "sk-ant-abc" }), /looks like a key for Anthropic \(Claude\), not OpenAI/);
+    await assert.rejects(gateway.connect("litellm", { key: "good-key" }), /needs the gateway's address/);
+    await assert.rejects(gateway.connect("openrouter", { key: "x" }), /its own sign-in/);
+    assert.equal(store.getConfig().providers.some((p) => p.id === "litellm"), false);
+
+    // A LiteLLM gateway: the address gets its /v1, and the models come with what is known about them.
+    const r = await gateway.connect("litellm", { address, key: "good-key" });
+    assert.deepEqual(r, { provider: "litellm", models: 5 });
+    const litellm = store.getConfig().providers.find((p) => p.id === "litellm")!;
+    assert.equal(litellm.baseUrl, `${address}/v1`);
+    const listed = await gateway.listModels(litellm);
+    // Not for chat (embeddings, speech) is left out; those known to use tools come first.
+    assert.deepEqual(listed.models.map((m) => m.id), ["gpt-test", "meta-llama/Llama-Test-70B-Instruct-Turbo", "mystery-model"]);
+    assert.equal(listed.models[1].tools, true);
+    assert.equal(listed.models[1].contextTokens, 128000);
+    // A gateway's own prices are not known, so none are guessed.
+    assert.equal(listed.models[0].prices, undefined);
+    assert.equal(listed.models[2].tools, null);
+
+    // A model maker's service is priced from the public list; a host of open models is not given another host's prices.
+    store.saveConfig({ providers: [...store.getConfig().providers, { id: "openai", kind: "openai", service: "openai", name: "OpenAI (GPT)", baseUrl: `${address}/v1`, apiKey: "good-key" }, { id: "groq", kind: "openai", service: "groq", name: "Groq", baseUrl: `${address}/v1`, apiKey: "good-key" }] });
+    const openai = store.getConfig().providers.find((p) => p.id === "openai")!;
+    assert.deepEqual((await gateway.listModels(openai)).models.find((m) => m.id === "gpt-test")!.prices, { input: 2, output: 8 });
+    const groq = (await gateway.listModels(store.getConfig().providers.find((p) => p.id === "groq")!)).models.find((m) => m.id.startsWith("meta-llama"))!;
+    assert.equal(groq.prices, undefined);
+    assert.equal(groq.contextTokens, 128000);
+    const model = resolveModel(store.getConfig(), "openai/gpt-test");
+    assert.deepEqual(model.prices, { input: 2, output: 8 });
+
+    // Azure: a resource name becomes its address, and the key goes in its own header.
+    assert.equal(gateway.addressFor(gateway.serviceOf("azure")!, "my-company"), "https://my-company.openai.azure.com/openai/v1");
+    assert.throws(() => gateway.addressFor(gateway.serviceOf("azure")!, "my company!"), /resource name/);
+    await gateway.connect("azure", { address, key: "good-key" });
+    assert.equal(store.getConfig().providers.find((p) => p.id === "azure")!.keyHeader, "api-key");
+    assert.equal((await gateway.listModels(store.getConfig().providers.find((p) => p.id === "azure")!)).models.length, 3);
+
+    // Another service by name.
+    const custom = await gateway.connect("custom", { address: `${address}/v1`, key: "good-key", name: "Portkey" });
+    assert.equal(custom.provider, "portkey");
+    await assert.rejects(gateway.connect("custom", { address: `${address}/v1`, name: "!!" }), /Give the service a name/);
+
+    // Backups: only from connected services; the model behind them hands over.
+    store.saveConfig({ model: "litellm/gpt-test" });
+    assert.throws(() => gateway.setBackups(["nowhere/x"]), /not connected/);
+    assert.deepEqual(gateway.setBackups(["openai/gpt-test", "litellm/gpt-test", "openai/gpt-test", "anthropic/claude-haiku-5-5"]).backups, ["openai/gpt-test", "anthropic/claude-haiku-5-5"]);
+    const withBackups = resolveModel(store.getConfig());
+    assert.ok(withBackups instanceof FallbackModel);
+    assert.deepEqual((withBackups as InstanceType<typeof FallbackModel>).models.map((m) => m.ref), ["litellm/gpt-test", "openai/gpt-test", "anthropic/claude-haiku-5-5"]);
+
+    // Disconnecting forgets the key, drops its backups, and the team goes back to Claude.
+    assert.deepEqual(gateway.disconnect("litellm"), { model: "anthropic/claude-opus-5-5" });
+    gateway.disconnect("openai");
+    assert.deepEqual(store.getConfig().backups, ["anthropic/claude-haiku-5-5"]);
+    const state = await gateway.gatewayState();
+    assert.equal(state.services.length, gateway.SERVICES.length);
+    assert.deepEqual(state.connected.filter((c) => !c.standard).map((c) => c.id).sort(), ["anthropic", "azure", "groq", "portkey"]);
+  } finally {
+    server.close();
+    delete process.env.TALQAVA_OPENROUTER_API;
+    store.saveConfig({ model: before.model, providers: before.providers, backups: before.backups ?? [] });
+  }
+});
+
 test("goals and projects: tasks serve them, sub-tasks inherit them, progress counts, and agents are told", { timeout: 40_000 }, async () => {
   const { orgs } = await import("../../src/local/orgs.ts");
   const market = await import("../../src/local/marketplace.ts");
