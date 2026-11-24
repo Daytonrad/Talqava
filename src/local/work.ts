@@ -12,7 +12,8 @@ import type { Org } from "./orgs.ts";
 import { openOrgDb } from "./library.ts";
 import { loadCrew } from "./crew.ts";
 import { audit } from "./audit.ts";
-import { MAX_RUNNING, questStore, quests } from "./quests.ts";
+import { MAX_RUNNING, questStore, quests, setWhyGoal } from "./quests.ts";
+import { goalLine, goals, goalsDb } from "./goals.ts";
 import type { Quest } from "./quests.ts";
 
 export type Priority = "urgent" | "high" | "normal" | "low";
@@ -42,6 +43,11 @@ export interface WorkItem {
   detail: string;
   /** The run doing the work, once it has started. */
   quest: string | null;
+  /** The goal it serves (its own, or its project's), and the project it is part of. */
+  goal: string | null;
+  goalTitle: string | null;
+  projectId: string | null;
+  projectName: string | null;
   project: string | null;
   /** Its place in its owner's queue (1 is next), while it is waiting to start. */
   queue: number | null;
@@ -76,6 +82,8 @@ interface Row {
   project: string | null;
   handoff: string | null;
   held: string | null;
+  goal: string | null;
+  project_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -103,6 +111,8 @@ function db(orgId: string): DatabaseSync {
       project text,
       handoff text,
       held text,
+      goal text,
+      project_id text,
       created_at text not null,
       updated_at text not null
     );
@@ -112,6 +122,8 @@ function db(orgId: string): DatabaseSync {
     create table if not exists work_comments (id text primary key, item text not null, author text not null, text text not null, at text not null, delivered integer not null default 0);
     create index if not exists work_comments_item on work_comments(item, at);
   `);
+  // The goals' and projects' tables, and (for tasks made before them) the tasks' two links to them.
+  goalsDb(orgId);
   ready.add(d);
   return d;
 }
@@ -145,7 +157,18 @@ function statusOf(row: Row, rows: Row[], quest: Quest | null): { status: Status;
 /** A started task whose run ended well, with nothing left open under it. */
 const finishedRun = (r: Row) => ((q) => q?.status === "done" && !(q.check && !q.check.passed))(r.quest ? questStore.get(r.quest) : null);
 
-function toItem(org: Org, row: Row, rows: Row[], crew = bots(), counts?: Map<string, number>): WorkItem {
+type Links = { goals: Map<string, string>; projects: Map<string, { title: string; goal: string | null }> };
+function linksOf(org: Org): Links {
+  try {
+    return { goals: new Map(goals.list(org).map((g) => [g.id, g.title])), projects: new Map(goals.projects(org).map((p) => [p.id, { title: p.title, goal: p.goal }])) };
+  } catch {
+    return { goals: new Map(), projects: new Map() };
+  }
+}
+
+function toItem(org: Org, row: Row, rows: Row[], crew = bots(), counts?: Map<string, number>, links: Links = linksOf(org)): WorkItem {
+  const project = row.project_id ? links.projects.get(row.project_id) : undefined;
+  const goal = row.goal ?? project?.goal ?? null;
   const quest = row.quest ? questStore.get(row.quest) : null;
   const { status, detail } = statusOf(row, rows, quest);
   const subs = rows.filter((r) => r.parent === row.id);
@@ -169,6 +192,10 @@ function toItem(org: Org, row: Row, rows: Row[], crew = bots(), counts?: Map<str
     status,
     detail,
     quest: row.quest,
+    goal,
+    goalTitle: goal ? (links.goals.get(goal) ?? null) : null,
+    projectId: row.project_id,
+    projectName: project?.title ?? null,
     project: row.project,
     queue,
     subtasks: { total: subs.length, open: subs.filter((r) => r.state !== "done" && r.state !== "cancelled").length },
@@ -185,10 +212,12 @@ function briefOf(org: Org, row: Row, rows: Row[]): string {
   const parent = row.parent ? rows.find((r) => r.id === row.parent) : undefined;
   const comments = db(org.id).prepare("select author, text from work_comments where item = ? order by at").all(row.id) as unknown as { author: string; text: string }[];
   const handoff = row.handoff ? (JSON.parse(row.handoff) as { conversation: string; by: string; text?: string }) : null;
+  const serves = servesLine(org, row);
   // A hand-off carries the text its sender wrote, which already says who it is from and where the report goes.
-  if (handoff?.text) return handoff.text;
+  if (handoff?.text) return serves ? `${handoff.text}\n\n${serves}` : handoff.text;
   return [
     row.description.trim() || row.title,
+    serves,
     parent ? `[This is part of the task “${parent.title}”.]` : "",
     comments.length ? `Notes on this task:\n${comments.map((c) => `- ${nameOf(org, c.author)}: ${c.text}`).join("\n")}` : "",
     `[Task #${row.number}${row.priority !== "normal" ? `, ${row.priority} priority` : ""}. End with a short report of what you did and what you found.]`,
@@ -197,12 +226,25 @@ function briefOf(org: Org, row: Row, rows: Row[]): string {
     .join("\n\n");
 }
 
+/** "[This task serves the goal … through the project ….]", or "" when it is linked to neither. */
+function servesLine(org: Org, row: Pick<Row, "goal" | "project_id">): string {
+  try {
+    const project = row.project_id ? goals.project(org, row.project_id) : null;
+    const goalId = row.goal ?? project?.goal ?? null;
+    const goal = goalId ? goals.get(org, goalId) : null;
+    if (!goal && !project) return "";
+    return `[This task serves ${goal ? `the goal ${goalLine(goal)}` : "the organization"}${project ? ` through the project “${project.title}”` : ""}. Keep the work aimed at that.]`;
+  } catch {
+    return "";
+  }
+}
+
 let scheduling: Promise<void> | null = null;
 let again = false;
 
 export const work = {
   /** A new task. It starts as soon as its owner is free, in priority order. */
-  create(org: Org, input: { title?: unknown; description?: unknown; owner: string; priority?: unknown; parent?: unknown; createdBy: string; review?: boolean; project?: string | null; handoff?: { conversation: string; by: string; text: string } }): WorkItem {
+  create(org: Org, input: { title?: unknown; description?: unknown; owner: string; priority?: unknown; parent?: unknown; createdBy: string; review?: boolean; project?: string | null; handoff?: { conversation: string; by: string; text: string }; goal?: unknown; projectId?: unknown }): WorkItem {
     const d = db(org.id);
     const crew = bots();
     if (!crew.has(input.owner)) throw new Error("Choose an agent for the task.");
@@ -211,10 +253,13 @@ export const work = {
     const parent = input.parent ? rowOf(d, String(input.parent)) : undefined;
     if (input.parent && !parent) throw new Error("There is no such parent task.");
     const priority = PRIORITIES.includes(input.priority as Priority) ? (input.priority as Priority) : ((parent?.priority as Priority) ?? "normal");
+    // A sub-task serves what its parent serves, unless it is given its own goal or project.
+    const projectId = input.projectId ? goals.project(org, String(input.projectId)).id : (parent?.project_id ?? null);
+    const goal = input.goal ? goals.get(org, String(input.goal)).id : input.projectId ? null : (parent?.goal ?? null);
     const number = ((d.prepare("select max(number) n from work_items").get() as { n: number | null }).n ?? 0) + 1;
     const id = newId();
-    d.prepare("insert into work_items (id, number, title, description, priority, owner, parent, created_by, review, state, project, handoff, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?)").run(
-      id, number, title, String(input.description ?? "").trim().slice(0, 20_000), priority, input.owner, parent?.id ?? null, input.createdBy, input.review === false ? 0 : 1, input.project ?? null, input.handoff ? JSON.stringify(input.handoff) : null, now(), now(),
+    d.prepare("insert into work_items (id, number, title, description, priority, owner, parent, created_by, review, state, project, handoff, goal, project_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)").run(
+      id, number, title, String(input.description ?? "").trim().slice(0, 20_000), priority, input.owner, parent?.id ?? null, input.createdBy, input.review === false ? 0 : 1, input.project ?? null, input.handoff ? JSON.stringify(input.handoff) : null, goal, projectId, now(), now(),
     );
     audit({ actor: input.createdBy === "owner" ? "owner" : input.createdBy, actorName: nameOf(org, input.createdBy, crew), kind: "task", action: `Created task #${number} for the ${nameOf(org, input.owner, crew)}`, detail: title });
     return this.get(org, id);
@@ -226,7 +271,8 @@ export const work = {
     const rows = all(d);
     const crew = bots();
     const counts = new Map((d.prepare("select item, count(*) n from work_comments group by item").all() as unknown as { item: string; n: number }[]).map((r) => [r.item, r.n]));
-    return rows.map((r) => toItem(org, r, rows, crew, counts)).reverse();
+    const links = linksOf(org);
+    return rows.map((r) => toItem(org, r, rows, crew, counts, links)).reverse();
   },
 
   get(org: Org, id: string): WorkItem {
@@ -250,7 +296,7 @@ export const work = {
   },
 
   /** The owner changes a task: its title, what is wanted, its priority, or (before it starts) who does it. */
-  update(org: Org, id: string, patch: { title?: unknown; description?: unknown; priority?: unknown; owner?: unknown }): WorkItem {
+  update(org: Org, id: string, patch: { title?: unknown; description?: unknown; priority?: unknown; owner?: unknown; goal?: unknown; projectId?: unknown }): WorkItem {
     const d = db(org.id);
     const row = rowOf(d, id);
     if (!row) throw new Error("There is no such task.");
@@ -265,6 +311,8 @@ export const work = {
       if (!bots().has(String(patch.owner))) throw new Error("There is no such agent.");
       d.prepare("update work_items set owner = ?, held = null where id = ?").run(String(patch.owner), row.id);
     }
+    if (patch.goal !== undefined) d.prepare("update work_items set goal = ? where id = ?").run(patch.goal ? goals.get(org, String(patch.goal)).id : null, row.id);
+    if (patch.projectId !== undefined) d.prepare("update work_items set project_id = ? where id = ?").run(patch.projectId ? goals.project(org, String(patch.projectId)).id : null, row.id);
     d.prepare("update work_items set updated_at = ? where id = ?").run(now(), row.id);
     this.kick();
     return this.get(org, id);
@@ -438,3 +486,18 @@ export const work = {
 quests.pendingHandoffs = (conversationId) => work.pendingFor(conversationId);
 quests.onRunEnded = (questId) => work.runEnded(questId);
 quests.onStartedOutsideQueue = (quest) => work.adopt(quest);
+// The "why" of a task (shown on its page and told to its agent) includes the goal and project of the task the owner gave.
+setWhyGoal((questId) => {
+  try {
+    const org = orgs.active();
+    const row = db(org.id).prepare("select goal, project_id from work_items where quest = ?").get(questId) as { goal: string | null; project_id: string | null } | undefined;
+    if (!row) return [];
+    const project = row.project_id ? goals.project(org, row.project_id) : null;
+    const goalId = row.goal ?? project?.goal ?? null;
+    const goal = goalId ? goals.get(org, goalId) : null;
+    return [...(goal ? [{ kind: "objective" as const, text: goalLine(goal).replace(/^“|”/g, "") }] : []), ...(project ? [{ kind: "project" as const, text: project.title }] : [])];
+  } catch {
+    return [];
+  }
+});
+

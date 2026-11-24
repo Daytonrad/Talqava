@@ -28,6 +28,7 @@ import { assignableBy, memberOf, oneLine, orgs, reportsOf, requestableBy, rolePr
 import { orgMemoryPrompt, teamMemoryTool } from "./orgmemory.ts";
 import { libraryPrompt, libraryTool, GENERAL_AGENT } from "./library.ts";
 import { workspacePrompt, workspaceTool } from "./workspace.ts";
+import { goalsPrompt } from "./goals.ts";
 import { structureOf } from "./structures.ts";
 import { WORKSPACE, conversations, getConfig, memory, skills, spaces } from "./store.ts";
 import { resolveModel } from "./models.ts";
@@ -614,7 +615,7 @@ export function localRunSpec(jobs: JobBook) {
       const org = orgs.active();
       const role = rolePrompt(bot, org);
       const onChart = Boolean(memberOf(org, bot.id));
-      const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), workspacePrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
+      const remembered = onChart ? [goalsPrompt(org, bot.id), orgMemoryPrompt(org, bot.id, topicOf(conversation)), workspacePrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const question = Boolean(quest.kind);
       // Why the task exists, from the mission down: so a hand-off three levels deep still knows what it is for.
       const why = question ? "" : whyPrompt(quest);
@@ -670,7 +671,7 @@ export function localRunSpec(jobs: JobBook) {
       const org = orgs.active();
       const role = rolePrompt(chatBot, org);
       const onChart = Boolean(memberOf(org, chatBot.id));
-      const remembered = onChart ? [orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), workspacePrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
+      const remembered = onChart ? [goalsPrompt(org, chatBot.id), orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), workspacePrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const teamwork = onChart ? teamworkTools(org, chatBot.id) : [];
       return {
         model,
@@ -690,7 +691,7 @@ export function localRunSpec(jobs: JobBook) {
     const linked = await connectors(true);
     return {
       model,
-      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", workspacePrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation)), libraryPrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation))].filter(Boolean).join("\n\n"))}`,
+      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([goalsPrompt(orgs.active(), null), orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", workspacePrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation)), libraryPrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation))].filter(Boolean).join("\n\n"))}`,
       // Other models read the web with our own page reader; Claude uses Anthropic's.
       tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],

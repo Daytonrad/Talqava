@@ -55,7 +55,7 @@ export interface Quest {
   depth?: number;
   /** The group whose monthly budget this task is charged to: the group its agent was in when it started. */
   charge?: { org: string; group: string };
-  /** Why the task exists, as it stood when it started: the organization's mission and the group's goal. */
+  /** Why the task exists, as it stood when it started: the organization's mission and the group's purpose. */
   purpose?: { org: string; mission?: string; group?: string; goal?: string };
   createdAt: string;
   updatedAt: string;
@@ -74,8 +74,8 @@ function chargedGroup(quest: Pick<Quest, "charge">) {
 const groupStop = (quest: Pick<Quest, "charge">) => ((c) => (c ? groupBlock(c.org.id, c.group) : null))(chargedGroup(quest));
 
 export interface WhyStep {
-  /** mission: the organization's; goal: the group's; task: a task in the chain, the owner's first. */
-  kind: "mission" | "goal" | "task";
+  /** mission: the organization's; goal: the group's purpose; objective: a measurable goal; project; task: a task in the chain, the owner's first. */
+  kind: "mission" | "goal" | "objective" | "project" | "task";
   text: string;
   /** For a goal, the group; for a task, the agent doing it and who handed it on. */
   who?: string;
@@ -99,17 +99,23 @@ export function whyOf(quest: Quest): WhyStep[] {
   const purpose = top.purpose ?? quest.purpose;
   const steps: WhyStep[] = [];
   if (purpose?.mission) steps.push({ kind: "mission", text: purpose.mission });
-  // The goal that matters is the group of the one the owner asked: the work is for that group's goal.
+  // The goal that matters is the group of the one the owner asked: the work is for that group's purpose.
   if (purpose?.goal) steps.push({ kind: "goal", text: purpose.goal, who: purpose.group });
+  // The measurable goal and the project the owner's task serves, from the work layer.
+  steps.push(...whyGoal(top.id));
   for (const t of tasks) steps.push({ kind: "task", text: t.title, who: t.bot.name, by: t.parent?.by, id: t.id });
   return steps;
 }
+
+let whyGoal: (questId: string) => WhyStep[] = () => [];
+/** Set by the work layer: the goal and project a task serves, for its "why". */
+export const setWhyGoal = (fn: (questId: string) => WhyStep[]) => (whyGoal = fn);
 
 /** The why chain in words, for the agent doing the task. Empty for a task the owner gave with no mission or goal set. */
 export function whyPrompt(quest: Quest): string {
   const steps = whyOf(quest);
   if (steps.length <= 1) return "";
-  const lines = steps.map((s) => (s.kind === "mission" ? `- The organization's mission: ${s.text}` : s.kind === "goal" ? `- The ${s.who} group's goal: ${s.text}` : s.id === quest.id ? `- Your task: ${s.text}` : `- ${s.by ? `Handed on to ${s.who}` : `The owner asked ${s.who}`}: ${s.text}`));
+  const lines = steps.map((s) => (s.kind === "mission" ? `- The organization's mission: ${s.text}` : s.kind === "goal" ? `- The ${s.who} group's purpose: ${s.text}` : s.kind === "objective" ? `- The goal: ${s.text}` : s.kind === "project" ? `- The project: ${s.text}` : s.id === quest.id ? `- Your task: ${s.text}` : `- ${s.by ? `Handed on to ${s.who}` : `The owner asked ${s.who}`}: ${s.text}`));
   return `Why this task exists, from the top:\n${lines.join("\n")}\nKeep the work aimed at this. If the task as written would not serve it, say so in your report rather than doing it anyway.`;
 }
 

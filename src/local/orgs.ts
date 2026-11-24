@@ -536,7 +536,7 @@ export function rolePrompt(bot: Bot, org = orgs.active()): string {
     "# Your place in the organization",
     `You are the ${me.title}${me.department ? ` in the ${me.department} group` : ""} of ${org.name}.${org.mission ? ` Its mission: ${org.mission}` : ""}`,
     me.responsibilities ? `What you are responsible for, in the owner's words: ${me.responsibilities}` : "",
-    group ? `${group.lead === bot.id ? `You lead the ${group.name} group: work the owner gives the group, and requests from other groups, come to you to share out.` : groupLead ? `Your group's lead is ${the(groupLead)}.` : ""}${group.goal ? ` The group's goal: ${group.goal}` : ""}` : "",
+    group ? `${group.lead === bot.id ? `You lead the ${group.name} group: work the owner gives the group, and requests from other groups, come to you to share out.` : groupLead ? `Your group's lead is ${the(groupLead)}.` : ""}${group.goal ? ` The group's purpose: ${group.goal}` : ""}` : "",
     guidanceOf(org),
     `${boss ? `You report to ${the(boss)}. Your reports go to them.` : "You report directly to the user, who owns the organization."}${projectLead ? ` Your project lead is ${the(projectLead)}, who may also give you tasks.` : ""}`,
   ];
