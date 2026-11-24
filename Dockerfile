@@ -7,9 +7,15 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+COPY scripts ./scripts
+RUN npm ci --omit=dev --omit=optional
 COPY src ./src
 COPY public ./public
+COPY crew ./crew
+COPY marketplace ./marketplace
+COPY quests ./quests
+COPY legal ./legal
+COPY LICENSE SECURITY.md THIRD_PARTY_NOTICES.md ./
 
 RUN mkdir -p /app/data && chown -R node:node /app
 USER node

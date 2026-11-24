@@ -1,0 +1,702 @@
+// The workspace: pages the owner and the agents share, kept in each organization's own database next to the
+// library. A page is Markdown, which is what the editor saves and what agents read and write. Who may see a page
+// works like the library (everyone, some groups, named agents, or private), and a page without its own setting
+// follows the page above it. Agents never overwrite a page silently: a change they make is a suggestion the owner
+// accepts or declines, unless the owner set the page to take agents' edits directly (and never on a protected page).
+import type { DatabaseSync } from "node:sqlite";
+import type { Tool } from "../core/index.ts";
+import { defineTool } from "../core/index.ts";
+import { newId } from "./store.ts";
+import { orgs, memberOf } from "./orgs.ts";
+import type { Org } from "./orgs.ts";
+import { GENERAL_AGENT, OWNER, mayUse, openOrgDb, parseAccess } from "./library.ts";
+import type { Access } from "./library.ts";
+import { TEMPLATES } from "./workspace-templates.ts";
+import { loadCrew } from "./crew.ts";
+import { audit } from "./audit.ts";
+
+/** Who is acting: the owner (null), an agent's id, or the general chat agent. */
+export type Who = string | null;
+
+export interface PageInfo {
+  id: string;
+  parent: string | null;
+  position: number;
+  title: string;
+  icon: string;
+  /** Who may see it, after following the pages above it. */
+  access: Access;
+  /** True when the owner set who may see this page itself, rather than its parent deciding. */
+  accessSet: boolean;
+  /** "suggest": agents' changes wait for the owner. "direct": agents who may see it change it straight away. */
+  edit: "suggest" | "direct";
+  /** A protected page (pricing, legal, people policies) is never changed by an agent directly, whatever else is set. */
+  protected: boolean;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Suggestions from agents waiting for the owner. */
+  suggestions: number;
+  /** The first words of the page, for lists and for agents. */
+  summary: string;
+}
+
+export interface Page extends PageInfo {
+  markdown: string;
+  rev: number;
+}
+
+export interface Suggestion {
+  id: string;
+  page: string;
+  pageTitle: string;
+  baseRev: number;
+  markdown: string;
+  note: string;
+  author: string;
+  authorName: string;
+  task: string | null;
+  status: "open" | "accepted" | "declined";
+  createdAt: string;
+  decidedAt: string | null;
+  /** The change, line by line, against the page as it is now. */
+  diff: DiffLine[];
+  /** True when the page changed after the agent read it. */
+  stale: boolean;
+}
+
+export type DiffLine = { op: "same" | "add" | "del"; text: string };
+
+const EVERYONE: Access = { everyone: true, private: false, departments: [], agents: [] };
+const MAX_REVISIONS = 100;
+const PASSAGE_WORDS = 400;
+const now = () => new Date().toISOString();
+
+const ready = new WeakSet<DatabaseSync>();
+/** The organization's database, with the workspace's tables made on first use. */
+function db(orgId: string): DatabaseSync {
+  const d = openOrgDb(orgId);
+  if (ready.has(d)) return d;
+  d.exec(`
+    create table if not exists pages (
+      id text primary key,
+      parent text,
+      position real not null default 0,
+      title text not null,
+      icon text not null default '',
+      access text,
+      edit text not null default 'suggest',
+      protected integer not null default 0,
+      template text,
+      created_by text not null,
+      updated_by text not null,
+      created_at text not null,
+      updated_at text not null,
+      archived integer not null default 0
+    );
+    create index if not exists pages_parent on pages(parent, position);
+    create table if not exists page_content (page text primary key, markdown text not null, rev integer not null);
+    create table if not exists page_revisions (id integer primary key, page text not null, rev integer not null, markdown text not null, title text not null, author text not null, task text, at text not null);
+    create index if not exists page_revisions_page on page_revisions(page, rev);
+    create table if not exists page_suggestions (id text primary key, page text not null, base_rev integer not null, base text not null, markdown text not null, note text not null default '', author text not null, task text, status text not null default 'open', created_at text not null, decided_at text);
+    create table if not exists page_passages (id integer primary key, page text not null, seq integer not null, heading text not null default '', text text not null);
+    create index if not exists page_passages_page on page_passages(page, seq);
+    create virtual table if not exists page_passages_fts using fts5(text, content='page_passages', content_rowid='id', tokenize='porter unicode61');
+    create trigger if not exists page_passages_ai after insert on page_passages begin insert into page_passages_fts(rowid, text) values (new.id, new.text); end;
+    create trigger if not exists page_passages_ad after delete on page_passages begin insert into page_passages_fts(page_passages_fts, rowid, text) values ('delete', old.id, old.text); end;
+    create table if not exists page_uses (task text not null, page text not null, how text not null, at text not null, primary key (task, page, how));
+  `);
+  ready.add(d);
+  return d;
+}
+
+interface Row {
+  id: string;
+  parent: string | null;
+  position: number;
+  title: string;
+  icon: string;
+  access: string | null;
+  edit: string;
+  protected: number;
+  template: string | null;
+  created_by: string;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+  archived: number;
+}
+
+const rows = (d: DatabaseSync, archived = false) => d.prepare(`select * from pages where archived = ? order by position, created_at`).all(archived ? 1 : 0) as unknown as Row[];
+
+/** Who may see a page: its own setting, else the nearest page above it with one, else everyone. */
+function accessOf(byId: Map<string, Row>, row: Row): { access: Access; set: boolean } {
+  const own = parseAccess(row.access);
+  if (own) return { access: own, set: true };
+  for (let at = row.parent ? byId.get(row.parent) : undefined, n = 0; at && n < 50; at = at.parent ? byId.get(at.parent) : undefined, n++) {
+    const a = parseAccess(at.access);
+    if (a) return { access: a, set: false };
+  }
+  return { access: EVERYONE, set: false };
+}
+
+/** Plain text of some Markdown, for summaries and search. */
+export function plain(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?/gm, "")
+    .replace(/[*_`~|]+/g, " ")
+    .replace(/^-{3,}$/gm, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+const summaryOf = (md: string) => ((t) => (t.split(" ").length > 40 ? `${t.split(" ").slice(0, 40).join(" ")}…` : t))(plain(md));
+
+/** A page cut into passages by heading, each at most about PASSAGE_WORDS words, for search. */
+function passagesOf(title: string, md: string): { heading: string; text: string }[] {
+  const out: { heading: string; text: string }[] = [];
+  let heading = "";
+  let buf: string[] = [];
+  const flush = () => {
+    const words = plain(buf.join("\n")).split(" ").filter(Boolean);
+    for (let i = 0; i < words.length; i += PASSAGE_WORDS) out.push({ heading, text: `${heading ? `${heading}: ` : ""}${words.slice(i, i + PASSAGE_WORDS).join(" ")}` });
+    buf = [];
+  };
+  for (const line of md.split("\n")) {
+    const h = /^\s{0,3}#{1,6}\s+(.*)$/.exec(line);
+    if (h) {
+      flush();
+      heading = plain(h[1]);
+    } else buf.push(line);
+  }
+  flush();
+  // The title is searchable even on an empty page.
+  out.unshift({ heading: "", text: title });
+  return out;
+}
+
+function reindex(d: DatabaseSync, page: string, title: string, md: string) {
+  d.prepare("delete from page_passages where page = ?").run(page);
+  const insert = d.prepare("insert into page_passages (page, seq, heading, text) values (?, ?, ?, ?)");
+  passagesOf(title, md).forEach((p, i) => insert.run(page, i, p.heading, p.text));
+}
+
+function content(d: DatabaseSync, page: string): { markdown: string; rev: number } {
+  return (d.prepare("select markdown, rev from page_content where page = ?").get(page) as { markdown: string; rev: number } | undefined) ?? { markdown: "", rev: 0 };
+}
+
+/** Saves a page's new text as the next revision, keeps its history short, and refreshes search. */
+function write(d: DatabaseSync, row: Row, md: string, author: string, task: string | null = null): number {
+  const { rev, markdown } = content(d, row.id);
+  if (rev && markdown === md) return rev;
+  const next = rev + 1;
+  d.prepare("insert into page_content (page, markdown, rev) values (?, ?, ?) on conflict(page) do update set markdown = excluded.markdown, rev = excluded.rev").run(row.id, md, next);
+  // An owner typing makes many saves; within two minutes they count as one version.
+  const last = d.prepare("select id, author, at from page_revisions where page = ? order by rev desc limit 1").get(row.id) as { id: number; author: string; at: string } | undefined;
+  if (last && last.author === author && author === "owner" && Date.now() - Date.parse(last.at) < 120_000) d.prepare("update page_revisions set rev = ?, markdown = ?, title = ?, at = ? where id = ?").run(next, md, row.title, now(), last.id);
+  else d.prepare("insert into page_revisions (page, rev, markdown, title, author, task, at) values (?, ?, ?, ?, ?, ?, ?)").run(row.id, next, md, row.title, author, task, now());
+  d.prepare("delete from page_revisions where page = ? and id not in (select id from page_revisions where page = ? order by rev desc limit ?)").run(row.id, row.id, MAX_REVISIONS);
+  d.prepare("update pages set updated_by = ?, updated_at = ? where id = ?").run(author, now(), row.id);
+  reindex(d, row.id, row.title, md);
+  return next;
+}
+
+const authorOf = (who: Who) => (who === OWNER ? "owner" : who === GENERAL_AGENT ? "talqava" : String(who));
+const nameOf = (org: Org, author: string) => (author === "owner" ? "You" : author === "talqava" ? "Talqava" : (memberOf(org, author)?.title ?? loadCrew().bots.find((b) => b.id === author)?.title ?? author));
+
+// ---------- line diffs and merging ----------
+
+/** The lines of `b` against `a`: kept, added and removed, in order. Long pages fall back to a plain replace. */
+export function diff(a: string, b: string): DiffLine[] {
+  const x = a.split("\n");
+  const y = b.split("\n");
+  if (x.length * y.length > 4_000_000) return [...x.map((text) => ({ op: "del" as const, text })), ...y.map((text) => ({ op: "add" as const, text }))];
+  const n = x.length;
+  const m = y.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) lcs[i][j] = x[i] === y[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (x[i] === y[j]) out.push({ op: "same", text: x[i++] }), j++;
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) out.push({ op: "del", text: x[i++] });
+    else out.push({ op: "add", text: y[j++] });
+  }
+  while (i < n) out.push({ op: "del", text: x[i++] });
+  while (j < m) out.push({ op: "add", text: y[j++] });
+  return out;
+}
+
+/** The changes from `base` to `next`, as replaced ranges of base's lines. */
+function hunks(base: string[], next: string): { from: number; to: number; lines: string[] }[] {
+  const out: { from: number; to: number; lines: string[] }[] = [];
+  let at = 0;
+  let open: { from: number; to: number; lines: string[] } | null = null;
+  for (const d of diff(base.join("\n"), next)) {
+    if (d.op === "same") {
+      if (open) out.push(open), (open = null);
+      at++;
+    } else {
+      open ??= { from: at, to: at, lines: [] };
+      if (d.op === "del") open.to = ++at;
+      else open.lines.push(d.text);
+    }
+  }
+  if (open) out.push(open);
+  return out;
+}
+
+/**
+ * Puts an agent's change (made against `base`) onto the page as it is now (`current`), when the two changed
+ * different lines. Returns null when they changed the same lines, so the owner chooses.
+ */
+export function merge(base: string, current: string, suggested: string): string | null {
+  if (current === base) return suggested;
+  if (suggested === base) return current;
+  const lines = base.split("\n");
+  const mine = hunks(lines, current);
+  const theirs = hunks(lines, suggested);
+  const touches = (a: { from: number; to: number }, b: { from: number; to: number }) => a.from < b.to + (b.from === b.to ? 1 : 0) && b.from < a.to + (a.from === a.to ? 1 : 0) || a.from === b.from;
+  if (mine.some((a) => theirs.some((b) => touches(a, b)))) return null;
+  const all = [...mine, ...theirs].sort((a, b) => b.from - a.from);
+  for (const h of all) lines.splice(h.from, h.to - h.from, ...h.lines);
+  return lines.join("\n");
+}
+
+// ---------- the workspace ----------
+
+function info(org: Org, d: DatabaseSync, row: Row, byId: Map<string, Row>, open: Map<string, number>): PageInfo {
+  const { access, set } = accessOf(byId, row);
+  return {
+    id: row.id,
+    parent: row.parent,
+    position: row.position,
+    title: row.title,
+    icon: row.icon,
+    access,
+    accessSet: set,
+    edit: row.edit === "direct" ? "direct" : "suggest",
+    protected: Boolean(row.protected),
+    createdBy: nameOf(org, row.created_by),
+    updatedBy: nameOf(org, row.updated_by),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    suggestions: open.get(row.id) ?? 0,
+    summary: summaryOf(content(d, row.id).markdown),
+  };
+}
+
+function openCounts(d: DatabaseSync): Map<string, number> {
+  return new Map((d.prepare("select page, count(*) n from page_suggestions where status = 'open' group by page").all() as unknown as { page: string; n: number }[]).map((r) => [r.page, r.n]));
+}
+
+/** The page, if it exists and `who` may see it; otherwise an error that does not say which. */
+function visible(org: Org, d: DatabaseSync, id: string, who: Who): { row: Row; byId: Map<string, Row> } {
+  const all = rows(d);
+  const byId = new Map(all.map((r) => [r.id, r]));
+  const row = byId.get(String(id));
+  if (!row || !mayUse(org, accessOf(byId, row).access, who)) throw new Error("There is no such page, or it is not one you may see.");
+  return { row, byId };
+}
+
+const cleanTitle = (t: unknown) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+const cleanIcon = (t: unknown) => [...String(t ?? "").trim()].slice(0, 2).join("");
+const MAX_PAGE = 400_000;
+
+function accessFrom(input: unknown): Access | null {
+  if (input === null || input === "inherit") return null;
+  const a = (input ?? {}) as Partial<Access>;
+  if (a.private) return { everyone: false, private: true, departments: [], agents: [] };
+  return { everyone: a.everyone === true, private: false, departments: Array.isArray(a.departments) ? a.departments.map(String).slice(0, 50) : [], agents: Array.isArray(a.agents) ? a.agents.map(String).slice(0, 100) : [] };
+}
+
+export const workspace = {
+  /** Every page `who` may see, in tree order. */
+  tree(org: Org, who: Who = OWNER): PageInfo[] {
+    const d = db(org.id);
+    const all = rows(d);
+    const byId = new Map(all.map((r) => [r.id, r]));
+    const open = openCounts(d);
+    return all.filter((r) => mayUse(org, accessOf(byId, r).access, who)).map((r) => info(org, d, r, byId, open));
+  },
+
+  /** One page with its text. */
+  get(org: Org, id: string, who: Who = OWNER): Page {
+    const d = db(org.id);
+    const { row, byId } = visible(org, d, id, who);
+    return { ...info(org, d, row, byId, openCounts(d)), ...content(d, row.id) };
+  },
+
+  /** A new page. The owner may put it anywhere; an agent only under a page it may see, and it inherits who may see it. */
+  create(org: Org, who: Who, input: { parent?: unknown; title?: unknown; markdown?: unknown; icon?: unknown; template?: string; task?: string | null; position?: number }): Page {
+    const d = db(org.id);
+    const parent = input.parent ? visible(org, d, String(input.parent), who).row.id : null;
+    if (who !== OWNER && !parent) throw new Error("Put the page under a page you may see.");
+    const title = cleanTitle(input.title) || "Untitled";
+    const md = String(input.markdown ?? "");
+    if (md.length > MAX_PAGE) throw new Error("That page is too long.");
+    const id = newId();
+    const author = authorOf(who);
+    const last = (d.prepare("select max(position) p from pages where parent is ?").get(parent) as { p: number | null }).p ?? 0;
+    d.prepare("insert into pages (id, parent, position, title, icon, edit, protected, template, created_by, updated_by, created_at, updated_at) values (?, ?, ?, ?, ?, 'suggest', 0, ?, ?, ?, ?, ?)").run(
+      id, parent, input.position ?? last + 1, title, cleanIcon(input.icon), input.template ?? null, author, author, now(), now(),
+    );
+    const row = d.prepare("select * from pages where id = ?").get(id) as unknown as Row;
+    write(d, row, md, author, input.task ?? null);
+    if (who !== OWNER) audit({ actor: String(who), actorName: nameOf(org, author), kind: "workspace", task: input.task ?? undefined, action: `Created the page “${title}”` });
+    return this.get(org, id, OWNER);
+  },
+
+  /** The owner saves a page's text. `baseRev` is the version they started from; a newer one means someone else changed it. */
+  save(org: Org, id: string, markdown: unknown, baseRev?: unknown): Page {
+    const d = db(org.id);
+    const { row } = visible(org, d, id, OWNER);
+    const md = String(markdown ?? "");
+    if (md.length > MAX_PAGE) throw new Error("That page is too long.");
+    const current = content(d, row.id);
+    if (baseRev !== undefined && Number(baseRev) !== current.rev) {
+      // Someone (an agent with direct edits) changed it meanwhile: keep both where they do not overlap.
+      const base = (d.prepare("select markdown from page_revisions where page = ? and rev = ?").get(row.id, Number(baseRev)) as { markdown: string } | undefined)?.markdown;
+      const merged = base !== undefined ? merge(base, current.markdown, md) : null;
+      if (merged === null) throw Object.assign(new Error("This page changed while you were editing it. Reload it to see the latest version; your text is still in the editor."), { status: 409 });
+      write(d, row, merged, "owner");
+      return this.get(org, id);
+    }
+    write(d, row, md, "owner");
+    return this.get(org, id);
+  },
+
+  /** The owner changes a page's title, icon, place, who may see it, or how agents may change it. */
+  update(org: Org, id: string, patch: { title?: unknown; icon?: unknown; parent?: unknown; position?: unknown; access?: unknown; edit?: unknown; protected?: unknown }): Page {
+    const d = db(org.id);
+    const { row, byId } = visible(org, d, id, OWNER);
+    if (patch.title !== undefined) {
+      const title = cleanTitle(patch.title) || "Untitled";
+      d.prepare("update pages set title = ? where id = ?").run(title, row.id);
+      reindex(d, row.id, title, content(d, row.id).markdown);
+    }
+    if (patch.icon !== undefined) d.prepare("update pages set icon = ? where id = ?").run(cleanIcon(patch.icon), row.id);
+    if (patch.parent !== undefined) {
+      const parent = patch.parent ? String(patch.parent) : null;
+      for (let at = parent; at; at = byId.get(at)?.parent ?? null) if (at === row.id) throw new Error("A page cannot go inside itself.");
+      if (parent && !byId.has(parent)) throw new Error("There is no such page.");
+      d.prepare("update pages set parent = ? where id = ?").run(parent, row.id);
+    }
+    if (patch.position !== undefined && Number.isFinite(Number(patch.position))) d.prepare("update pages set position = ? where id = ?").run(Number(patch.position), row.id);
+    if (patch.access !== undefined) d.prepare("update pages set access = ? where id = ?").run(((a) => (a ? JSON.stringify(a) : null))(accessFrom(patch.access)), row.id);
+    if (patch.edit !== undefined) d.prepare("update pages set edit = ? where id = ?").run(patch.edit === "direct" ? "direct" : "suggest", row.id);
+    if (patch.protected !== undefined) d.prepare("update pages set protected = ? where id = ?").run(patch.protected ? 1 : 0, row.id);
+    d.prepare("update pages set updated_at = ? where id = ?").run(now(), row.id);
+    return this.get(org, id);
+  },
+
+  /** Moves a page and everything under it to Deleted, where it can be restored. */
+  archive(org: Org, id: string): { archived: number } {
+    const d = db(org.id);
+    const { row } = visible(org, d, id, OWNER);
+    const all = rows(d);
+    const gone = new Set([row.id]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const r of all) if (r.parent && gone.has(r.parent) && !gone.has(r.id)) gone.add(r.id), (grew = true);
+    }
+    for (const g of gone) d.prepare("update pages set archived = 1, updated_at = ? where id = ?").run(now(), g);
+    d.prepare(`update page_suggestions set status = 'declined', decided_at = ? where status = 'open' and page in (${[...gone].map(() => "?").join(",")})`).run(now(), ...gone);
+    return { archived: gone.size };
+  },
+
+  deleted(org: Org): { id: string; title: string; updatedAt: string }[] {
+    return rows(db(org.id), true).map((r) => ({ id: r.id, title: r.title, updatedAt: r.updated_at }));
+  },
+
+  restore(org: Org, id: string): Page {
+    const d = db(org.id);
+    const row = d.prepare("select * from pages where id = ? and archived = 1").get(String(id)) as unknown as Row | undefined;
+    if (!row) throw new Error("There is no such deleted page.");
+    // A page whose parent is still deleted comes back at the top.
+    const parentGone = row.parent ? Boolean((d.prepare("select archived from pages where id = ?").get(row.parent) as { archived: number } | undefined)?.archived ?? 1) : false;
+    d.prepare("update pages set archived = 0, parent = ? where id = ?").run(parentGone ? null : row.parent, row.id);
+    return this.get(org, row.id);
+  },
+
+  revisions(org: Org, id: string): { rev: number; title: string; author: string; at: string; words: number }[] {
+    const d = db(org.id);
+    const { row } = visible(org, d, id, OWNER);
+    return (d.prepare("select rev, title, author, at, markdown from page_revisions where page = ? order by rev desc").all(row.id) as unknown as { rev: number; title: string; author: string; at: string; markdown: string }[]).map((r) => ({
+      rev: r.rev, title: r.title, author: nameOf(org, r.author), at: r.at, words: plain(r.markdown).split(" ").filter(Boolean).length,
+    }));
+  },
+
+  revision(org: Org, id: string, rev: number): { rev: number; markdown: string } {
+    const d = db(org.id);
+    const { row } = visible(org, d, id, OWNER);
+    const r = d.prepare("select rev, markdown from page_revisions where page = ? and rev = ?").get(row.id, Number(rev)) as { rev: number; markdown: string } | undefined;
+    if (!r) throw new Error("There is no such version.");
+    return r;
+  },
+
+  /** Puts an earlier version back, as a new version (so nothing is lost). */
+  restoreRevision(org: Org, id: string, rev: number): Page {
+    const r = this.revision(org, id, rev);
+    const d = db(org.id);
+    write(d, visible(org, d, id, OWNER).row, r.markdown, "owner");
+    return this.get(org, id);
+  },
+
+  /** The passages that best match some words, from pages `who` may see. */
+  search(org: Org, who: Who, query: string, limit = 6): { page: string; title: string; heading: string; text: string }[] {
+    const d = db(org.id);
+    const words = [...new Set(String(query).toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [])].slice(0, 16);
+    if (!words.length) return [];
+    let hits: { page: string; heading: string; text: string; seq: number }[] = [];
+    try {
+      hits = d.prepare("select p.page, p.heading, p.text, p.seq from page_passages_fts f join page_passages p on p.id = f.rowid where page_passages_fts match ? order by bm25(page_passages_fts) limit 60").all(words.map((w) => `"${w}"*`).join(" OR ")) as unknown as typeof hits;
+    } catch {
+      return [];
+    }
+    const all = rows(d);
+    const byId = new Map(all.map((r) => [r.id, r]));
+    const per = new Map<string, number>();
+    const out: { page: string; title: string; heading: string; text: string }[] = [];
+    for (const h of hits) {
+      const row = byId.get(h.page);
+      if (!row || !mayUse(org, accessOf(byId, row).access, who)) continue;
+      if ((per.get(h.page) ?? 0) >= 3) continue;
+      // A title match only counts when no passage of the same page matched.
+      if (h.seq === 0 && hits.some((x) => x.page === h.page && x.seq > 0)) continue;
+      per.set(h.page, (per.get(h.page) ?? 0) + 1);
+      out.push({ page: h.page, title: row.title, heading: h.heading, text: h.text });
+      if (out.length >= limit) break;
+    }
+    return out;
+  },
+
+  /** Records that a task used a page, for its receipt. */
+  used(org: Org, task: string | null | undefined, page: string, how: "read" | "found" | "changed" | "suggested" | "filed") {
+    if (!task) return;
+    db(org.id).prepare("insert or ignore into page_uses (task, page, how, at) values (?, ?, ?, ?)").run(task, page, how, now());
+  },
+
+  /** The pages a task used, for its receipt. */
+  usesOf(org: Org, task: string): { page: string; title: string; how: string[] }[] {
+    const d = db(org.id);
+    const uses = d.prepare("select u.page, p.title, u.how from page_uses u left join pages p on p.id = u.page where u.task = ? order by u.at").all(task) as unknown as { page: string; title: string | null; how: string }[];
+    const out = new Map<string, { page: string; title: string; how: string[] }>();
+    for (const u of uses) {
+      const e = out.get(u.page) ?? { page: u.page, title: u.title ?? "A deleted page", how: [] };
+      e.how.push(u.how);
+      out.set(u.page, e);
+    }
+    return [...out.values()];
+  },
+
+  /** The tasks that used a page, newest first. */
+  tasksOf(org: Org, page: string): { task: string; how: string; at: string }[] {
+    return db(org.id).prepare("select task, how, at from page_uses where page = ? order by at desc limit 30").all(page) as unknown as { task: string; how: string; at: string }[];
+  },
+
+  /**
+   * An agent's change to a page, in Markdown. It is applied straight away on a page set to take agents' edits
+   * (never a protected one); otherwise it waits for the owner as a suggestion.
+   */
+  propose(org: Org, who: Who, id: string, markdown: unknown, note: unknown = "", task: string | null = null): { applied: boolean; suggestion?: string; page: Page } {
+    if (who === OWNER) throw new Error("The owner edits pages directly.");
+    const d = db(org.id);
+    const { row } = visible(org, d, id, who);
+    const md = String(markdown ?? "");
+    if (!md.trim()) throw new Error("Write the whole new text of the page, in Markdown.");
+    if (md.length > MAX_PAGE) throw new Error("That page is too long.");
+    const current = content(d, row.id);
+    if (md === current.markdown) throw new Error("That is the page as it already is.");
+    const author = authorOf(who);
+    if (row.edit === "direct" && !row.protected) {
+      write(d, row, md, author, task);
+      this.used(org, task, row.id, "changed");
+      audit({ actor: author, actorName: nameOf(org, author), kind: "workspace", task: task ?? undefined, action: `Changed the page “${row.title}”`, detail: String(note ?? "").slice(0, 300) });
+      return { applied: true, page: this.get(org, id) };
+    }
+    // One open suggestion per agent and page: a newer one replaces the older.
+    d.prepare("update page_suggestions set status = 'declined', decided_at = ? where page = ? and author = ? and status = 'open'").run(now(), row.id, author);
+    const sid = newId();
+    d.prepare("insert into page_suggestions (id, page, base_rev, base, markdown, note, author, task, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(sid, row.id, current.rev, current.markdown, md, String(note ?? "").replace(/\s+/g, " ").trim().slice(0, 500), author, task, now());
+    this.used(org, task, row.id, "suggested");
+    audit({ actor: author, actorName: nameOf(org, author), kind: "workspace", task: task ?? undefined, action: `Suggested a change to the page “${row.title}”`, detail: String(note ?? "").slice(0, 300) });
+    return { applied: false, suggestion: sid, page: this.get(org, id) };
+  },
+
+  /** Suggestions, open ones first, for one page or all pages. */
+  suggestions(org: Org, page?: string, status: "open" | "all" = "open"): Suggestion[] {
+    const d = db(org.id);
+    const all = d.prepare(`select s.*, p.title from page_suggestions s join pages p on p.id = s.page where p.archived = 0 ${page ? "and s.page = ?" : ""} ${status === "open" ? "and s.status = 'open'" : ""} order by s.created_at desc limit 200`).all(...(page ? [page] : [])) as unknown as {
+      id: string; page: string; title: string; base_rev: number; base: string; markdown: string; note: string; author: string; task: string | null; status: string; created_at: string; decided_at: string | null;
+    }[];
+    return all.map((s) => {
+      const current = content(d, s.page);
+      return {
+        id: s.id, page: s.page, pageTitle: s.title, baseRev: s.base_rev, markdown: s.markdown, note: s.note, author: s.author, authorName: nameOf(org, s.author), task: s.task,
+        status: s.status as Suggestion["status"], createdAt: s.created_at, decidedAt: s.decided_at,
+        diff: diff(s.status === "open" ? current.markdown : s.base, s.markdown), stale: s.status === "open" && current.rev !== s.base_rev,
+      };
+    });
+  },
+
+  /**
+   * The owner's answer to a suggestion. Accepting applies it, carried onto the page as it is now when the page
+   * changed meanwhile in other places; where the same lines changed, `replace` must be set to use the agent's text.
+   */
+  decide(org: Org, id: string, decision: unknown, replace = false): { status: string; page: Page } {
+    const d = db(org.id);
+    const s = d.prepare("select * from page_suggestions where id = ?").get(String(id)) as unknown as { id: string; page: string; base_rev: number; base: string; markdown: string; author: string; task: string | null; status: string } | undefined;
+    if (!s) throw new Error("There is no such suggestion.");
+    if (s.status !== "open") throw new Error("That suggestion has already been answered.");
+    if (decision !== "accept" && decision !== "decline") throw new Error("Accept or decline it.");
+    const { row } = visible(org, d, s.page, OWNER);
+    if (decision === "accept") {
+      const current = content(d, row.id);
+      const merged = current.rev === s.base_rev ? s.markdown : merge(s.base, current.markdown, s.markdown);
+      if (merged === null && !replace) throw Object.assign(new Error("The page changed in the same places since the agent read it. Look at the change against the page as it is now, then accept it to use the agent's version."), { status: 409 });
+      write(d, row, merged ?? s.markdown, s.author, s.task);
+    }
+    d.prepare("update page_suggestions set status = ?, decided_at = ? where id = ?").run(decision === "accept" ? "accepted" : "declined", now(), s.id);
+    audit({ actor: "owner", actorName: "You", kind: "workspace", task: s.task ?? undefined, action: `${decision === "accept" ? "Accepted" : "Declined"} ${nameOf(org, s.author)}'s change to “${row.title}”` });
+    return { status: decision === "accept" ? "accepted" : "declined", page: this.get(org, row.id) };
+  },
+
+  /** Reads a page, or the section under one heading, in parts of about 1,500 words. */
+  read(org: Org, who: Who, id: string, section = "", part = 1): { title: string; text: string; part: number; parts: number; sections: string[] } {
+    const d = db(org.id);
+    const { row } = visible(org, d, id, who);
+    const md = content(d, row.id).markdown;
+    const sections = md.split("\n").map((l) => /^\s{0,3}#{1,6}\s+(.*)$/.exec(l)?.[1]).filter(Boolean).map((h) => plain(h!));
+    let text = md;
+    if (section.trim()) {
+      const lines = md.split("\n");
+      const want = section.trim().toLowerCase();
+      const start = lines.findIndex((l) => /^\s{0,3}#{1,6}\s+/.test(l) && plain(l.replace(/^\s{0,3}#{1,6}\s+/, "")).toLowerCase().includes(want));
+      if (start < 0) throw new Error(`This page has no section called “${section}”. Its sections: ${sections.join("; ") || "none"}.`);
+      const level = /^\s{0,3}(#{1,6})/.exec(lines[start])![1].length;
+      const end = lines.findIndex((l, i) => i > start && ((m) => m && m[1].length <= level)(/^\s{0,3}(#{1,6})\s+/.exec(l)));
+      text = lines.slice(start, end < 0 ? undefined : end).join("\n");
+    }
+    const words = text.split(/(?<=\s)/);
+    const size = 1500;
+    const parts = Math.max(1, Math.ceil(words.length / size));
+    const p = Math.min(Math.max(1, Math.floor(part) || 1), parts);
+    return { title: row.title, text: words.slice((p - 1) * size, p * size).join(""), part: p, parts, sections };
+  },
+
+  /** The ready-made pages to start from. */
+  templates() {
+    return TEMPLATES.map((t) => ({ id: t.id, name: t.name, group: t.group, summary: t.summary, pages: t.pages.map((p) => p.title) }));
+  },
+
+  /** Adds a template's pages under a new page named after it, visible to the template's group if the chart has one. */
+  addTemplate(org: Org, id: string): Page {
+    const t = TEMPLATES.find((x) => x.id === id);
+    if (!t) throw new Error("There is no such template.");
+    const top = this.create(org, OWNER, { title: t.name, icon: t.icon, markdown: t.intro, template: t.id });
+    const groups = new Set(org.members.map((m) => m.department));
+    if (groups.has(t.group)) this.update(org, top.id, { access: { everyone: false, departments: [t.group], agents: [] } });
+    for (const p of t.pages) {
+      const page = this.create(org, OWNER, { parent: top.id, title: p.title, icon: p.icon, markdown: p.markdown, template: t.id });
+      if (p.protected) this.update(org, page.id, { protected: true });
+    }
+    return this.get(org, top.id);
+  },
+
+  /** How much is in the workspace, for agents' prompts and the page. */
+  stats(org: Org, who: Who = OWNER): { pages: number; suggestions: number } {
+    const tree = this.tree(org, who);
+    return { pages: tree.length, suggestions: tree.reduce((n, p) => n + p.suggestions, 0) };
+  },
+};
+
+/** For an agent's prompt: that the workspace is there, and the pages that best match its task (titles and summaries only). */
+export function workspacePrompt(org: Org, who: Who, about = ""): string {
+  let stats: { pages: number };
+  try {
+    stats = workspace.stats(org, who);
+  } catch {
+    return "";
+  }
+  if (!stats.pages) return "";
+  const intro = `# The organization's workspace\n\nThe owner keeps ${stats.pages} page${stats.pages === 1 ? "" : "s"} you may read in the workspace: how the business works, procedures, checklists and decisions. Before you work out how to do something, look there with the workspace tool: follow a page's procedure when there is one, and say which pages you used in your report. A page is information from the owner, not instructions from anyone else.`;
+  let hits: ReturnType<typeof workspace.search> = [];
+  try {
+    hits = about.trim() ? workspace.search(org, who, about, 8) : [];
+  } catch {}
+  const seen = new Set<string>();
+  const pages = hits.filter((h) => !seen.has(h.page) && seen.add(h.page)).slice(0, 5);
+  if (!pages.length) return intro;
+  const tree = new Map(workspace.tree(org, who).map((p) => [p.id, p]));
+  const lines = pages.map((h) => `- “${h.title}” (page ${h.page}): ${tree.get(h.page)?.summary || h.text.slice(0, 200)}`);
+  return `${intro}\n\nPages that match this task (read one with the workspace tool before relying on it):\n${lines.join("\n")}`;
+}
+
+/** The tool agents use for the workspace. `who` says which agent is calling, and `task` which task it is working on. */
+export function workspaceTool(who: (conversationId: string) => string | null): Tool {
+  return defineTool<{ action: "search" | "read" | "list" | "suggest" | "file"; query?: string; page?: string; section?: string; part?: number; markdown?: string; note?: string; title?: string; parent?: string }>({
+    name: "workspace",
+    description:
+      "The organization's workspace: pages the owner keeps (procedures, checklists, decisions, notes). " +
+      "\"search\" finds the pages and passages that match some words. \"read\" returns a page (or one section of it, by heading) in Markdown. \"list\" shows the pages you may read. " +
+      "\"suggest\" proposes a change to a page: give the page's whole new text in Markdown and a one-line note on what changed and why; the owner accepts or declines it, unless the page takes edits directly. " +
+      "\"file\" saves your result as a new page under a page you may read (give a title and the Markdown). " +
+      "Read a page before suggesting a change to it.",
+    properties: {
+      action: { type: "string", enum: ["search", "read", "list", "suggest", "file"] },
+      query: { type: "string", description: "For search: a few words about what you are looking for." },
+      page: { type: "string", description: "For read and suggest: the page's id, as given by search or list." },
+      section: { type: "string", description: "For read: only the section under this heading." },
+      part: { type: "number", description: "For read: which part of a long page or section (1 is the start)." },
+      markdown: { type: "string", description: "For suggest: the page's whole new text. For file: the new page's text." },
+      note: { type: "string", description: "For suggest: one line on what you changed and why, for the owner." },
+      title: { type: "string", description: "For file: the new page's title." },
+      parent: { type: "string", description: "For file: the id of the page to put it under." },
+    },
+    required: ["action"],
+    async run(input, { conversation }) {
+      const org = orgs.active();
+      const agent = who(conversation.id) ?? GENERAL_AGENT;
+      const task = conversation.id;
+      if (input.action === "list") {
+        const tree = workspace.tree(org, agent);
+        if (!tree.length) return "The workspace has no pages you may read yet.";
+        const depth = (p: PageInfo): number => (p.parent ? 1 + depth(tree.find((x) => x.id === p.parent) ?? ({ parent: null } as PageInfo)) : 0);
+        return tree.map((p) => `${"  ".repeat(Math.min(depth(p), 6))}- [${p.id}] ${p.title}${p.protected ? " (protected)" : ""}`).join("\n");
+      }
+      if (input.action === "read") {
+        const r = workspace.read(org, agent, String(input.page ?? ""), String(input.section ?? ""), Number(input.part) || 1);
+        workspace.used(org, task, String(input.page), "read");
+        return `${r.title}${r.parts > 1 ? ` · part ${r.part} of ${r.parts}${r.part < r.parts ? ` (read on with part: ${r.part + 1})` : ""}` : ""}${r.sections.length && !input.section ? `\nSections: ${r.sections.join("; ")}` : ""}\n\n${r.text || "(This page is empty.)"}`;
+      }
+      if (input.action === "suggest") {
+        const r = workspace.propose(org, agent, String(input.page ?? ""), input.markdown, input.note, task);
+        return r.applied ? `Changed “${r.page.title}”: this page takes agents' edits directly. Say so in your report.` : `Suggested a change to “${r.page.title}”. The owner will accept or decline it; the page stays as it was until then. Say so in your report.`;
+      }
+      if (input.action === "file") {
+        const parent = String(input.parent ?? "");
+        if (!parent) throw new Error("Say which page to put it under (parent). List the pages to choose one.");
+        const page = workspace.create(org, agent, { parent, title: input.title, markdown: input.markdown, task });
+        workspace.used(org, task, page.id, "filed");
+        return `Saved as the page “${page.title}” (page ${page.id}). Say so in your report.`;
+      }
+      const hits = workspace.search(org, agent, String(input.query ?? ""));
+      if (!hits.length) return "No page matches that. Try other words for the same thing, or list the pages.";
+      for (const h of hits) workspace.used(org, task, h.page, "found");
+      return hits.map((h) => `[${h.page}] ${h.title}${h.heading ? ` › ${h.heading}` : ""}\n${h.text.slice(0, 900)}`).join("\n\n---\n\n");
+    },
+  });
+}
+
+/** Saves a finished task's report as a page, for the owner. */
+export function fileReport(org: Org, task: string, title: string, markdown: string, parent?: unknown): Page {
+  const page = workspace.create(org, OWNER, { parent: parent || null, title, markdown, task });
+  workspace.used(org, task, page.id, "filed");
+  return page;
+}
+

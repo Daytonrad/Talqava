@@ -44,6 +44,8 @@ import { ASSIGN_RULES, INDUSTRIES, REQUEST_RULES, STRUCTURES, seatsFor } from ".
 import { budgetBlock, groupSpend, monthlyBudgets } from "./spend.ts";
 import { decide, listProposals } from "./proposals.ts";
 import { exportOrg, importOrg } from "./portable.ts";
+import { fileReport, workspace } from "./workspace.ts";
+import { PRIORITIES, work } from "./work.ts";
 import { findTemplate, loadTemplates } from "./templates.ts";
 import { chainBudget, chainCost, chainOf, chainSize, journal, questStore, quests, rootOf, whyOf } from "./quests.ts";
 import type { Quest } from "./quests.ts";
@@ -55,6 +57,18 @@ const PASSWORD = setting("PASSWORD") || "";
 const SESSION_COOKIE = `${BRAND.slug}_session`;
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const PUBLIC = path.join(ROOT, "public");
+/** The documents shown under About and legal, in order. Each lives in the repository and ships with the app. */
+const LEGAL_DOCS = [
+  { id: "terms", title: "Terms of Use", file: "legal/TERMS.md" },
+  { id: "privacy", title: "Privacy Policy", file: "legal/PRIVACY.md" },
+  { id: "acceptable-use", title: "Acceptable Use Policy", file: "legal/ACCEPTABLE_USE.md" },
+  { id: "license", title: "Licence (MIT)", file: "LICENSE" },
+  { id: "security", title: "Security policy", file: "SECURITY.md" },
+  { id: "open-source", title: "Open-source policy", file: "legal/OPEN_SOURCE_POLICY.md" },
+  { id: "approved-licenses", title: "Approved licence list", file: "legal/APPROVED_LICENSES.md" },
+  { id: "notices", title: "Third-party notices", file: "THIRD_PARTY_NOTICES.md" },
+];
+
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -136,6 +150,15 @@ function describeRequest(method: string, parts: string[], body: any, url: URL): 
     return { kind: "library", action: map[id] ?? (method === "PATCH" ? "Changed who can use a file" : method === "DELETE" ? "Deleted a file" : `${method} library ${id ?? ""}`.trim()), detail: name ? `into ${url.searchParams.get("folder") ?? ""}` : words(body) };
   }
   if (area === "integrations") return { kind: "integration", action: `${id ? id[0].toUpperCase() + id.slice(1) : "Integration"}: ${(action ?? method.toLowerCase()).replace(/-/g, " ")}`, detail: words(body) };
+  // Tasks write their own entries when they are created, cancelled, accepted or commented on.
+  if (area === "work") return method === "PATCH" ? { kind: "task", action: "Changed a task", detail: words(body) } : action === "retry" ? { kind: "task", action: "Tried a task again" } : null;
+  // Saving a page as the owner types would fill the log; the page's own history keeps every version.
+  if (area === "workspace") {
+    if (method === "PUT" || action === "suggestions") return null;
+    const what = action === "templates" ? `Added the ${id} pages` : method === "DELETE" ? "Deleted a page" : method === "POST" && parts[3] === "restore" ? "Restored a page" : method === "POST" && parts[3] === "revisions" ? "Put back an earlier version of a page" : method === "POST" ? `Made the page “${body.title || "Untitled"}”` : "Changed a page's settings";
+    return { kind: "workspace", action: what, detail: words(body) };
+  }
+  if (area === "quests" && action === "file") return { kind: "workspace", task: id, action: "Saved a task's report as a page" };
   // These routes write their own, clearer entries.
   if (area === "orgs" && (id === "import" || action === "proposals")) return null;
   if (area === "orgs" && action === "pack") return { kind: "organization", action: `Added the ready-made team ${body.team ?? ""}${body.under ? ` under ${body.under}` : body.group ? ` into ${body.group}` : ""}` };
@@ -473,6 +496,13 @@ function receiptOf(rootId: string) {
       actions,
       notDone,
       said: lastWords(conversation),
+      pages: (() => {
+        try {
+          return workspace.usesOf(orgs.active(), quest.id);
+        } catch {
+          return [];
+        }
+      })(),
     };
   });
   const agents = new Map<string, { agent: string; character: unknown; type: string; tasks: number; actions: number; failed: number; cost: number; input: number; output: number }>();
@@ -822,6 +852,16 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!action && req.method === "GET") return send(res, 200, { ...questSummary(quest), journal: journal.read(id) });
     // The receipt covers the whole task: asked for from one of its parts, it is the receipt of the task that part came from.
     if (action === "receipt" && req.method === "GET") return send(res, 200, receiptOf(rootOf(quest)));
+    // A finished task's report, saved as a page in the workspace.
+    if (action === "file" && req.method === "POST") {
+      const text = lastWords(conversations.get(quest.id));
+      if (!text) throw new HttpError(400, "This task has no report to save yet.");
+      try {
+        return send(res, 200, fileReport(orgs.active(), quest.id, String(body.title ?? "").trim() || quest.title, text, body.parent));
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message);
+      }
+    }
     if (action === "stop" && req.method === "POST") {
       quests.stop(id);
       return send(res, 200, { ok: true });
@@ -850,7 +890,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     try {
       return (await fn()) ?? { ok: true };
     } catch (err) {
-      throw err instanceof HttpError ? err : new HttpError(400, (err as Error).message);
+      throw err instanceof HttpError ? err : new HttpError((err as { status?: number }).status ?? 400, (err as Error).message);
     }
   };
 
@@ -865,6 +905,87 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (route === "DELETE memory") return send(res, 200, await attempt(() => memory.remove(parts[1])));
 
   // The library: documents the person shares with their agents, kept in the organization's database.
+  // ---------- tasks as work items: the board, each agent's queue, review and comments ----------
+  if (parts[0] === "work") {
+    const org = orgs.active();
+    const [, id, action] = parts;
+    if (route === "GET work" && !id) return send(res, 200, { items: work.list(org), priorities: PRIORITIES });
+    if (route === "GET work" && id && !action) {
+      return send(res, 200, await attempt(() => {
+        const item = work.get(org, id);
+        const quest = item.quest ? questStore.get(item.quest) : null;
+        return { item, comments: work.comments(org, id), subtasks: work.list(org).filter((x) => x.parent === id).reverse(), quest: quest ? questSummary(quest) : null };
+      }));
+    }
+    if (route === "POST work" && !id) {
+      // The same checks as before any task: what it cannot do without is caught first, for free.
+      const onlyOne = !body.project && body.project !== "" && getConfig().projects.length === 1 ? getConfig().projects[0] : null;
+      const project = body.project ? projectOrNull(String(body.project)) : onlyOne;
+      if (body.project && !project) throw new HttpError(400, "Add that repository under Settings first.");
+      const bot = loadCrew(project ?? undefined).bots.find((b) => b.id === body.owner);
+      if (!bot) throw new HttpError(400, "Choose an agent for the task.");
+      const text = String(body.description || body.title || "").trim();
+      if (!text) throw new HttpError(400, "Say what the task is.");
+      const needs = needsFor({ bot, text, project });
+      const blocking = needs.filter((n) => !n.canSkip || body.anyway !== true);
+      if (blocking.length) return send(res, 200, { needs: blocking, repositories: getConfig().projects });
+      return send(res, 200, await attempt(async () => {
+        const item = work.create(org, { title: body.title, description: body.description ?? body.title, owner: bot.id, priority: body.priority, parent: body.parent, createdBy: "owner", review: true, project: project ?? null });
+        await work.schedule();
+        const now = work.get(org, item.id);
+        const quest = now.quest ? questStore.get(now.quest) : null;
+        return { item: now, quest: quest ? questSummary(quest) : null };
+      }));
+    }
+    if (route === "PATCH work" && id) return send(res, 200, await attempt(() => work.update(org, id, body)));
+    if (route === "POST work" && id && action === "cancel") return send(res, 200, await attempt(() => work.cancel(org, id)));
+    if (route === "POST work" && id && action === "accept") return send(res, 200, await attempt(() => work.accept(org, id)));
+    if (route === "POST work" && id && action === "retry") return send(res, 200, await attempt(() => work.retry(org, id)));
+    if (route === "POST work" && id && action === "comment") return send(res, 200, await attempt(() => work.comment(org, id, body.text)));
+    throw new HttpError(404, "Not found.");
+  }
+
+  // ---------- the app's licence, privacy policy, terms and other policies, for the About and legal pages ----------
+  if (parts[0] === "legal" && req.method === "GET") {
+    const docs = LEGAL_DOCS;
+    if (!parts[1]) return send(res, 200, docs.map(({ id, title }) => ({ id, title })));
+    const doc = docs.find((d) => d.id === parts[1]);
+    const file = doc && path.join(ROOT, doc.file);
+    if (!doc || !file || !fs.existsSync(file)) throw new HttpError(404, "There is no such document.");
+    return send(res, 200, { id: doc.id, title: doc.title, markdown: fs.readFileSync(file, "utf8") });
+  }
+
+  // ---------- the workspace: pages the owner and the agents share ----------
+  if (parts[0] === "workspace") {
+    const org = orgs.active();
+    const [, area, id, sub, extra] = parts;
+    if (route === "GET workspace" && !area) return send(res, 200, { tree: workspace.tree(org), templates: workspace.templates(), deleted: workspace.deleted(org), suggestions: workspace.suggestions(org) });
+    if (route === "GET workspace" && area === "search") return send(res, 200, workspace.search(org, null, url.searchParams.get("q") ?? "", 20));
+    if (route === "POST workspace" && area === "templates" && id) return send(res, 200, await attempt(() => workspace.addTemplate(org, id)));
+    if (area === "suggestions") {
+      if (route === "GET workspace") return send(res, 200, workspace.suggestions(org, url.searchParams.get("page") ?? undefined, url.searchParams.get("all") ? "all" : "open"));
+      if (route === "POST workspace" && id) return send(res, 200, await attempt(() => workspace.decide(org, id, body.decision, body.replace === true)));
+    }
+    if (area === "pages") {
+      if (route === "POST workspace" && !id) return send(res, 200, await attempt(() => workspace.create(org, null, { parent: body.parent, title: body.title, markdown: body.markdown, icon: body.icon })));
+      if (route === "GET workspace" && id && !sub) return send(res, 200, await attempt(() => workspace.get(org, id)));
+      if (route === "PUT workspace" && id && !sub) return send(res, 200, await attempt(() => workspace.save(org, id, body.markdown, body.baseRev)));
+      if (route === "PATCH workspace" && id && !sub) return send(res, 200, await attempt(() => workspace.update(org, id, body)));
+      if (route === "DELETE workspace" && id && !sub) return send(res, 200, await attempt(() => workspace.archive(org, id)));
+      if (route === "POST workspace" && id && sub === "restore") return send(res, 200, await attempt(() => workspace.restore(org, id)));
+      if (route === "GET workspace" && id && sub === "revisions" && !extra) return send(res, 200, await attempt(() => workspace.revisions(org, id)));
+      if (route === "GET workspace" && id && sub === "revisions" && extra) return send(res, 200, await attempt(() => workspace.revision(org, id, Number(extra))));
+      if (route === "POST workspace" && id && sub === "revisions" && extra) return send(res, 200, await attempt(() => workspace.restoreRevision(org, id, Number(extra))));
+      if (route === "GET workspace" && id && sub === "tasks") {
+        return send(res, 200, await attempt(() => {
+          workspace.get(org, id);
+          return workspace.tasksOf(org, id).map((u) => ({ ...u, title: questStore.get(u.task)?.title ?? conversations.get(u.task)?.title ?? "A task", agent: questStore.get(u.task)?.bot.name ?? null }));
+        }));
+      }
+    }
+    throw new HttpError(404, "Not found.");
+  }
+
   if (parts[0] === "library") {
     const org = orgs.active();
     if (upload) {
@@ -1178,6 +1299,9 @@ export function start() {
   quests
     .resumeAll()
     .then((ids) => ids.length && console.log(`Resumed ${ids.length} quest${ids.length === 1 ? "" : "s"} that ${ids.length === 1 ? "was" : "were"} under way.`))
-    .catch((err) => console.error("Could not resume quests:", err));
+    .catch((err) => console.error("Could not resume quests:", err))
+    // Then each free agent starts its next task, and the queues are looked at again every few seconds.
+    .finally(() => work.kick());
+  setInterval(() => void work.schedule(), 5000).unref();
   return server;
 }

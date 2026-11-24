@@ -18,7 +18,7 @@
   "build": {
     "appId": "com.talqava.agents",
     "productName": "Talqava",
-    "copyright": "Copyright \u00a9 Talqava",
+    "copyright": "Copyright \u00a9 2026 GR Investments LLC",
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -65,7 +65,7 @@
     "afterPack": "after-pack.cjs"
   },
   "homepage": "https://talqava.com",
-  "author": "Talqava",
+  "author": "GR Investments LLC",
   "license": "MIT",
   "repository": {
     "type": "git",

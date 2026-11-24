@@ -1,0 +1,20 @@
+{
+  "name": "talqava-editor",
+  "private": true,
+  "description": "The workspace's page editor (Tiptap, MIT), bundled once into public/vendor/editor.js. Only that file ships with the app.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/editor.js --bundle --format=esm --minify --target=chrome120 \"--banner:js=/*! Talqava page editor. Bundles Tiptap, ProseMirror and other open-source components; their licences are in editor.LICENSES.txt next to this file. */\" --outfile=../public/vendor/editor.js && node ../scripts/licenses.mjs"
+  },
+  "devDependencies": {
+    "@tiptap/core": "3.35.0",
+    "@tiptap/extension-list": "3.35.0",
+    "@tiptap/extension-table": "3.35.0",
+    "@tiptap/extensions": "3.35.0",
+    "@tiptap/markdown": "3.35.0",
+    "@tiptap/pm": "3.35.0",
+    "@tiptap/starter-kit": "3.35.0",
+    "esbuild": "0.28.2"
+  }
+}

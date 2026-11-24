@@ -76,7 +76,7 @@ async function api(method, path, body) {
     showLogin();
     throw new Error("Sign in first.");
   }
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status}).`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status}).`), { status: res.status });
   return data;
 }
 
@@ -210,7 +210,7 @@ async function tick() {
   ticks++;
   const before = questSignature();
   await loadQuests();
-  if (ticks % 3 === 0) await refreshList();
+  if (ticks % 3 === 0) await Promise.all([refreshList(), loadPageSuggestions()]);
   renderSpent();
   syncInboxCount();
   if (questSignature() !== before) {
@@ -219,6 +219,7 @@ async function tick() {
     if (state.view === "inbox") renderInbox();
   }
   if (state.view === "chat" && ticks % 3 === 0) renderChatList();
+  if (state.view === "tasks") refreshTasks();
 }
 
 const questSignature = () =>
@@ -272,6 +273,8 @@ const ICONS = {
   settings: "M4 6h7M15 6h1M4 14h1M9 14h7M13 4v4M7 12v4",
   integrations: "M7.5 3.5v4M12.5 3.5v4M5.5 7.5h9v2.5a4.5 4.5 0 0 1-9 0zM10 14.5v2.5",
   audit: "M6 3.5h6l3 3v10H6A1.5 1.5 0 0 1 4.5 15V5A1.5 1.5 0 0 1 6 3.5zM7.5 9h5M7.5 11.5h5M7.5 14h3",
+  workspace: "M5.5 3.5h6l3 3v10h-9zM11.5 3.5v3h3M7.5 10h5M7.5 12.5h5M7.5 7.5h2",
+  tasks: "M4 4.5h3v11H4zM8.5 4.5h3v7h-3zM13 4.5h3v4h-3z",
   library: "M3.5 6A1.5 1.5 0 0 1 5 4.5h3l1.5 2H15A1.5 1.5 0 0 1 16.5 8v6A1.5 1.5 0 0 1 15 15.5H5A1.5 1.5 0 0 1 3.5 14zM7 10.5h6M7 12.8h4",
 };
 const icon = (name) => {
@@ -292,9 +295,9 @@ function renderRail() {
     h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava, chat" }, brandLogo()),
     h("div", { class: "railgroup" }, item("chat", "Chat", v === "chat"), inbox),
     h("div", { class: "raillabel" }, "Team"),
-    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Assign tasks to agents and follow their work"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department"), item("audit", "Audit log", v === "audit", "Every operation, by you and by each agent")),
+    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("tasks", "Tasks", v === "tasks", "Every task: queued, working, needing you, to review and done"), item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Your agents and what each is doing right now"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department"), item("audit", "Audit log", v === "audit", "Every operation, by you and by each agent")),
     h("div", { class: "raillabel" }, "Knowledge"),
-    h("div", { class: "railgroup" }, item("library", "Library", v === "library", "Documents you share with your agents"), item("memory", "Memory", v === "memory"), item("skills", "Skills", v === "skills"), item("jobs", "Schedules", v === "jobs")),
+    h("div", { class: "railgroup" }, item("workspace", "Workspace", v === "workspace", "Pages your agents work from: procedures, checklists and decisions"), item("library", "Library", v === "library", "Documents you share with your agents"), item("memory", "Memory", v === "memory"), item("skills", "Skills", v === "skills"), item("jobs", "Schedules", v === "jobs")),
     h("div", { class: "raillabel" }, "Connect"),
     h("div", { class: "railgroup" }, item("integrations", "Integrations", v === "integrations", "Connect the tools your business already uses, starting with Git")),
     h("div", { class: "railgroup railend" }, item("settings", "Settings", v === "settings")),
@@ -303,6 +306,8 @@ function renderRail() {
 }
 
 function go(view, id = null) {
+  ui.wsFlush?.();
+  if (view !== "workspace") (ui.wsEditor?.destroy(), (ui.wsEditor = null), (ui.wsFlush = null));
   state.view = view;
   state.convId = view === "chat" || view === "quest" ? id : null;
   state.botId = view === "bot" ? id : null;
@@ -332,7 +337,7 @@ function renderBody() {
   state.source = null;
   ui.log = null;
   ui.body.className = "body";
-  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView, integrations: integrationsView, library: libraryView, audit: auditView };
+  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView, integrations: integrationsView, library: libraryView, audit: auditView, workspace: workspaceView, tasks: tasksView };
   (views[state.view] || homeView)();
 }
 
@@ -493,13 +498,10 @@ function startChatWith(text) {
  * Resolves to the new task, or null when it was not started.
  */
 async function startTask(payload) {
-  const reply = await api("POST", "quests", payload);
-  if (!reply.needs) return reply;
-  const choice = await needsDialog(reply.needs, reply.repositories ?? []);
-  if (!choice) return null;
-  if (choice.project) return startTask({ ...payload, project: choice.project });
-  if (choice.anyway) return startTask({ ...payload, anyway: true });
-  return null;
+  const reply = await createTask({ owner: payload.bot, title: payload.title, description: payload.text, project: payload.project, anyway: payload.anyway });
+  if (!reply) return null;
+  // Started: the run, to follow. Waiting its turn: the task, marked as queued.
+  return reply.quest ?? { id: null, queued: reply.item };
 }
 
 function needsDialog(needs, repositories) {
@@ -544,7 +546,7 @@ async function sendQuest(bot, text) {
     ui.palette.value = "";
     ui.palette.blur();
     await loadQuests();
-    go("quest", quest.id);
+    quest.id ? go("quest", quest.id) : openTask(quest.queued.id);
   });
 }
 
@@ -1596,7 +1598,15 @@ const defaultAgentName = (id) => `${FIRST_NAMES[nameHash(id, 2166136261) % FIRST
 const agentName = (bot) => (bot ? state.mail?.names?.[bot.id] || defaultAgentName(bot.id) : "Talqava");
 const agentRole = (bot) => (bot ? bot.title || bot.name : "Your workspace");
 
+/** Changes agents suggested to workspace pages, waiting for the owner. */
+async function loadPageSuggestions() {
+  const before = JSON.stringify((state.pageSuggestions ?? []).map((s) => s.id));
+  state.pageSuggestions = await api("GET", "workspace/suggestions").catch(() => state.pageSuggestions ?? []);
+  if (state.view === "inbox" && JSON.stringify(state.pageSuggestions.map((s) => s.id)) !== before) renderInbox();
+}
+
 async function loadMail() {
+  loadPageSuggestions();
   try {
     state.mail = await api("GET", "inbox");
   } catch {
@@ -1630,6 +1640,11 @@ function mailMessages() {
     else if (n.kind === "chat") out.push({ id: `need:chat:${n.c.id}`, kind: "need", need: n, bot: null, subject: "A chat is waiting for your approval", snippet: n.c.title, at: n.c.updatedAt ?? MONTH_START(), activityAt: n.c.updatedAt ?? MONTH_START(), label: "needs" });
     else if (n.kind === "monthly") out.push({ id: `need:monthly:${n.bot.id}:${MONTH_START().slice(0, 7)}`, kind: "need", need: n, bot: n.bot, subject: "I have reached my monthly budget", snippet: `${money(n.bot.month.spent)} of ${money(n.bot.month.limit)}. I start no new work until you raise it.`, at: MONTH_START(), activityAt: MONTH_START(), label: "needs" });
     else if (n.kind === "total") out.push({ id: `need:total:${MONTH_START().slice(0, 7)}`, kind: "need", need: n, bot: null, subject: "Your agents have reached this month's budget", snippet: "No agent starts new work until you raise it or the month turns.", at: MONTH_START(), activityAt: MONTH_START(), label: "needs" });
+  }
+  // A change an agent suggested to a workspace page waits in the inbox too.
+  for (const sg of state.pageSuggestions ?? []) {
+    const bot = state.crew?.bots.find((b) => b.id === sg.author) ?? null;
+    out.push({ id: `page:${sg.id}`, kind: "pagechange", suggestion: sg, bot, subject: `Suggested change: “${sg.pageTitle}”`, snippet: sg.note || "A change to a workspace page, for you to accept or decline.", at: sg.createdAt, activityAt: sg.createdAt, label: "needs" });
   }
   // A position an agent proposed waits in the inbox for the owner's answer.
   for (const org of state.orgs?.orgs ?? [])
@@ -1890,6 +1905,26 @@ function readMail(m) {
 
   const body = h("div", { class: "readbody" });
   const act = (fn) => attempt(async () => (await fn(), await Promise.all([loadQuests(), refreshList(), loadCrew()]), renderInbox(), syncInboxCount()), body);
+  if (m.kind === "pagechange") {
+    const sg = m.suggestion;
+    const decide = (decision) =>
+      attempt(async () => {
+        await api("POST", `workspace/suggestions/${sg.id}`, { decision });
+        await loadPageSuggestions();
+        ui.mailOpen = null;
+        renderInbox();
+        syncInboxCount();
+      }, body);
+    fill(
+      body,
+      h("p", {}, `I'd like to change the workspace page “${sg.pageTitle}”.${sg.note ? ` ${sg.note}` : ""}`),
+      sg.stale ? h("p", { class: "note small" }, "The page changed after I read it. Accepting keeps your newer changes where they don't overlap with mine.") : null,
+      h("div", { class: "wsdiff" }, sg.diff.map((d) => (d.op === "same" ? null : h("div", { class: `wsdiffline ${d.op}` }, h("span", { class: "wsdiffmark", "aria-hidden": "true" }, d.op === "add" ? "+" : "−"), h("span", {}, diffText(d.text)))))),
+      h("p", { class: "note small" }, "Nothing changes on the page until you accept."),
+      h("div", { class: "row" }, h("button", { class: "primary", onclick: () => decide("accept") }, "Accept"), h("button", { onclick: () => decide("decline") }, "Decline"), h("button", { class: "plain", onclick: () => openPage(sg.page) }, "Open the page")),
+    );
+    return [tools, h("h2", { class: "readsubject" }, m.subject, h("span", { class: `mlabel ${m.label}` }, LABEL_WORDS[m.label])), from, body];
+  }
   if (m.kind === "proposal") {
     const p = m.proposal;
     const after = () => ((ui.mailOpen = null), renderInbox(), syncInboxCount());
@@ -1984,7 +2019,8 @@ async function composeMail() {
     ui.mailNote = null;
     await loadQuests();
     ui.mailFolder = "inbox";
-    ui.mailOpen = `task:${started.id}`;
+    ui.mailOpen = started.id ? `task:${started.id}` : null;
+    if (!started.id) ui.mailNote = `Task #${started.queued.number} is waiting its turn in the ${started.queued.ownerName}'s queue.`;
     renderInbox();
     syncInboxCount();
   }, ui.mailList);
@@ -4283,12 +4319,26 @@ function whyChain(q) {
   );
 }
 
+/** Saves a finished task's report as a page in the workspace, under a page the owner picks. */
+async function fileAsPage(q, where) {
+  const ws = await api("GET", "workspace").catch(() => ({ tree: [] }));
+  const parent = h("select", { "aria-label": "Put it under" }, h("option", { value: "" }, "At the top of the workspace"), ws.tree.map((p) => h("option", { value: p.id }, p.title)));
+  const title = h("input", { value: q.title, maxlength: 120, "aria-label": "Page title" });
+  const got = await libDialog("Save the report as a page", h("div", { class: "composeform" }, h("label", {}, "Title", title), h("label", {}, "Put it under", parent), h("p", { class: "note small" }, "The page is linked to this task. You can edit it afterwards like any other page.")), [["Save as a page", () => ({ title: title.value.trim(), parent: parent.value }), true]]);
+  if (!got) return;
+  await attempt(async () => {
+    const page = await api("POST", `quests/${q.id}/file`, got);
+    openPage(page.id);
+  }, where);
+}
+
 function renderQuestRight(q) {
   const spend = q.budget?.spend;
   const share = spend ? Math.min(1, (q.cost || 0) / spend) : q.budget?.steps ? Math.min(1, q.steps / q.budget.steps) : 0;
   const bot = state.crew?.bots.find((b) => b.id === q.bot.id);
   fill(ui.qright,
     q.why?.length > 1 ? h("section", { class: "panel-block" }, h("h2", { class: "label" }, "Why"), whyChain(q)) : null,
+    !isLive(q) && q.said ? h("section", { class: "panel-block" }, h("h2", { class: "label" }, "Workspace"), h("p", { class: "note" }, "Keep this report where your agents can find it next time."), h("button", { class: "small", onclick: (e) => fileAsPage(q, e.currentTarget.parentElement) }, "Save the report as a page")) : null,
     checkBlock(q),
     h(
       "section",
@@ -4412,6 +4462,7 @@ async function renderReceipt(q) {
             l.actions.length
               ? h("ol", { class: "racts" }, l.actions.map((a) => h("li", { class: a.ok ? "" : "bad" }, h("span", { class: "rmark" }, a.ok ? "Done" : "Not done"), h("b", {}, NAMES[a.name] || a.name), h("span", { class: "grow" }, String(summarize(a.name, a.input)).replace(/\s+/g, " ").slice(0, 200)), a.error ? h("em", {}, a.error.replace(/\s+/g, " ")) : null)))
               : h("p", { class: "note small" }, "No actions: the agent only wrote its answer."),
+            l.pages?.length ? h("div", { class: "rpages" }, h("span", { class: "label" }, "Workspace pages"), l.pages.map((p) => h("button", { class: "plain small", onclick: () => openPage(p.page) }, `${p.title} (${p.how.map((x) => ({ read: "read", found: "found", changed: "changed", suggested: "suggested a change", filed: "saved here" })[x] ?? x).join(", ")})`))) : null,
             l.said ? h("div", { class: "rsaid" }, h("span", { class: "label" }, "Its report"), l.said) : null,
             l.id !== q.id ? h("button", { class: "plain small", onclick: () => go("quest", l.id) }, "Open this part →") : null,
           ),
@@ -5294,6 +5345,7 @@ function settingsView() {
     accentRow,
   );
 
+
   const name = h("input", { value: c.agentName });
   const slash = c.model.indexOf("/");
   const provider = select(c.providers.map((p) => [p.id, p.name]), c.model.slice(0, slash));
@@ -5468,6 +5520,641 @@ function settingsView() {
       h("div", {}, h("button", {}, "Add connector")),
     ),
   );
+  // About Talqava, its licence, privacy policy, terms and other policies.
+  const legal = h("div", { class: "legallinks" });
+  api("GET", "legal").then((docs) => legal.isConnected && fill(legal, docs.map((d) => h("button", { class: "small", onclick: () => showLegal(d.id) }, d.title)))).catch(() => {});
+  col.append(
+    h("h3", {}, "About and legal"),
+    h("p", { class: "note" }, "Talqava is open-source software under the MIT licence, developed by GR Investments LLC. It runs on your computer and sends nothing to us: your data goes only to the services you connect, such as your AI model provider."),
+    legal,
+  );
 }
 
 boot();
+
+// ---------- the workspace: pages the owner and the agents share ----------
+// A tree of pages on the left; a page on the right, edited in place and saved as you type. Agents read pages,
+// file their results as pages, and suggest changes that wait here (and in the inbox) for the owner.
+let editorModule = null;
+const loadEditor = () => (editorModule ??= import("/vendor/editor.js"));
+
+/** Opens the workspace, at a page or at its home. */
+function openPage(id) {
+  ui.ws ??= { collapsed: new Set() };
+  ui.ws.open = id;
+  if (state.view !== "workspace") go("workspace");
+  else workspaceView();
+}
+
+async function workspaceView() {
+  ui.ws ??= { collapsed: new Set() };
+  ui.wsFlush?.();
+  ui.wsFlush = null;
+  ui.wsEditor?.destroy();
+  ui.wsEditor = null;
+  ui.body.className = "body two wsbody";
+  ui.log = null;
+  const side = h("aside", { class: "side wsside", "aria-label": "Pages" });
+  const col = h("main", { class: "center wscenter" });
+  fill(ui.body, side, col);
+  let data;
+  try {
+    [data] = await Promise.all([api("GET", "workspace"), state.crew ? null : loadCrew()]);
+  } catch (err) {
+    return fill(col, h("div", { class: "banner error" }, err.message));
+  }
+  if (state.view !== "workspace") return;
+  ui.ws.data = data;
+  if (ui.ws.open && !data.tree.some((p) => p.id === ui.ws.open)) ui.ws.open = null;
+  renderWsTree(side);
+  if (ui.ws.open) await renderWsPage(col, ui.ws.open);
+  else renderWsHome(col);
+}
+
+/** A new page, under `parent` (or at the top), opened with its title ready to type. */
+async function newPage(parent = null, title = "") {
+  await attempt(async () => {
+    const page = await api("POST", "workspace/pages", { parent, title: title || "Untitled" });
+    if (parent) ui.ws.collapsed.delete(parent);
+    ui.ws.focusTitle = true;
+    openPage(page.id);
+  });
+}
+
+function renderWsTree(side) {
+  const { tree, deleted } = ui.ws.data;
+  const kids = new Map();
+  for (const p of tree) (kids.get(p.parent) ?? kids.set(p.parent, []).get(p.parent)).push(p);
+  const byId = new Map(tree.map((p) => [p.id, p]));
+  // Moving a page: drop it on another page to put it inside, or on the top line to bring it to the top.
+  const move = (id, parent) => {
+    if (!id || id === parent) return;
+    for (let at = parent; at; at = byId.get(at)?.parent) if (at === id) return;
+    attempt(async () => (await api("PATCH", `workspace/pages/${id}`, { parent }), workspaceView()), side);
+  };
+  const dropZone = (parent) => ({
+    ondragover: (e) => (e.preventDefault(), e.currentTarget.classList.add("dropover")),
+    ondragleave: (e) => e.currentTarget.classList.remove("dropover"),
+    ondrop: (e) => (e.preventDefault(), e.currentTarget.classList.remove("dropover"), move(e.dataTransfer.getData("text/talqava-page"), parent)),
+  });
+  const row = (p, depth) => {
+    const children = kids.get(p.id) ?? [];
+    const closed = ui.ws.collapsed.has(p.id);
+    return h(
+      "li",
+      {},
+      h(
+        "div",
+        {
+          class: `wsrow ${ui.ws.open === p.id ? "on" : ""}`,
+          style: `--depth: ${depth}`,
+          draggable: "true",
+          ondragstart: (e) => e.dataTransfer.setData("text/talqava-page", p.id),
+          ...dropZone(p.id),
+        },
+        children.length
+          ? h("button", { class: "plain wscaret", "aria-label": closed ? `Show the pages in ${p.title}` : `Hide the pages in ${p.title}`, "aria-expanded": String(!closed), onclick: () => (closed ? ui.ws.collapsed.delete(p.id) : ui.ws.collapsed.add(p.id), renderWsTree(side)) }, closed ? "▸" : "▾")
+          : h("span", { class: "wscaret" }),
+        h("button", { class: "plain wslink", onclick: () => openPage(p.id), title: p.summary || p.title }, h("span", { class: "wsicon", "aria-hidden": "true" }, p.icon || "📄"), h("span", { class: "grow wstitle" }, p.title), p.suggestions ? h("span", { class: "count", title: `${p.suggestions} change${p.suggestions === 1 ? "" : "s"} suggested by agents` }, p.suggestions) : null, p.access.private ? h("span", { class: "wslock", title: "Private: no agent sees it" }, "🔒") : null),
+        h("button", { class: "plain wsadd", title: `Add a page inside ${p.title}`, "aria-label": `Add a page inside ${p.title}`, onclick: () => newPage(p.id) }, "+"),
+      ),
+      children.length && !closed ? h("ul", { class: "wstree" }, children.map((c) => row(c, depth + 1))) : null,
+    );
+  };
+  fill(
+    side,
+    h("div", { class: "wssidehead", ...dropZone(null) }, h("button", { class: `plain wshome ${ui.ws.open ? "" : "on"}`, onclick: () => openPage(null) }, h("span", { class: "wsicon", "aria-hidden": "true" }, "🏠"), "Workspace"), h("button", { class: "small", onclick: () => newPage(null), title: "A new page at the top" }, "+ Page")),
+    tree.length ? h("ul", { class: "wstree" }, (kids.get(null) ?? []).map((p) => row(p, 0))) : h("p", { class: "note small" }, "No pages yet. Add one, or start from a template."),
+    deleted.length ? h("details", { class: "wsdeleted" }, h("summary", { class: "note small" }, `Deleted (${deleted.length})`), deleted.map((d) => h("div", { class: "row" }, h("span", { class: "grow small" }, d.title), h("button", { class: "plain small", onclick: () => attempt(async () => (await api("POST", `workspace/pages/${d.id}/restore`), workspaceView()), side) }, "Restore")))) : null,
+  );
+}
+
+function renderWsHome(col) {
+  const { tree, templates, suggestions } = ui.ws.data;
+  const results = h("div", { class: "wsresults" });
+  const search = h("input", { type: "search", placeholder: "Search every page", "aria-label": "Search the workspace" });
+  let timer;
+  search.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const q = search.value.trim();
+      if (!q) return fill(results);
+      const hits = await api("GET", `workspace/search?q=${encodeURIComponent(q)}`).catch(() => []);
+      fill(results, hits.length ? hits.map((x) => h("button", { class: "wshit", onclick: () => openPage(x.page) }, h("b", {}, x.title, x.heading ? h("span", { class: "note" }, ` › ${x.heading}`) : null), h("span", { class: "note small" }, x.text.slice(0, 180)))) : h("p", { class: "note" }, "No page matches that."));
+    }, 200);
+  });
+  const recent = [...tree].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 6);
+  fill(
+    col,
+    h(
+      "div",
+      { class: "page wshomepage" },
+      h("h1", {}, "Workspace"),
+      h("p", { class: "lead" }, "Pages your agents work from: how your business runs, procedures, checklists and decisions. Agents read them before they start, follow them, and suggest changes for you to accept."),
+      search,
+      results,
+      suggestions.length
+        ? [h("h3", {}, `Waiting for you (${suggestions.length})`), h("div", { class: "wssuggestlist" }, suggestions.map((s) => h("button", { class: "card wscard", onclick: () => openPage(s.page) }, h("b", {}, `${s.authorName} suggests a change to “${s.pageTitle}”`), h("span", { class: "note small" }, s.note || "Open the page to see it."))))]
+        : null,
+      recent.length ? [h("h3", {}, "Recently changed"), h("div", { class: "wsgrid" }, recent.map((p) => h("button", { class: "card wscard", onclick: () => openPage(p.id) }, h("span", { class: "wsbigicon", "aria-hidden": "true" }, p.icon || "📄"), h("b", {}, p.title), h("span", { class: "note small" }, `${p.updatedBy} · ${shortWhen(p.updatedAt)}`), p.summary ? h("span", { class: "note small wssum" }, p.summary) : null)))] : null,
+      h("h3", {}, "Start from a template"),
+      h("p", { class: "note" }, "Ready-made pages written for a small business. Add them, then change them to match how you work."),
+      h(
+        "div",
+        { class: "wsgrid" },
+        templates.map((t) =>
+          h(
+            "div",
+            { class: "card wscard wstemplate" },
+            h("b", {}, t.name),
+            h("span", { class: "note small" }, t.summary),
+            h("ul", { class: "wstplpages" }, t.pages.map((p) => h("li", {}, p))),
+            h("button", { class: "small", onclick: () => attempt(async () => { const top = await api("POST", `workspace/templates/${t.id}`); openPage(top.id); }, col) }, "Add these pages"),
+          ),
+        ),
+      ),
+      h("div", { class: "row" }, h("button", { class: "primary", onclick: () => newPage(null) }, "+ New page")),
+    ),
+  );
+}
+
+/** Plain words for who may see a page. */
+function accessWords(a) {
+  if (a.private) return "Private: no agent sees it";
+  if (a.everyone) return "Every agent";
+  const parts = [...a.departments, ...a.agents.map((id) => state.crew?.bots.find((b) => b.id === id)?.name ?? id)];
+  return parts.length ? `Only ${parts.join(", ")}` : "Nobody but you";
+}
+
+async function renderWsPage(col, id) {
+  let page;
+  let suggestions;
+  try {
+    [page, suggestions] = await Promise.all([api("GET", `workspace/pages/${id}`), api("GET", `workspace/suggestions?page=${encodeURIComponent(id)}`)]);
+  } catch (err) {
+    return fill(col, h("div", { class: "banner error" }, err.message));
+  }
+  const { createEditor, BLOCKS } = await loadEditor();
+  if (state.view !== "workspace" || ui.ws.open !== id) return;
+  const byId = new Map(ui.ws.data.tree.map((p) => [p.id, p]));
+  const trail = [];
+  for (let at = byId.get(page.parent); at; at = byId.get(at.parent)) trail.unshift(at);
+
+  // ----- saving as you type -----
+  let rev = page.rev;
+  let timer = null;
+  let saving = Promise.resolve();
+  const status = h("span", { class: "wsstatus note small" }, "Saved");
+  const conflict = h("div");
+  const save = () => {
+    clearTimeout(timer);
+    timer = null;
+    const markdown = ui.wsEditor?.markdown();
+    if (markdown === undefined) return saving;
+    status.textContent = "Saving…";
+    saving = saving.then(async () => {
+      try {
+        const saved = await api("PUT", `workspace/pages/${id}`, { markdown, baseRev: rev });
+        rev = saved.rev;
+        status.textContent = "Saved";
+      } catch (err) {
+        status.textContent = "Not saved";
+        fill(conflict, h("div", { class: "banner error" }, err.message, " ", h("button", { class: "small", onclick: () => workspaceView() }, "Reload")));
+      }
+    });
+    return saving;
+  };
+  const changed = () => {
+    status.textContent = "Editing…";
+    clearTimeout(timer);
+    timer = setTimeout(save, 700);
+  };
+  ui.wsFlush = () => timer && save();
+
+  // ----- the title and icon -----
+  const title = h("input", { class: "wstitlebox", value: page.title === "Untitled" && ui.ws.focusTitle ? "" : page.title, placeholder: "Untitled", maxlength: 120, "aria-label": "Page title" });
+  const saveTitle = () => attempt(async () => {
+    const t = title.value.trim() || "Untitled";
+    if (t === page.title) return;
+    page.title = t;
+    await api("PATCH", `workspace/pages/${id}`, { title: t });
+    ui.ws.data = await api("GET", "workspace");
+    renderWsTree(document.querySelector(".wsside"));
+  }, col);
+  title.addEventListener("change", saveTitle);
+  title.addEventListener("keydown", (e) => e.key === "Enter" && (e.preventDefault(), saveTitle(), ui.wsEditor?.focus("start")));
+  const iconBtn = h("button", { class: "plain wspageicon", title: "Change the icon", "aria-label": "Change the page's icon", onclick: () => {
+    const next = prompt("Type or paste an emoji for this page (leave empty for none):", page.icon || "");
+    if (next === null) return;
+    attempt(async () => (await api("PATCH", `workspace/pages/${id}`, { icon: next }), workspaceView()), col);
+  } }, page.icon || "📄");
+
+  // ----- the editor, its toolbar and the slash menu -----
+  const surface = h("div", { class: "wseditor md" });
+  const menu = h("div", { class: "wsslash", role: "listbox", "aria-label": "Blocks", hidden: true });
+  let menuItems = [];
+  let menuAt = 0;
+  const drawMenu = (query, at) => {
+    menuItems = BLOCKS.filter((b) => !query || b.label.toLowerCase().includes(query) || b.words.includes(query));
+    if (!menuItems.length) return (menu.hidden = true);
+    menuAt = Math.min(menuAt, menuItems.length - 1);
+    fill(menu, menuItems.map((b, i) => h("button", { class: `wsslashitem ${i === menuAt ? "on" : ""}`, role: "option", "aria-selected": String(i === menuAt), onmousedown: (e) => (e.preventDefault(), ui.wsEditor.block(b.id)) }, h("b", {}, b.label), h("span", { class: "note small" }, b.hint))));
+    const box = col.getBoundingClientRect();
+    menu.style.left = `${Math.max(0, at.left - box.left)}px`;
+    menu.style.top = `${at.bottom - box.top + col.scrollTop + 6}px`;
+    menu.hidden = false;
+  };
+  // While the menu is open, the arrow keys, Enter and Escape belong to it.
+  surface.addEventListener(
+    "keydown",
+    (e) => {
+      if (menu.hidden) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        e.stopPropagation();
+        menuAt = (menuAt + (e.key === "ArrowDown" ? 1 : menuItems.length - 1)) % menuItems.length;
+        [...menu.children].forEach((c, i) => (c.classList.toggle("on", i === menuAt), c.setAttribute("aria-selected", String(i === menuAt))));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        ui.wsEditor.block(menuItems[menuAt].id);
+      } else if (e.key === "Escape") {
+        menu.hidden = true;
+      }
+    },
+    true,
+  );
+  const tool = (kind, label, name) => h("button", { class: "plain small wstool", title: name, "aria-label": name, onmousedown: (e) => e.preventDefault(), onclick: () => (kind === "link" ? ((url) => url !== null && ui.wsEditor.format("link", url.trim()))(prompt("Link to (leave empty to remove the link):", "https://")) : ui.wsEditor.format(kind)) }, label);
+  const toolbar = h("div", { class: "wstoolbar" }, tool("bold", h("b", {}, "B"), "Bold"), tool("italic", h("i", {}, "I"), "Italic"), tool("strike", h("s", {}, "S"), "Strike through"), tool("code", h("code", {}, "<>"), "Code"), tool("link", "🔗", "Link"), h("span", { class: "note small wshintkey" }, "Type / for headings, lists, checklists and tables"), h("span", { class: "grow" }), status);
+
+  // ----- agents' suggestions -----
+  const suggestBox = h("div", { class: "wssuggestions" });
+  const drawSuggestions = (list) =>
+    fill(
+      suggestBox,
+      list.map((s) => {
+        const lines = h("div", { class: "wsdiff" }, s.diff.map((d) => (d.op === "same" ? null : h("div", { class: `wsdiffline ${d.op}` }, h("span", { class: "wsdiffmark", "aria-hidden": "true" }, d.op === "add" ? "+" : "−"), h("span", {}, diffText(d.text))))));
+        const decide = (decision) =>
+          attempt(async () => {
+            try {
+              await api("POST", `workspace/suggestions/${s.id}`, { decision });
+            } catch (err) {
+              // The page changed in the same places since the agent read it: the owner chooses.
+              if (err.status !== 409 || !confirm(`${err.message}\n\nUse the agent's version of the page? Your newer text stays in the page's history.`)) throw err;
+              await api("POST", `workspace/suggestions/${s.id}`, { decision, replace: true });
+            }
+            loadPageSuggestions();
+            workspaceView();
+          }, suggestBox);
+        return h(
+          "section",
+          { class: "card wssuggestion" },
+          h("div", { class: "row" }, h("b", { class: "grow" }, `${s.authorName} suggests a change`), h("span", { class: "note small" }, shortWhen(s.createdAt))),
+          s.note ? h("p", { class: "note" }, s.note) : null,
+          s.stale ? h("p", { class: "note small" }, "This page changed after the agent read it. Accepting keeps your newer changes where they don't overlap.") : null,
+          lines,
+          h("div", { class: "row" }, h("button", { class: "primary small", onclick: () => decide("accept") }, "Accept"), h("button", { class: "small", onclick: () => decide("decline") }, "Decline"), s.task ? h("button", { class: "plain small", onclick: () => go("quest", s.task) }, "See the task") : null),
+        );
+      }),
+    );
+  drawSuggestions(suggestions);
+
+  // ----- the page's settings -----
+  const org = activeOrg();
+  const groups = [...new Set((org.groups ?? []).map((g) => g.name).concat(org.members.map((m) => m.department)))].filter(Boolean).sort();
+  const patch = (body) => attempt(async () => (await api("PATCH", `workspace/pages/${id}`, body), workspaceView()), col);
+  const mode = page.access.private ? "private" : !page.accessSet ? "inherit" : page.access.everyone ? "everyone" : "some";
+  const who = h(
+    "select",
+    { "aria-label": "Who can see this page", onchange: (e) => (e.target.value === "some" ? fill(pick, groupBoxes()) : patch({ access: e.target.value === "inherit" ? null : e.target.value === "private" ? { private: true } : { everyone: true } })) },
+    h("option", { value: "inherit", selected: mode === "inherit" }, page.parent ? `Same as “${byId.get(page.parent)?.title ?? "the page above"}”` : "Every agent (the default)"),
+    h("option", { value: "everyone", selected: mode === "everyone" }, "Every agent"),
+    h("option", { value: "some", selected: mode === "some" }, "Only some groups"),
+    h("option", { value: "private", selected: mode === "private" }, "Private: no agent sees it"),
+  );
+  const pick = h("div", { class: "wsgroups" });
+  const groupBoxes = () => {
+    const boxes = groups.map((g) => [g, h("input", { type: "checkbox", checked: page.access.departments.includes(g) })]);
+    return [h("div", { class: "wsgroupchecks" }, boxes.map(([g, box]) => h("label", { class: "power" }, box, g))), h("button", { class: "small", onclick: () => patch({ access: { everyone: false, departments: boxes.filter(([, b]) => b.checked).map(([g]) => g), agents: [] } }) }, "Save")];
+  };
+  if (mode === "some") fill(pick, groupBoxes());
+  const edit = h(
+    "select",
+    { "aria-label": "How agents change this page", onchange: (e) => patch({ edit: e.target.value }) },
+    h("option", { value: "suggest", selected: page.edit === "suggest" }, "They suggest; I accept or decline"),
+    h("option", { value: "direct", selected: page.edit === "direct" }, "They may change it directly"),
+  );
+  const protect = h("input", { type: "checkbox", checked: page.protected, onchange: (e) => patch({ protected: e.target.checked }) });
+
+  // Give this page to an agent as a task.
+  const giveTo = h("select", { "aria-label": "Agent" }, org.members.map((m) => h("option", { value: m.bot }, m.title)));
+  const giveWhat = h("textarea", { rows: 2, placeholder: "What should they do with it? e.g. Follow this procedure for this week's orders.", "aria-label": "What to do" });
+  const give = () =>
+    attempt(async () => {
+      const what = giveWhat.value.trim() || `Follow the page “${page.title}”.`;
+      const quest = await startTask({ bot: giveTo.value, text: `${what}\n\nWork from the workspace page “${page.title}” (page ${id}): read it first with the workspace tool, follow it, and say in your report how you used it.`, title: what.slice(0, 80) });
+      if (quest?.id) go("quest", quest.id);
+      else if (quest?.queued) openTask(quest.queued.id);
+    }, col);
+
+  const tasksBox = h("div", { class: "wstasks" });
+  api("GET", `workspace/pages/${id}/tasks`).then((tasks) => tasksBox.isConnected && fill(tasksBox, tasks.length ? tasks.slice(0, 8).map((t) => h("button", { class: "plain wstaskrow", onclick: () => go("quest", t.task) }, h("span", { class: "grow" }, t.title), h("span", { class: "note small" }, `${t.agent ?? ""} ${t.how === "filed" ? "filed it" : t.how === "suggested" ? "suggested" : t.how === "changed" ? "changed it" : "read it"}`))) : h("p", { class: "note small" }, "No task has used this page yet."))).catch(() => {});
+
+  const aside = h(
+    "aside",
+    { class: "wspanel" },
+    h("div", { class: "label" }, "Who can see it"),
+    who,
+    pick,
+    h("p", { class: "note small" }, accessWords(page.access)),
+    h("div", { class: "label" }, "When agents want to change it"),
+    edit,
+    h("label", { class: "power" }, protect, "Protected: agents never change it directly"),
+    h("p", { class: "note small" }, "Use Protected for prices, legal and people policies."),
+    org.members.length ? [h("div", { class: "label" }, "Give this page to an agent"), giveTo, giveWhat, h("button", { class: "small", onclick: give }, "Give the task")] : null,
+    h("div", { class: "label" }, "Used by"),
+    tasksBox,
+    h("div", { class: "row wrap wspanelend" }, h("button", { class: "small", onclick: () => pageHistory(page) }, "History"), h("button", { class: "small danger", onclick: () => confirm(`Delete “${page.title}”${ui.ws.data.tree.some((p) => p.parent === id) ? " and the pages inside it" : ""}? You can restore it from Deleted.`) && attempt(async () => (await api("DELETE", `workspace/pages/${id}`), (ui.ws.open = page.parent), workspaceView()), col) }, "Delete")),
+  );
+
+  fill(
+    col,
+    h(
+      "div",
+      { class: "wspage" },
+      h(
+        "article",
+        { class: "wsdoc" },
+        trail.length ? h("nav", { class: "wstrail note small", "aria-label": "Where this page is" }, trail.map((t) => [h("button", { class: "plain link", onclick: () => openPage(t.id) }, t.title), " › "])) : null,
+        h("div", { class: "wshead" }, iconBtn, title),
+        h("p", { class: "note small wsmeta" }, `Edited by ${page.updatedBy} · ${when(page.updatedAt)}${page.protected ? " · Protected" : ""}`),
+        conflict,
+        suggestBox,
+        toolbar,
+        surface,
+        menu,
+      ),
+      aside,
+    ),
+  );
+  ui.wsEditor = createEditor(surface, { markdown: page.markdown, placeholder: "Write here, or type / for headings, lists, checklists and tables", onChange: changed, onSlash: (q, at) => drawMenu(q, at), onSlashEnd: () => ((menu.hidden = true), (menuAt = 0)) });
+  if (ui.ws.focusTitle) {
+    ui.ws.focusTitle = false;
+    title.focus();
+  }
+}
+
+/** Shows one of the app's documents (terms, privacy policy, licence, notices…) in a reader. Links between them open here. */
+async function showLegal(id) {
+  let doc;
+  try {
+    doc = await api("GET", `legal/${encodeURIComponent(id)}`);
+  } catch (err) {
+    return attempt(() => Promise.reject(err));
+  }
+  document.querySelector("dialog.legaldialog")?.remove();
+  const files = { "TERMS.md": "terms", "PRIVACY.md": "privacy", "ACCEPTABLE_USE.md": "acceptable-use", LICENSE: "license", "SECURITY.md": "security", "OPEN_SOURCE_POLICY.md": "open-source", "APPROVED_LICENSES.md": "approved-licenses", "THIRD_PARTY_NOTICES.md": "notices" };
+  // The document's own first heading is its title, already shown at the top.
+  const body = h("div", { class: "md legaldoc" }, id === "license" ? h("pre", {}, doc.markdown) : renderMarkdown(doc.markdown.replace(/^#\s+[^\n]*\n+/, "")));
+  body.addEventListener("click", (e) => {
+    const a = e.target.closest("a[href]");
+    if (!a) return;
+    const name = a.getAttribute("href").split(/[/#]/).filter(Boolean).find((p) => files[p]);
+    if (name) return e.preventDefault(), showLegal(files[name]);
+    if (/^https?:/.test(a.getAttribute("href"))) a.target = "_blank";
+  });
+  const dialog = h("dialog", { class: "needs legaldialog" }, h("div", { class: "row" }, h("h2", { class: "grow" }, doc.title), h("button", { class: "plain small", "aria-label": "Close", onclick: () => (dialog.close(), dialog.remove()) }, "✕")), body);
+  dialog.addEventListener("cancel", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+}
+// The Mac app's Help menu opens these too.
+window.talqavaShowLegal = showLegal;
+
+/** One line of a page's Markdown as plain reading text, for showing a change: "- [ ] x" becomes "☐ x". */
+const diffText = (line) =>
+  String(line ?? "")
+    .replace(/^(\s*)[-*+] \[ \] /, "$1☐ ")
+    .replace(/^(\s*)[-*+] \[[xX]\] /, "$1☑ ")
+    .replace(/^(\s*)[-*+] /, "$1• ")
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") || " ";
+
+/** A page's earlier versions, to look at or put back. */
+async function pageHistory(page) {
+  const versions = await api("GET", `workspace/pages/${page.id}/revisions`).catch(() => []);
+  const view = h("div", { class: "md wsrevview" });
+  const list = h(
+    "div",
+    { class: "wsrevs" },
+    versions.map((v, i) =>
+      h(
+        "div",
+        { class: "row" },
+        h("button", { class: "plain grow wsrevbtn", onclick: async () => fill(view, renderMarkdown((await api("GET", `workspace/pages/${page.id}/revisions/${v.rev}`)).markdown || "(empty)")) }, `${when(v.at)} · ${v.author}${i === 0 ? " · current" : ""}`),
+        i === 0 ? null : h("button", { class: "small", onclick: () => confirm("Put this version back? The page as it is now stays in the history.") && attempt(async () => (await api("POST", `workspace/pages/${page.id}/revisions/${v.rev}`), document.querySelector("dialog.libdialog")?.close(), document.querySelector("dialog.libdialog")?.remove(), workspaceView())) }, "Put back"),
+      ),
+    ),
+  );
+  libDialog(`History of “${page.title}”`, h("div", { class: "wshistory" }, versions.length ? list : h("p", { class: "note" }, "No earlier versions yet."), view), []);
+}
+
+// ---------- tasks: the board ----------
+// Every task of the organization, as lasting work: To do (waiting its turn in its agent's queue), Working, Needs you,
+// To review and Done. Each agent works its queue one task at a time, most important first. A task opens in a panel
+// with what was asked, the latest report, sub-tasks and comments; the owner accepts work or sends it back.
+const TASK_COLUMNS = [
+  ["todo", "To do", "Waiting their turn"],
+  ["working", "Working", "Being done now"],
+  ["needs", "Needs you", "Waiting for your answer, or stuck"],
+  ["review", "To review", "Finished: accept it, or send it back"],
+  ["done", "Done", "The last two weeks"],
+];
+const PRIORITY_WORDS = { urgent: "Urgent", high: "High", normal: "Normal", low: "Low" };
+const TASK_STATUS_WORDS = { todo: "To do", working: "Working", waiting: "Needs you", blocked: "Stuck", review: "To review", done: "Done", cancelled: "Cancelled" };
+const columnOf = (t) => (t.status === "waiting" || t.status === "blocked" ? "needs" : t.status);
+const ordinal = (n) => (n === 1 ? "Next" : `${n}${n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"} in queue`);
+
+/** Opens the board at one task. */
+function openTask(id) {
+  ui.taskOpen = id;
+  if (state.view !== "tasks") go("tasks");
+  else tasksView();
+}
+
+async function tasksView() {
+  ui.body.className = "body";
+  ui.log = null;
+  ui.tasksCol ??= null;
+  const col = h("div", { class: "tasks" });
+  ui.tasksCol = col;
+  const panel = h("aside", { class: "taskpanel", hidden: true, "aria-label": "Task" });
+  ui.taskPanel = panel;
+  fill(ui.body, h("main", { class: "center wide" }, col), panel);
+  await refreshTasks(true);
+}
+
+/** Loads the tasks and draws the board; `full` also redraws an open task's panel. */
+async function refreshTasks(full = false) {
+  let data;
+  try {
+    data = await api("GET", "work");
+  } catch (err) {
+    return ui.tasksCol && fill(ui.tasksCol, h("div", { class: "banner error" }, err.message));
+  }
+  if (state.view !== "tasks" || !ui.tasksCol) return;
+  const signature = JSON.stringify(data.items.map((t) => [t.id, t.status, t.detail, t.queue, t.priority, t.title, t.comments, t.owner, t.subtasks.open]));
+  if (!full && signature === ui.tasksSignature) return;
+  ui.tasksSignature = signature;
+  ui.tasks = data.items;
+  drawBoard();
+  // The open task's panel follows along, unless the owner is typing in it.
+  if (ui.taskOpen && (full || !ui.taskPanel.contains(document.activeElement))) drawTaskPanel(ui.taskOpen);
+  else if (!ui.taskOpen) ui.taskPanel.hidden = true;
+}
+
+function drawBoard() {
+  const col = ui.tasksCol;
+  const org = activeOrg();
+  const crew = new Map((state.crew?.bots ?? []).map((b) => [b.id, b]));
+  ui.taskFilter ??= { who: "", q: "", cancelled: false };
+  const f = ui.taskFilter;
+  const twoWeeks = Date.now() - 14 * 86400_000;
+  const shown = ui.tasks.filter((t) => (!f.who || t.owner === f.who) && (!f.q || `${t.number} ${t.title} ${t.ownerName}`.toLowerCase().includes(f.q.toLowerCase())) && (t.status !== "done" || Date.parse(t.updatedAt) > twoWeeks));
+  const search = h("input", { type: "search", value: f.q, placeholder: "Find a task", "aria-label": "Find a task" });
+  search.addEventListener("input", () => ((f.q = search.value), drawBoard(), document.querySelector(".tasks input[type=search]")?.focus()));
+  const who = h("select", { "aria-label": "Whose tasks", onchange: (e) => ((f.who = e.target.value), drawBoard()) }, h("option", { value: "" }, "Everyone"), org.members.map((m) => h("option", { value: m.bot, selected: f.who === m.bot }, m.title)));
+  const counts = Object.fromEntries(TASK_COLUMNS.map(([key]) => [key, shown.filter((t) => columnOf(t) === key).length]));
+  const card = (t) => {
+    const bot = crew.get(t.owner);
+    return h(
+      "button",
+      { class: `taskcard pri-${t.priority} ${ui.taskOpen === t.id ? "on" : ""}`, style: bot ? botStyle(bot) : "", onclick: () => ((ui.taskOpen = t.id), drawBoard(), drawTaskPanel(t.id)) },
+      h("div", { class: "taskcardtop" }, h("span", { class: "tasknum" }, `#${t.number}`), t.priority !== "normal" ? h("span", { class: `taskpri ${t.priority}` }, PRIORITY_WORDS[t.priority]) : null, t.status === "todo" && t.queue ? h("span", { class: "taskqueue" }, ordinal(t.queue)) : null),
+      h("b", { class: "tasktitle" }, t.title),
+      t.detail ? h("span", { class: `taskdetail ${t.status === "blocked" ? "bad" : ""}` }, t.detail) : null,
+      h("div", { class: "taskmeta" }, bot ? keycap(bot.character, 18, t.status === "working" ? "working" : "", bot.type) : null, h("span", { class: "grow" }, t.ownerName), t.subtasks.total ? h("span", { title: "Sub-tasks still open" }, `◫ ${t.subtasks.open}/${t.subtasks.total}`) : null, t.comments ? h("span", { title: "Comments" }, `💬 ${t.comments}`) : null, t.cost >= 0.01 ? h("span", {}, money(t.cost)) : null),
+    );
+  };
+  fill(
+    col,
+    h(
+      "div",
+      { class: "tasks-head" },
+      h("div", { class: "grow" }, h("h1", {}, "Tasks"), h("p", { class: "lead" }, "Every task in your organization. Each agent works through its own queue, one task at a time, most important first. Finished work comes back to you to accept or send back.")),
+      h("button", { class: "primary", onclick: () => newTaskDialog() }, "+ New task"),
+    ),
+    h("div", { class: "row tasks-tools" }, search, who, h("label", { class: "power" }, h("input", { type: "checkbox", checked: f.cancelled, onchange: (e) => ((f.cancelled = e.target.checked), drawBoard()) }), "Show cancelled")),
+    h(
+      "div",
+      { class: "taskboard" },
+      TASK_COLUMNS.map(([key, label, hint]) => {
+        const items = shown.filter((t) => columnOf(t) === key).sort((a, b) => (key === "todo" ? ["urgent", "high", "normal", "low"].indexOf(a.priority) - ["urgent", "high", "normal", "low"].indexOf(b.priority) || a.number - b.number : b.updatedAt.localeCompare(a.updatedAt)));
+        return h("section", { class: `taskcol col-${key}` }, h("header", {}, h("b", {}, label), h("span", { class: "count" }, counts[key]), h("span", { class: "note small taskcolhint" }, hint)), items.length ? items.map(card) : h("p", { class: "note small taskempty" }, key === "todo" ? "Nothing waiting." : key === "needs" ? "Nothing needs you." : "None."));
+      }),
+    ),
+    f.cancelled ? h("div", { class: "taskcancelled" }, h("h3", {}, "Cancelled"), ui.tasks.filter((t) => t.status === "cancelled").map(card)) : null,
+  );
+}
+
+async function drawTaskPanel(id) {
+  const panel = ui.taskPanel;
+  if (!panel) return;
+  let data;
+  try {
+    data = await api("GET", `work/${id}`);
+  } catch (err) {
+    ui.taskOpen = null;
+    panel.hidden = true;
+    return;
+  }
+  if (ui.taskOpen !== id) return;
+  const { item: t, comments, subtasks, quest } = data;
+  const org = activeOrg();
+  const crew = new Map((state.crew?.bots ?? []).map((b) => [b.id, b]));
+  const act = (fn) => attempt(async () => (await fn(), await refreshTasks(true)), panel);
+  const patch = (body) => act(() => api("PATCH", `work/${id}`, body));
+  const title = h("input", { class: "tasktitlebox", value: t.title, maxlength: 140, "aria-label": "Task title" });
+  title.addEventListener("change", () => title.value.trim() && title.value.trim() !== t.title && patch({ title: title.value.trim() }));
+  const priority = h("select", { "aria-label": "Priority", onchange: (e) => patch({ priority: e.target.value }) }, ["urgent", "high", "normal", "low"].map((p) => h("option", { value: p, selected: t.priority === p }, PRIORITY_WORDS[p])));
+  const ownerBot = crew.get(t.owner);
+  const owner = t.status === "todo" ? h("select", { "aria-label": "Assigned to", onchange: (e) => patch({ owner: e.target.value }) }, org.members.map((m) => h("option", { value: m.bot, selected: m.bot === t.owner }, m.title))) : h("span", { class: "row" }, ownerBot ? keycap(ownerBot.character, 20, "", ownerBot.type) : null, t.ownerName);
+  const parent = t.parent ? ui.tasks?.find((x) => x.id === t.parent) : null;
+  const comment = h("textarea", { rows: 3, placeholder: t.status === "review" ? "What should change? Sending it back wakes the agent." : "Write a note for the agent…", "aria-label": "Comment" });
+  const sendComment = () => comment.value.trim() && act(async () => (await api("POST", `work/${id}/comment`, { text: comment.value }), (comment.value = "")));
+  comment.addEventListener("keydown", (e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && sendComment());
+  const reportText = quest?.said;
+  fill(
+    panel,
+    h("div", { class: "taskpanelhead" }, h("span", { class: "tasknum" }, `#${t.number}`), h("span", { class: `taskstatus st-${t.status}` }, TASK_STATUS_WORDS[t.status]), h("span", { class: "grow" }), h("button", { class: "plain small", "aria-label": "Close", onclick: () => ((ui.taskOpen = null), (panel.hidden = true), drawBoard()) }, "✕")),
+    title,
+    t.detail ? h("div", { class: `banner ${t.status === "blocked" ? "error" : ""}` }, t.detail) : null,
+    h(
+      "div",
+      { class: "taskactions row wrap" },
+      t.status === "review" ? h("button", { class: "primary small", onclick: () => act(() => api("POST", `work/${id}/accept`)) }, "Accept") : null,
+      t.status === "blocked" ? h("button", { class: "primary small", onclick: () => act(() => api("POST", `work/${id}/retry`)) }, "Try again") : null,
+      t.status === "waiting" && t.quest ? h("button", { class: "primary small", onclick: () => go("quest", t.quest) }, "Answer it") : null,
+      t.quest ? h("button", { class: "small", onclick: () => go("quest", t.quest) }, "Open the work") : null,
+      t.status !== "done" && t.status !== "cancelled" ? h("button", { class: "small", onclick: () => newTaskDialog({ parent: t }) }, "+ Sub-task") : null,
+    ),
+    h(
+      "dl",
+      { class: "taskfacts" },
+      h("dt", {}, "Assigned to"),
+      h("dd", {}, owner),
+      h("dt", {}, "Priority"),
+      h("dd", {}, t.status === "done" || t.status === "cancelled" ? PRIORITY_WORDS[t.priority] : priority),
+      t.status === "todo" && t.queue ? [h("dt", {}, "Queue"), h("dd", {}, t.queue === 1 ? "Next, when the agent is free" : `${ordinal(t.queue)} for the ${t.ownerName}`)] : null,
+      parent ? [h("dt", {}, "Part of"), h("dd", {}, h("button", { class: "plain link", onclick: () => openTask(parent.id) }, `#${parent.number} ${parent.title}`))] : null,
+      h("dt", {}, "Created"),
+      h("dd", {}, `${shortWhen(t.createdAt)} by ${t.createdByName}`),
+      t.cost >= 0.001 ? [h("dt", {}, "Cost so far"), h("dd", {}, money(t.cost))] : null,
+    ),
+    t.description && t.description !== t.title ? [h("div", { class: "label" }, "What was asked"), h("div", { class: "md taskdesc" }, renderMarkdown(t.description))] : null,
+    reportText ? [h("div", { class: "label" }, t.status === "working" ? "Latest from the agent" : "Its report"), h("div", { class: "md taskreport" }, renderMarkdown(reportText))] : null,
+    subtasks.length
+      ? [
+          h("div", { class: "label" }, `Sub-tasks (${subtasks.filter((s) => s.status !== "done" && s.status !== "cancelled").length} open)`),
+          h("div", { class: "tasksubs" }, subtasks.map((s) => h("button", { class: "plain tasksub", onclick: () => openTask(s.id) }, h("span", { class: `taskdot st-${s.status}`, title: TASK_STATUS_WORDS[s.status] }), h("span", { class: "grow" }, `#${s.number} ${s.title}`), h("span", { class: "note small" }, s.ownerName)))),
+        ]
+      : null,
+    h("div", { class: "label" }, `Comments${comments.length ? ` (${comments.length})` : ""}`),
+    h("div", { class: "taskcomments" }, comments.map((c) => h("div", { class: `taskcomment ${c.author === "owner" ? "mine" : ""}` }, h("div", { class: "note small" }, `${c.authorName} · ${shortWhen(c.at)}${c.author === "owner" && !c.delivered ? " · goes to the agent when its current step ends" : ""}`), h("div", {}, c.text)))),
+    t.status !== "cancelled" ? [comment, h("div", { class: "row" }, h("button", { class: t.status === "review" ? "small" : "small primary", onclick: sendComment }, t.status === "review" ? "Send back with this comment" : "Comment"), h("span", { class: "note small" }, "⌘↵ to send"))] : null,
+    t.status !== "done" && t.status !== "cancelled" ? h("div", { class: "taskdanger" }, h("button", { class: "plain small danger", onclick: () => confirm(`Cancel task #${t.number}${t.subtasks.open ? ` and its ${t.subtasks.open} open sub-task${t.subtasks.open === 1 ? "" : "s"}` : ""}? Work done so far is kept.`) && act(() => api("POST", `work/${id}/cancel`)) }, "Cancel task")) : null,
+  );
+  panel.hidden = false;
+}
+
+/** A new task: what is wanted, who does it, how important it is. Under `parent` when given. */
+async function newTaskDialog({ parent = null, owner = "", text = "" } = {}) {
+  const org = activeOrg();
+  if (!org.members.length) return go("team");
+  const title = h("input", { maxlength: 140, placeholder: "e.g. Find ten wholesale bakeries near us", "aria-label": "Task" });
+  const details = h("textarea", { rows: 5, placeholder: "What should be done, what good looks like, anything they need to know (optional)", "aria-label": "Details" }, text);
+  const who = h("select", { "aria-label": "Assign to" }, org.members.map((m) => h("option", { value: m.bot, selected: m.bot === (owner || parent?.owner) }, `${m.title} · ${m.department}`)));
+  const priority = h("select", { "aria-label": "Priority" }, ["urgent", "high", "normal", "low"].map((p) => h("option", { value: p, selected: p === (parent?.priority ?? "normal") }, PRIORITY_WORDS[p])));
+  const got = await libDialog(
+    parent ? `New sub-task of #${parent.number}` : "New task",
+    h("div", { class: "composeform" }, h("label", {}, "Task", title), h("label", {}, "Details", details), h("div", { class: "row" }, h("label", { class: "grow" }, "Assign to", who), h("label", {}, "Priority", priority)), h("p", { class: "note small" }, "It goes into the agent's queue and starts when the agent is free, most important first. You'll review the result.")),
+    [["Create task", () => ({ title: title.value.trim(), description: details.value.trim(), owner: who.value, priority: priority.value }), true]],
+  );
+  if (!got || !(got.title || got.description)) return;
+  await attempt(async () => {
+    const reply = await createTask({ ...got, parent: parent?.id, project: state.project || undefined });
+    if (reply?.item) openTask(reply.item.id);
+  });
+}
+
+/** Creates a task, with the same up-front checks as before; returns { item, quest } or null when the owner backed out. */
+async function createTask(payload) {
+  const reply = await api("POST", "work", payload);
+  if (!reply.needs) return reply;
+  const choice = await needsDialog(reply.needs, reply.repositories ?? []);
+  if (!choice) return null;
+  if (choice.project) return createTask({ ...payload, project: choice.project });
+  if (choice.anyway) return createTask({ ...payload, anyway: true });
+  return null;
+}

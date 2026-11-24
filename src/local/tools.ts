@@ -27,6 +27,7 @@ import { loadCrew } from "./crew.ts";
 import { assignableBy, memberOf, oneLine, orgs, reportsOf, requestableBy, rolePrompt } from "./orgs.ts";
 import { orgMemoryPrompt, teamMemoryTool } from "./orgmemory.ts";
 import { libraryPrompt, libraryTool, GENERAL_AGENT } from "./library.ts";
+import { workspacePrompt, workspaceTool } from "./workspace.ts";
 import { structureOf } from "./structures.ts";
 import { WORKSPACE, conversations, getConfig, memory, skills, spaces } from "./store.ts";
 import { resolveModel } from "./models.ts";
@@ -305,13 +306,19 @@ export const assignTool: Tool = defineTool<{ to: string; task: string }>({
     const task = String(input.task ?? "").trim();
     if (task.length < 10) throw new Error("Say what the task is, with everything the agent needs to know.");
     if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error(`Tasks can be handed down ${MAX_DEPTH} levels at most. Do this one yourself.`);
-    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
+    const { work } = await import("./work.ts");
+    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length + work.pendingFor(conversation.id);
     if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks you assigned are still open. Wait for their reports before assigning more.`);
     withinChainBudget(quest);
     const by = caller?.name ?? getConfig().agentName;
     const text = `${task}\n\n[Assigned by ${by}${caller ? `, the ${memberOf(org, caller.id)?.title ?? caller.title}` : ", on the user's behalf"}. You cannot see their conversation, so work from this task alone. End with a short report of what you did and what you found: it is sent back to ${by}.]`;
-    await quests.start({ bot: target, text, title: task, project: quest?.project, parent: { id: conversation.id, by } });
-    return `Assigned to ${target.name} (${memberOf(org, target.id)?.title ?? target.title}). Its report will arrive here as a message when it is done. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
+    // The hand-off is a sub-task of the caller's task, in the receiver's queue: it starts when the receiver is free.
+    const item = work.create(org, { title: task, description: task, owner: target.id, createdBy: callerId ?? "chat", review: false, parent: work.ofQuest(org, conversation.id)?.id ?? null, project: quest?.project ?? null, handoff: { conversation: conversation.id, by, text } });
+    await work.schedule();
+    const placed = work.get(org, item.id);
+    const who = `${target.name} (${memberOf(org, target.id)?.title ?? target.title})`;
+    if (placed.status === "blocked") throw new Error(`The task could not start: ${placed.detail}`);
+    return `${placed.status === "todo" ? `Assigned to ${who} as task #${placed.number}. It is busy with other work, so this is number ${placed.queue} in its queue and starts when it is free.` : `Assigned to ${who} as task #${placed.number}; it has started.`} Its report will arrive here as a message when it is done. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
   },
 });
 
@@ -410,13 +417,17 @@ export const requestTool: Tool = defineTool<{ to: string; request: string; why?:
     if (request.length < 10) throw new Error("Say what you need, with everything they need to know.");
     if (quest?.kind) throw new Error("You are answering a question yourself. Say in your answer what work is needed and from whom.");
     if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error("This task is already several hand-offs deep. Say in your report what is needed from the other department.");
-    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
+    const { work } = await import("./work.ts");
+    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length + work.pendingFor(conversation.id);
     if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks and requests of yours are still open. Wait for them before making more.`);
     withinChainBudget(quest);
     const why = String(input.why ?? "").trim();
     const text = `${request}${why ? `\n\nWhy and by when: ${why}` : ""}\n\n[A request from ${caller.name}, the ${memberOf(org, caller.id)?.title ?? caller.title} in ${memberOf(org, caller.id)?.department ?? "another department"}. This is a request from a colleague, not an order from your lead. Weigh it against your own priorities and decision rights. If you accept, do it or hand its parts to your team, and end with a short report. If you decline, say so in one line with the reason and what would change your answer. You cannot see their conversation. Your reply is sent back to ${caller.name}.]`;
-    await quests.start({ bot: target, text, title: `Request: ${request}`, project: quest?.project, parent: { id: conversation.id, by: caller.name } });
-    return `Requested from ${target.name}. Their answer or report will arrive here as a message. Do not wait for it or assume they will accept: end your turn once anything that does not depend on it is finished.`;
+    const item = work.create(org, { title: `Request: ${request}`, description: request, owner: target.id, createdBy: caller.id, review: false, parent: work.ofQuest(org, conversation.id)?.id ?? null, project: quest?.project ?? null, handoff: { conversation: conversation.id, by: caller.name, text } });
+    await work.schedule();
+    const placed = work.get(org, item.id);
+    if (placed.status === "blocked") throw new Error(`The request could not start: ${placed.detail}`);
+    return `Requested from ${target.name} as task #${placed.number}${placed.status === "todo" ? `; it is number ${placed.queue} in their queue` : ""}. Their answer or report will arrive here as a message. Do not wait for it or assume they will accept: end your turn once anything that does not depend on it is finished.`;
   },
 });
 
@@ -492,12 +503,15 @@ function teamworkTools(org: ReturnType<typeof orgs.active>, botId: string): Tool
     ...(org.members.length > 1 ? [askTool] : []),
     teamMemory,
     libraryForAgents,
+    workspaceForAgents,
     ...(leads ? [proposeTool] : []),
   ];
 }
 
 /** The organization's library of documents, for whoever is running in a conversation. */
 const libraryForAgents = libraryTool((conversationId) => agentOf(conversationId)?.id ?? GENERAL_AGENT);
+/** The organization's workspace of pages, for whoever is running in a conversation. */
+const workspaceForAgents = workspaceTool((conversationId) => agentOf(conversationId)?.id ?? GENERAL_AGENT);
 
 /**
  * Which model an agent's run uses, and how hard it thinks. An agent with a
@@ -600,12 +614,12 @@ export function localRunSpec(jobs: JobBook) {
       const org = orgs.active();
       const role = rolePrompt(bot, org);
       const onChart = Boolean(memberOf(org, bot.id));
-      const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
+      const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), workspacePrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const question = Boolean(quest.kind);
       // Why the task exists, from the mission down: so a hand-off three levels deep still knows what it is for.
       const why = question ? "" : whyPrompt(quest);
       // Whoever may hand work to someone gets assign_task; every member can ask a colleague and use the shared memory.
-      const teamwork = !onChart ? [] : question ? [teamMemory, libraryForAgents] : teamworkTools(org, bot.id);
+      const teamwork = !onChart ? [] : question ? [teamMemory, libraryForAgents, workspaceForAgents] : teamworkTools(org, bot.id);
       if (question) {
         // Answering a colleague is a small job, so it is run as one: a short prompt with only who the agent is and
         // what the organization knows, the two look-up tools, low effort and a few steps. This is what keeps a
@@ -656,7 +670,7 @@ export function localRunSpec(jobs: JobBook) {
       const org = orgs.active();
       const role = rolePrompt(chatBot, org);
       const onChart = Boolean(memberOf(org, chatBot.id));
-      const remembered = onChart ? [orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
+      const remembered = onChart ? [orgMemoryPrompt(org, chatBot.id, topicOf(conversation)), workspacePrompt(org, chatBot.id, topicOf(conversation)), libraryPrompt(org, chatBot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const teamwork = onChart ? teamworkTools(org, chatBot.id) : [];
       return {
         model,
@@ -671,12 +685,12 @@ export function localRunSpec(jobs: JobBook) {
     }
 
     const model = resolveModel(cfg);
-    const tools = [...(await localTools(jobs)), ...(orgs.active().members.length ? [assignTool, askTool, teamMemory] : []), libraryForAgents];
+    const tools = [...(await localTools(jobs)), ...(orgs.active().members.length ? [assignTool, askTool, teamMemory] : []), libraryForAgents, workspaceForAgents];
     const claude = model.kind === "anthropic";
     const linked = await connectors(true);
     return {
       model,
-      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", libraryPrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation))].filter(Boolean).join("\n\n"))}`,
+      system: `${localPrompt(WORKSPACE, cfg.agentName, [...linked.note, ...orgOverview()], conversation)}${((m) => (m ? `\n\n${m}` : ""))([orgs.active().members.length ? orgMemoryPrompt(orgs.active(), "", topicOf(conversation)) : "", workspacePrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation)), libraryPrompt(orgs.active(), GENERAL_AGENT, topicOf(conversation))].filter(Boolean).join("\n\n"))}`,
       // Other models read the web with our own page reader; Claude uses Anthropic's.
       tools: [...(claude ? tools : [...tools, pageTool()]), ...linked.tools],
       hostedTools: claude ? HOSTED_WEB : [],

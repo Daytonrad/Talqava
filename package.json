@@ -25,7 +25,7 @@
     "url": "https://github.com/Talqava/Talqava/issues"
   },
   "license": "MIT",
-  "author": "Talqava",
+  "author": "GR Investments LLC",
   "type": "module",
   "private": true,
   "engines": {
@@ -36,7 +36,9 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test",
-    "eval": "node evals/run.ts"
+    "eval": "node evals/run.ts",
+    "licenses": "node scripts/licenses.mjs",
+    "postinstall": "node scripts/prune-shipped.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.136.0",
