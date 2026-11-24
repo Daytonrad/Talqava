@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { JobBook, nextRun, parseSchedule } from "../../src/core/index.ts";
+import { JobBook, describeSchedule, nextRun, parseSchedule } from "../../src/core/index.ts";
 import { MemoryJobs } from "../memory-stores.ts";
 
 const at = (text: string) => new Date(text);
@@ -24,9 +24,9 @@ test("cron lines", () => {
 test("one-time and invalid schedules", () => {
   assert.equal(nextRun("at 2030-05-01T09:00", at("2026-01-01T00:00:00"))!.getFullYear(), 2030);
   assert.equal(nextRun("at 2020-05-01T09:00", at("2026-01-01T00:00:00")), null);
-  assert.throws(() => parseSchedule("whenever"), /Schedule must be/);
+  assert.throws(() => parseSchedule("whenever"), /could not be read/);
   assert.throws(() => parseSchedule("61 * * * *"), /Bad cron/);
-  assert.throws(() => parseSchedule("every 10s"), /Schedule must be/);
+  assert.throws(() => parseSchedule("every 10s"), /could not be read/);
 });
 
 test("due jobs fire once and move to their next time", async () => {
@@ -47,6 +47,33 @@ test("jobs can be paused, resumed and removed", async () => {
   assert.equal((await jobs.update(job.id, { enabled: true })).enabled, true);
   await jobs.remove(job.id);
   assert.deepEqual(await jobs.list(), []);
-  await assert.rejects(jobs.remove(job.id), /No scheduled job/);
-  await assert.rejects(jobs.create({ name: "", prompt: "x", schedule: "every 1h" }), /needs a name/);
+  await assert.rejects(jobs.remove(job.id), /no longer exists/);
+  await assert.rejects(jobs.create({ name: "", prompt: "x", schedule: "every 1h" }), /Give the schedule a name/);
+});
+
+test("schedules in plain words, and changing one", async () => {
+  assert.equal(describeSchedule("0 9 * * *"), "Every day at 9:00 am");
+  assert.equal(describeSchedule("30 17 * * 1-5"), "Every weekday at 5:30 pm");
+  assert.equal(describeSchedule("0 12 * * 1"), "Every Monday at 12:00 pm");
+  assert.equal(describeSchedule("0 0 * * 7"), "Every Sunday at 12:00 am");
+  assert.equal(describeSchedule("15 8 1 * *"), "Every month on the 1st at 8:15 am");
+  assert.equal(describeSchedule("0 8 22 * *"), "Every month on the 22nd at 8:00 am");
+  assert.equal(describeSchedule("every 2h"), "Every 2 hours");
+  assert.equal(describeSchedule("every 1d"), "Every day");
+  assert.match(describeSchedule("at 2030-05-01T09:00"), /^Once, on Wednesday, May 1, 2030 at 9:00 am$/);
+  // Anything unusual is shown as written.
+  assert.equal(describeSchedule("*/15 9-17 * * 1-5"), "*/15 9-17 * * 1-5");
+
+  const jobs = new JobBook(new MemoryJobs());
+  await assert.rejects(jobs.create({ name: "", prompt: "x", schedule: "every 1h" }), /Give the schedule a name/);
+  await assert.rejects(jobs.create({ name: "x", prompt: " ", schedule: "every 1h" }), /Write the instructions/);
+  const job = await jobs.create({ name: "Digest", prompt: "Summarise the news.", schedule: "every 1h", owner: "researcher", org: "org1" });
+  assert.deepEqual([job.owner, job.org], ["researcher", "org1"]);
+  await jobs.update(job.id, { enabled: false });
+  const changed = await jobs.edit(job.id, { name: "Morning digest", schedule: "0 8 * * 1-5", owner: null });
+  assert.deepEqual([changed.name, changed.schedule, changed.enabled, changed.owner, changed.org], ["Morning digest", "0 8 * * 1-5", true, null, null]);
+  assert.equal(new Date(changed.nextRunAt!).getHours(), 8);
+  await assert.rejects(jobs.edit(job.id, { schedule: "at 2020-01-01T09:00" }), /already in the past/);
+  await assert.rejects(jobs.edit(job.id, { prompt: "" }), /Write the instructions/);
+  await assert.rejects(jobs.edit("nope", { name: "x" }), /no longer exists/);
 });

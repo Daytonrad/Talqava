@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { Engine, JobBook, BRAND, checkModel, describeError, outsideContentRead, setting } from "../core/index.ts";
+import { Engine, JobBook, BRAND, checkModel, describeError, describeSchedule, outsideContentRead, setting } from "../core/index.ts";
 import type { Bot, Conversation, Decision, Job, RunEvent } from "../core/index.ts";
 import {
   ROOT,
@@ -190,10 +190,35 @@ function describeRequest(method: string, parts: string[], body: any, url: URL): 
   return { kind: "other", action: `${method} ${parts.join(" / ")}`, detail: words(body) };
 }
 
-async function runJob(job: Job) {
+/**
+ * Runs a scheduled job. With an agent chosen, it becomes a task in that agent's queue, worked and
+ * reviewed like any other. Without one, or if the agent has left the chart, the assistant does it in a chat.
+ */
+async function runJob(job: Job): Promise<{ conversationId?: string; taskId?: string }> {
+  const org = job.owner ? orgs.list().orgs.find((o) => o.id === job.org) : undefined;
+  if (job.owner && org && org.members.some((m) => m.bot === job.owner)) {
+    const item = work.create(org, {
+      title: job.name,
+      description: `${job.prompt}\n\n(From the schedule “${job.name}”, ${describeSchedule(job.schedule).toLowerCase()}. Finish with a short report of what you did and anything that needs the owner's attention.)`,
+      owner: job.owner,
+      createdBy: "owner",
+      review: true,
+    });
+    await jobs.update(job.id, { lastTaskId: item.id, lastConversationId: null });
+    work.kick();
+    return { taskId: item.id };
+  }
+  if (job.owner) audit({ actor: "system", actorName: "Talqava", kind: "problem", ok: false, action: `The schedule “${job.name}” ran in a chat`, detail: "Its agent is no longer on the organization chart, so the Talqava assistant did it instead. Choose another agent under Schedules." });
   const { conversation } = await engine.runJob(job);
-  await jobs.update(job.id, { lastConversationId: conversation.id });
-  return conversation;
+  await jobs.update(job.id, { lastConversationId: conversation.id, lastTaskId: null });
+  return { conversationId: conversation.id };
+}
+
+/** A schedule's agent: someone on the active organization's chart, or none for the assistant. */
+function jobOwner(owner: unknown): string | null {
+  if (!owner) return null;
+  if (!orgs.active().members.some((m) => m.bot === String(owner))) throw new HttpError(400, "Choose an agent from your organization chart, or the Talqava assistant.");
+  return String(owner);
 }
 
 class HttpError extends Error {
@@ -1270,22 +1295,30 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (route === "GET skills") return send(res, 200, skills.list());
   if (route === "DELETE skills") return send(res, 200, await attempt(() => skills.remove(decodeURIComponent(parts[1]))));
 
-  if (route === "GET jobs") return send(res, 200, await jobs.list());
-  if (route === "POST jobs" && !parts[1]) return send(res, 200, await attempt(() => jobs.create(body)));
+  if (route === "GET jobs") {
+    const all = await jobs.list();
+    const known = new Map(orgs.list().orgs.flatMap((o) => o.members.map((m) => [`${o.id}|${m.bot}`, { title: m.title, org: o.name }] as const)));
+    return send(res, 200, all.map((j) => ({ ...j, plain: describeSchedule(j.schedule), ownerName: j.owner ? (known.get(`${j.org}|${j.owner}`)?.title ?? null) : null, ownerOrg: j.owner ? (known.get(`${j.org}|${j.owner}`)?.org ?? null) : null })));
+  }
+  if (route === "POST jobs" && !parts[1]) return send(res, 200, await attempt(() => jobs.create({ ...body, owner: jobOwner(body.owner), org: body.owner ? orgs.active().id : null })));
   if (route === "POST jobs" && parts[2] === "run") {
     const job = (await jobs.list()).find((j) => j.id === parts[1]);
-    if (!job) throw new HttpError(404, "Job not found.");
-    const conversation = await runJob(job);
+    if (!job) throw new HttpError(404, "That schedule no longer exists.");
+    const ran = await attempt(() => runJob(job));
     await jobs.update(job.id, { lastRunAt: new Date().toISOString() });
-    return send(res, 200, { conversationId: conversation.id });
+    return send(res, 200, ran);
   }
-  if (route === "PATCH jobs") return send(res, 200, await attempt(() => jobs.update(parts[1], { enabled: Boolean(body.enabled) })));
+  if (route === "PATCH jobs") {
+    const { enabled, ...rest } = body;
+    if (Object.keys(rest).length) await attempt(() => jobs.edit(parts[1], { ...rest, ...(rest.owner !== undefined ? { owner: jobOwner(rest.owner), org: orgs.active().id } : {}) }));
+    return send(res, 200, enabled === undefined ? (await jobs.list()).find((j) => j.id === parts[1]) : await attempt(() => jobs.update(parts[1], { enabled: Boolean(enabled) })));
+  }
   if (route === "DELETE jobs") return send(res, 200, await attempt(() => jobs.remove(parts[1])));
 
   throw new HttpError(404, "Not found.");
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse) {
+export async function handle(req: IncomingMessage, res: ServerResponse) {
   try {
     checkOrigin(req);
     const url = new URL(req.url ?? "/", "http://local");

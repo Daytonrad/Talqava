@@ -5274,58 +5274,178 @@ async function skillsView() {
 }
 
 // ---------- schedules ----------
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/**
+ * A plain way to say when something runs: every day, weekday, week, month, every few minutes or
+ * hours, or once. It writes the schedule the app understands; "Custom" takes one typed by hand.
+ */
+function whenPicker(initial = "0 9 * * 1-5") {
+  const kind = h("select", { "aria-label": "How often" }, [
+    ["daily", "Every day"],
+    ["weekdays", "Every weekday (Monday to Friday)"],
+    ["weekly", "Every week"],
+    ["monthly", "Every month"],
+    ["hours", "Every few hours"],
+    ["minutes", "Every few minutes"],
+    ["once", "Once"],
+    ["custom", "Custom (advanced)"],
+  ].map(([v, l]) => h("option", { value: v }, l)));
+  const time = h("input", { type: "time", value: "09:00", "aria-label": "Time" });
+  // Monday first, as a working week reads.
+  const day = h("select", { "aria-label": "Day of the week" }, [1, 2, 3, 4, 5, 6, 0].map((i) => h("option", { value: i }, WEEKDAYS[i])));
+  const nth = (n) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
+  // Days 1 to 28, which every month has.
+  const date = h("select", { "aria-label": "Day of the month" }, Array.from({ length: 28 }, (_, i) => h("option", { value: i + 1 }, nth(i + 1))));
+  const count = h("input", { type: "number", min: 1, max: 59, value: 2, "aria-label": "How many", style: "width: 80px" });
+  const once = h("input", { type: "datetime-local", "aria-label": "Date and time" });
+  const custom = h("input", { placeholder: "e.g. every 30m, at 2027-01-15T09:00, or 0 9 * * 1-5", "aria-label": "Custom schedule", class: "mono" });
+  const words = (t) => h("span", { class: "note" }, t);
+  const row = h("div", { class: "row wrap whenrow" });
+  const hm = () => {
+    const [hh, mm] = (time.value || "09:00").split(":").map(Number);
+    return [mm, hh];
+  };
+  const draw = () => {
+    const k = kind.value;
+    fill(
+      row,
+      kind,
+      k === "weekly" ? [words("on"), day] : null,
+      k === "monthly" ? [words("on the"), date] : null,
+      ["daily", "weekdays", "weekly", "monthly"].includes(k) ? [words("at"), time] : null,
+      k === "hours" ? [words("every"), count, words("hours")] : null,
+      k === "minutes" ? [words("every"), count, words("minutes")] : null,
+      k === "once" ? [words("on"), once] : null,
+      k === "custom" ? custom : null,
+    );
+    count.max = k === "hours" ? 23 : 59;
+  };
+  kind.addEventListener("change", draw);
+  // Opens on what the schedule already is, when it is one of these.
+  const t = String(initial).trim();
+  let m;
+  if ((m = /^every\s+(\d+)\s*(m|h)\w*$/i.exec(t))) (kind.value = m[2].toLowerCase() === "h" ? "hours" : "minutes"), (count.value = m[1]);
+  else if ((m = /^every\s+1\s*d\w*$/i.exec(t))) kind.value = "daily";
+  else if ((m = /^at\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})/i.exec(t))) (kind.value = "once"), (once.value = m[1]);
+  else if ((m = /^(\d{1,2}) (\d{1,2}) (\*|\d{1,2}) \* (\*|1-5|[0-7])$/.exec(t)) && Number(m[3] === "*" ? 1 : m[3]) <= 28) {
+    time.value = `${String(m[2]).padStart(2, "0")}:${String(m[1]).padStart(2, "0")}`;
+    if (m[3] !== "*" && m[4] === "*") (kind.value = "monthly"), (date.value = m[3]);
+    else if (m[3] === "*" && m[4] === "*") kind.value = "daily";
+    else if (m[3] === "*" && m[4] === "1-5") kind.value = "weekdays";
+    else if (m[3] === "*") (kind.value = "weekly"), (day.value = String(Number(m[4]) % 7));
+    else (kind.value = "custom"), (custom.value = t);
+  } else if (t) (kind.value = "custom"), (custom.value = t);
+  draw();
+  return {
+    node: row,
+    value() {
+      const [mm, hh] = hm();
+      const n = Math.max(1, Math.round(Number(count.value) || 1));
+      switch (kind.value) {
+        case "daily": return `${mm} ${hh} * * *`;
+        case "weekdays": return `${mm} ${hh} * * 1-5`;
+        case "weekly": return `${mm} ${hh} * * ${day.value}`;
+        case "monthly": return `${mm} ${hh} ${date.value} * *`;
+        case "hours": return `every ${n}h`;
+        case "minutes": return `every ${n}m`;
+        case "once": return once.value ? `at ${once.value}` : "";
+        default: return custom.value.trim();
+      }
+    },
+  };
+}
+
+/** Who does a schedule: the Talqava assistant, or an agent on the chart (each run is then a task in its queue). */
+function whoPicker(current = "") {
+  const org = activeOrg();
+  return h(
+    "select",
+    { "aria-label": "Who does it" },
+    h("option", { value: "" }, `${state.config.agentName} (the assistant), in a chat`),
+    org.members.length ? h("optgroup", { label: `Agents in ${org.name}: a task in their queue` }, org.members.map((m) => h("option", { value: m.bot, selected: m.bot === current }, `${m.title} · ${m.department}`))) : null,
+  );
+}
+
+/** Adds a schedule, or changes one. */
+function scheduleForm(col, job = null, done) {
+  const name = h("input", { placeholder: "e.g. Morning news digest", value: job?.name ?? "", maxlength: 80 });
+  const when = whenPicker(job?.schedule ?? "0 9 * * 1-5");
+  const who = whoPicker(job?.owner ?? "");
+  const prompt = h("textarea", { rows: 4, placeholder: "What should be done each time? Write it as you would to a new colleague, e.g. “Read the news about our industry and send me the five things that matter, with links.”" }, job?.prompt ?? "");
+  return h(
+    "form",
+    {
+      class: "form",
+      onsubmit: (e) => {
+        e.preventDefault();
+        const body = { name: name.value, schedule: when.value(), prompt: prompt.value, owner: who.value || null };
+        attempt(async () => (await api(job ? "PATCH" : "POST", job ? `jobs/${job.id}` : "jobs", body), done()), col);
+      },
+    },
+    h("label", {}, "Name", name),
+    h("label", {}, "When", when.node),
+    h("label", {}, "Who does it", who),
+    h("label", {}, "Instructions", prompt),
+    h("div", { class: "row" }, job ? h("button", { type: "button", class: "plain", onclick: done }, "Cancel") : null, h("button", { class: "primary" }, job ? "Save changes" : "Add schedule")),
+  );
+}
+
 async function jobsView() {
-  const name = h("input", { placeholder: "Morning news digest" });
-  const schedule = h("input", { placeholder: "0 8 * * *" });
-  const prompt = h("textarea", { rows: 3, placeholder: "What should the agent do each time?" });
-  const list = h("div");
+  const list = h("div", { class: "joblist" });
   const col = page(
     "Schedules",
-    `Jobs ${state.config.agentName} runs on its own. Each run appears as a new chat. You can also just ask in a chat: “every weekday at 8am, …”.`,
+    "Work that runs by itself: a daily summary, a weekly report, a monthly check. Choose when, and who does it. You can also just ask in a chat: “every weekday at 8am, …”.",
+    h("p", { class: "banner" }, "Schedules run while Talqava is open. In the Mac app, closing the window keeps Talqava running; choosing Quit stops it. A run missed while it was stopped happens once when you open Talqava again."),
     list,
-    h("h3", {}, "New scheduled job"),
-    h(
-      "form",
-      {
-        class: "form",
-        onsubmit: async (e) => {
-          e.preventDefault();
-          await attempt(async () => {
-            await api("POST", "jobs", { name: name.value, schedule: schedule.value, prompt: prompt.value });
-            jobsView();
-          }, col);
-        },
-      },
-      h("label", {}, "Name", name),
-      h("label", {}, "When: “every 30m”, “every 1d”, “at 2026-12-01T09:00”, or a cron line (“0 8 * * *” is 8:00 every day)", schedule),
-      h("label", {}, "Instructions", prompt),
-      h("div", {}, h("button", { class: "primary" }, "Add job")),
-    ),
+    h("h3", {}, "New schedule"),
   );
+  col.append(scheduleForm(col, null, () => jobsView()));
   const jobs = await attempt(() => api("GET", "jobs"), col);
   if (!jobs) return;
-  if (!jobs.length) list.append(h("p", { class: "note" }, "No scheduled jobs yet."));
+  if (!jobs.length) list.append(h("p", { class: "note" }, "No schedules yet. Add one below."));
   for (const j of jobs) {
     const act = (fn) => attempt(async () => (await fn(), jobsView()), col);
-    list.append(
-      h(
-        "div",
-        { class: "card" },
+    const card = h("div", { class: "card jobcard" });
+    const show = () =>
+      fill(
+        card,
         h(
           "div",
           { class: "row" },
-          h("div", { class: "grow" }, h("strong", {}, j.name), h("div", { class: "note" }, `${j.schedule} · ${j.enabled ? `next ${when(j.nextRunAt)}` : "paused"} · last ${when(j.lastRunAt)}`), h("div", {}, j.prompt)),
           h(
             "div",
-            { class: "row" },
-            j.lastConversationId ? h("button", { onclick: () => go("chat", j.lastConversationId) }, "Last run") : null,
-            h("button", { onclick: () => attempt(async () => go("chat", (await api("POST", `jobs/${j.id}/run`, {})).conversationId), col) }, "Run now"),
-            h("button", { onclick: () => act(() => api("PATCH", `jobs/${j.id}`, { enabled: !j.enabled })) }, j.enabled ? "Pause" : "Resume"),
-            h("button", { class: "danger", onclick: () => confirm(`Delete “${j.name}”?`) && act(() => api("DELETE", `jobs/${j.id}`)) }, "Delete"),
+            { class: "grow" },
+            h("strong", {}, j.name),
+            h("div", { class: "note" }, `${j.plain} · ${j.enabled ? `next ${when(j.nextRunAt)}` : "paused"}${j.lastRunAt ? ` · last ran ${when(j.lastRunAt)}` : ""}`),
+            h("div", { class: "note" }, j.owner ? (j.ownerName ? `Done by the ${j.ownerName}, as a task in their queue` : "Its agent is no longer on the chart, so the assistant does it. Edit it to choose another agent.") : `Done by ${state.config.agentName}, the assistant, in a chat`),
+            h("div", { class: "jobprompt" }, j.prompt),
+          ),
+          h(
+            "div",
+            { class: "row wrap jobactions" },
+            j.lastTaskId ? h("button", { class: "small", onclick: () => ((ui.taskOpen = j.lastTaskId), go("tasks")) }, "Last run") : j.lastConversationId ? h("button", { class: "small", onclick: () => go("chat", j.lastConversationId) }, "Last run") : null,
+            h(
+              "button",
+              {
+                class: "small",
+                onclick: () =>
+                  attempt(async () => {
+                    const r = await api("POST", `jobs/${j.id}/run`, {});
+                    if (r.taskId) (ui.taskOpen = r.taskId), go("tasks");
+                    else go("chat", r.conversationId);
+                  }, col),
+              },
+              "Run now",
+            ),
+            h("button", { class: "small", onclick: () => fill(card, h("h4", {}, `Change “${j.name}”`), scheduleForm(col, j, () => jobsView())) }, "Edit"),
+            h("button", { class: "small", onclick: () => act(() => api("PATCH", `jobs/${j.id}`, { enabled: !j.enabled })) }, j.enabled ? "Pause" : "Resume"),
+            h("button", { class: "small danger", onclick: () => confirm(`Delete the schedule “${j.name}”?\n\nPast runs are kept.`) && act(() => api("DELETE", `jobs/${j.id}`)) }, "Delete"),
           ),
         ),
-      ),
-    );
+      );
+    show();
+    list.append(card);
   }
 }
 
