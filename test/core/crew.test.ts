@@ -212,3 +212,13 @@ test("only outside content that was really read counts: a denied or failed reque
   const searched = { role: "assistant", content: [{ type: "server_tool_use", id: "s1", name: "web_search", input: {} }] } as Conversation["messages"][number];
   assert.equal(outsideContentRead([searched], ["web_search"]), true);
 });
+
+test("an agent's tile: a symbol and a colour of its own are kept; anything else is automatic", () => {
+  const own = parseBot("books", "name: Bookkeeper\ntype: counter\ncharacter: { legend: BK, symbol: ledger, tint: finance }\ninstructions: Keep the books.\n", "starter");
+  assert.equal(own.character.symbol, "ledger");
+  assert.equal(own.character.tint, "finance");
+  const auto = parseBot("books", "name: Bookkeeper\ntype: counter\ncharacter: { legend: BK, symbol: auto, tint: hotpink }\ninstructions: Keep the books.\n", "starter");
+  assert.equal(auto.character.symbol, undefined);
+  assert.equal(auto.character.tint, undefined);
+  assert.equal(auto.character.legend, "BK");
+});

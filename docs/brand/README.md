@@ -52,7 +52,26 @@ Plain, businesslike and specific, written for an owner who is not technical.
 
 ## Iconography and characters
 
-Interface icons are simple line icons, 1.5px strokes, rounded ends, drawn in ink-soft and turning ink on hover. Agents keep their keycap character portraits: they are part of the brand, and each department has its own colour family.
+Interface icons are simple line icons, 1.5px strokes, rounded ends, drawn in ink-soft and turning ink on hover.
+
+**Agents are department tiles**, drawn from the logo: the same black tile (#0A0A0A, border #2A2A2A, radius a quarter of the side), the agent's role as a white line symbol (#F2F2F2), and under it a cursor block in its department's colour. The cursor shows what the agent is doing, as the logo's cursor shows work in progress: signal green and blinking while it works, warning amber with a dashed frame while it waits on the owner, critical red while it is stuck, and a green tick when it is done. The tile stays black in both themes.
+
+| Department | On the tile and in dark | As text in light |
+| --- | --- | --- |
+| Executive | #E6E6E6 | #2B2B2B |
+| Finance | #2CC5B5 | #0E7A70 |
+| Sales | #6AA6FF | #1F5BC7 |
+| Marketing | #B39BFF | #6446D0 |
+| Operations | #9DB8C8 | #3E6680 |
+| Technology | #5CD6EA | #0B7488 |
+| People | #F2A0C2 | #A8396A |
+| Legal | #D6C39B | #7A6536 |
+| Customers | #F5B38A | #9A4E1C |
+| Research | #C9D46A | #5F6A12 |
+| Product | #D69BEA | #84389E |
+| Other | #B8B8B8 | #5E625E |
+
+Department colours are calm and differ in lightness as well as hue. Green, amber and red are never department colours: they are kept for status.
 
 ## Examples
 
