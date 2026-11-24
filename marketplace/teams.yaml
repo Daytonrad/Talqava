@@ -1,36 +1,52 @@
-# Ready-made teams: a lead and the bots that report to it, added to the organization together.
+# Ready-made teams: a lead and the agents that report to it, added to the organization together.
+# The first agent listed is the team's lead.
 - id: starter-company
   name: Starter company
   department: Leadership
-  summary: A chief of staff over four department heads (marketing, sales, research and finance). Give the chief of staff a goal and it is split across them.
-  bots: [chief-of-staff, head-of-marketing, head-of-sales, head-of-research, head-of-finance]
+  summary: A general manager over marketing, sales, finance and customer support, each head with one specialist doing the work. Give the general manager a goal and it is split across them.
+  bots: [general-manager, head-of-marketing, content-writer, head-of-sales, account-executive, head-of-finance, bookkeeper, head-of-support, support-replier]
 - id: marketing-team
   name: Marketing team
   department: Marketing
-  summary: A head of marketing with a content writer, an SEO researcher and a social drafter. Ask for a campaign and get the plan, the article and the posts.
-  bots: [head-of-marketing, content-writer, seo-researcher, social-drafter]
+  summary: A head of marketing with a content writer, an SEO specialist, a social media writer, a paid advertising specialist and a brand designer.
+  bots: [head-of-marketing, content-writer, seo-researcher, social-drafter, paid-ads-specialist, designer]
 - id: sales-team
   name: Sales team
   department: Sales
-  summary: A head of sales with a prospect researcher and an outreach writer. Describe your ideal customer and get a researched list with a first message for each.
-  bots: [head-of-sales, lead-finder, outreach-drafter]
+  summary: A head of sales with a prospect researcher, an outreach specialist, an account executive and a sales operations administrator. From ideal customer to proposal, with a clean pipeline.
+  bots: [head-of-sales, lead-finder, outreach-drafter, account-executive, sales-operations]
 - id: engineering-team
   name: Engineering team
   department: Engineering
-  summary: A head of engineering with a software engineer and a QA tester. One builds, the other checks, and nothing is called done without a test.
-  bots: [head-of-engineering, builder, qa-tester]
+  summary: A head of engineering over a lead developer, who runs front-end, back-end and mobile developers and a QA engineer. One ladder, and nothing is called done without a test.
+  bots: [head-of-engineering, lead-developer, frontend-developer, backend-developer, mobile-developer, qa-tester]
+- id: development-team
+  name: Development team
+  department: Engineering
+  summary: A lead developer with front-end, back-end and mobile developers, a requirements analyst and a QA engineer. The analyst writes the requirement, the lead splits the work, and nothing is called done untested.
+  bots: [lead-developer, functional-analyst, frontend-developer, backend-developer, mobile-developer, qa-tester]
 - id: research-team
   name: Research team
   department: Research
-  summary: A head of research with a fact checker, a market analyst and a briefing writer. Ask a question and get a checked answer with its confidence stated.
+  summary: A head of research with a fact checker, a competitive intelligence analyst and a briefing analyst. Ask a question and get a checked answer with its confidence stated.
   bots: [head-of-research, fact-checker, competitor-watch, morning-brief]
 - id: finance-team
   name: Finance team
-  department: Money
-  summary: A head of finance with accounts receivable and a financial analyst. Share your invoices and exports and get where the money stands.
-  bots: [head-of-finance, invoice-chaser, monthly-numbers]
+  department: Finance
+  summary: A head of finance with a bookkeeper, accounts payable, accounts receivable, a financial controller and a reporting analyst. Books, bills, collections, budget and the monthly picture.
+  bots: [head-of-finance, bookkeeper, accounts-payable, invoice-chaser, financial-controller, monthly-numbers]
 - id: support-team
-  name: Support team
-  department: Support
-  summary: A head of support with a support agent. Paste customer questions and get sorted, checked draft replies.
-  bots: [head-of-support, support-replier]
+  name: Customer support team
+  department: Customer Support
+  summary: A head of customer support with a support specialist and a customer success manager. Answers today's questions and keeps customers from leaving.
+  bots: [head-of-support, support-replier, customer-success-manager]
+- id: operations-team
+  name: Operations team
+  department: Operations
+  summary: A head of operations with a project manager, a scheduling coordinator, a procurement manager, an inventory and fulfilment coordinator and an IT and security administrator.
+  bots: [head-of-operations, project-manager, scheduling-coordinator, procurement-manager, inventory-coordinator, it-administrator]
+- id: people-team
+  name: People team
+  department: People
+  summary: A head of people with a recruiter and a payroll and benefits administrator. Hiring, pay runs and people policy, prepared for your decision.
+  bots: [head-of-people, recruiter, payroll-administrator]

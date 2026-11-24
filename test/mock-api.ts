@@ -14,14 +14,16 @@ export interface Recorded {
 }
 
 /** Replays a script in order, or asks a function for each reply (for runs that overlap). */
-export function startMockApi(script: Reply[] | ((body: any) => Reply | Promise<Reply>)): Promise<{ server: http.Server; requests: Recorded[]; url: string }> {
+export function startMockApi(script: Reply[] | ((body: any) => Reply | Promise<Reply>)): Promise<{ server: http.Server; requests: Recorded[]; url: string; route?: (body: any) => Reply | undefined }> {
   const requests: Recorded[] = [];
+  // Set `route` on the returned object to answer by what was asked rather than by order; a request it does not answer falls back to the script.
+  const handle: { route?: (body: any) => Reply | undefined } = {};
   const server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     requests.push({ url: req.url ?? "", headers: req.headers, body: JSON.parse(raw) });
     const body = requests.at(-1)!.body;
-    const reply = (typeof script === "function" ? await script(body) : script.shift()) ?? { content: [{ type: "text", text: "(script ended)" }], stop_reason: "end_turn" };
+    const reply = handle.route?.(body) ?? (typeof script === "function" ? await script(body) : script.shift()) ?? { content: [{ type: "text", text: "(script ended)" }], stop_reason: "end_turn" };
     res.writeHead(200, { "content-type": "text/event-stream" });
     const send = (event: { type: string; [key: string]: unknown }) => res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     send({
@@ -43,7 +45,7 @@ export function startMockApi(script: Reply[] | ((body: any) => Reply | Promise<R
     res.end();
   });
   return new Promise((resolve) =>
-    server.listen(0, "127.0.0.1", () => resolve({ server, requests, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` })),
+    server.listen(0, "127.0.0.1", () => resolve(Object.assign(handle, { server, requests, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }))),
   );
 }
 

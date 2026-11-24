@@ -81,6 +81,8 @@ before(async () => {
   templates = await import("../../src/local/templates.ts");
   connectors = await import("../../src/local/connectors.ts");
   store.initStore();
+  // These tests script each reply the agent gets, so the check before a task starts (one extra model call) is off; it has its own test.
+  store.saveConfig({ checkFirst: false });
 
   // A bot that may change files without asking, and one that researches.
   fs.mkdirSync(path.join(store.DATA, "crew"), { recursive: true });

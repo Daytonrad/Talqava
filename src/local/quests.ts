@@ -4,10 +4,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Bot, Engine, RunEvent } from "../core/index.ts";
-import { DATA, WORKSPACE, conversations, readJson, writeJson } from "./store.ts";
+import { DATA, WORKSPACE, conversations, getConfig, readJson, writeJson } from "./store.ts";
 import { feedback, runChecks } from "./checks.ts";
-import { budgetBlock, recordSpend } from "./spend.ts";
+import { budgetBlock, groupBlock, recordSpend } from "./spend.ts";
 import { loadCrew } from "./crew.ts";
+import { groupOf, orgs } from "./orgs.ts";
+import { orgMemory } from "./orgmemory.ts";
+import { audit } from "./audit.ts";
 import type { CheckResult } from "./checks.ts";
 import type { QuestCheck, QuestTemplate } from "./templates.ts";
 import { fill, resolveInputs } from "./templates.ts";
@@ -15,7 +18,8 @@ import { gitLog, githubIssues, githubReport, githubSlug } from "./gather.ts";
 import { acceptCopy, changes, prepareCopy, undoCopy } from "./git.ts";
 import type { Changes, QuestCopy } from "./git.ts";
 
-export type QuestStatus = "running" | "waiting" | "done" | "stopped" | "failed" | "budget";
+/** "asking": the agent checked the task before starting and is waiting for the owner to answer its questions. */
+export type QuestStatus = "running" | "waiting" | "done" | "stopped" | "failed" | "budget" | "asking";
 
 export interface Quest {
   /** The same id as the quest's conversation. */
@@ -43,17 +47,100 @@ export interface Quest {
   changedFiles?: number;
   /** For a task handed down the org chart: the conversation (a manager's quest, or a chat) its report goes back to. */
   parent?: { id: string; by: string; delivered: boolean };
+  /** A question from a colleague rather than a task: answered briefly, from what the agent knows. */
+  kind?: "question" | "decision";
+  /** The task the person assigned that this one descends from (its own id for that task itself). A task and everything handed on from it share one budget. */
+  root?: string;
   /** How many hand-offs deep this quest is: 0 for one the person sent. */
   depth?: number;
+  /** The group whose monthly budget this task is charged to: the group its agent was in when it started. */
+  charge?: { org: string; group: string };
+  /** Why the task exists, as it stood when it started: the organization's mission and the group's goal. */
+  purpose?: { org: string; mission?: string; group?: string; goal?: string };
   createdAt: string;
   updatedAt: string;
 }
 
 /** How a report from a hand-off starts, so the window can show it as a report rather than something the person typed. */
 export const REPORT_MARK = "[Report from ";
+
+/** The group a task is charged to, as the chart says now (so a raised budget counts at once). */
+function chargedGroup(quest: Pick<Quest, "charge">) {
+  if (!quest.charge) return undefined;
+  const org = orgs.list().orgs.find((o) => o.id === quest.charge!.org);
+  return org ? { org, group: (org.groups ?? []).find((g) => g.id === quest.charge!.group) } : undefined;
+}
+/** Why the group a task is charged to may not spend more, or null. */
+const groupStop = (quest: Pick<Quest, "charge">) => ((c) => (c ? groupBlock(c.org.id, c.group) : null))(chargedGroup(quest));
+
+export interface WhyStep {
+  /** mission: the organization's; goal: the group's; task: a task in the chain, the owner's first. */
+  kind: "mission" | "goal" | "task";
+  text: string;
+  /** For a goal, the group; for a task, the agent doing it and who handed it on. */
+  who?: string;
+  by?: string;
+  id?: string;
+}
+
+/**
+ * Why a task exists, from the top: the organization's mission, the goal of the group whose work it is, the task
+ * the owner gave, and each hand-off down to this one. Every link is as it stood when that task started.
+ */
+export function whyOf(quest: Quest): WhyStep[] {
+  const tasks: Quest[] = [quest];
+  for (let at = quest, n = 0; at.parent && n < 12; n++) {
+    const from = questStore.get(at.parent.id);
+    if (!from) break;
+    tasks.unshift(from);
+    at = from;
+  }
+  const top = tasks[0];
+  const purpose = top.purpose ?? quest.purpose;
+  const steps: WhyStep[] = [];
+  if (purpose?.mission) steps.push({ kind: "mission", text: purpose.mission });
+  // The goal that matters is the group of the one the owner asked: the work is for that group's goal.
+  if (purpose?.goal) steps.push({ kind: "goal", text: purpose.goal, who: purpose.group });
+  for (const t of tasks) steps.push({ kind: "task", text: t.title, who: t.bot.name, by: t.parent?.by, id: t.id });
+  return steps;
+}
+
+/** The why chain in words, for the agent doing the task. Empty for a task the owner gave with no mission or goal set. */
+export function whyPrompt(quest: Quest): string {
+  const steps = whyOf(quest);
+  if (steps.length <= 1) return "";
+  const lines = steps.map((s) => (s.kind === "mission" ? `- The organization's mission: ${s.text}` : s.kind === "goal" ? `- The ${s.who} group's goal: ${s.text}` : s.id === quest.id ? `- Your task: ${s.text}` : `- ${s.by ? `Handed on to ${s.who}` : `The owner asked ${s.who}`}: ${s.text}`));
+  return `Why this task exists, from the top:\n${lines.join("\n")}\nKeep the work aimed at this. If the task as written would not serve it, say so in your report rather than doing it anyway.`;
+}
+
+/** The budget a task shares with everything handed on from it: the budget per task in Settings. */
+export const chainBudget = () => getConfig().budget.spend ?? 1;
+/**
+ * The task the person assigned that a task descends from. Tasks record it when they start; for one
+ * made before that was recorded, it is found by following who handed it on.
+ */
+export function rootOf(quest: Quest): string {
+  if (quest.root) return quest.root;
+  let at = quest;
+  for (let steps = 0; steps < 12 && at.parent; steps++) {
+    const from = questStore.get(at.parent.id);
+    if (!from) break;
+    at = from;
+  }
+  return at.root ?? at.id;
+}
+/** A task and everything handed on from it. */
+export const chainOf = (rootId: string) => questStore.list().filter((q) => rootOf(q) === rootId);
+/** What a task and everything handed on from it have cost so far. */
+export function chainCost(rootId: string): number {
+  return chainOf(rootId).reduce((sum, q) => sum + (conversations.get(q.id)?.usage.cost ?? 0), 0);
+}
+export const chainOver = (rootId: string) => chainCost(rootId) >= chainBudget();
+/** How many tasks came from one task, itself included. */
+export const chainSize = (rootId: string) => chainOf(rootId).length;
 /** Hand-offs may go this many levels down the chart, and a conversation may have this many open at once. */
-export const MAX_DEPTH = 3;
-export const MAX_OPEN_HANDOFFS = 5;
+export const MAX_DEPTH = 5;
+export const MAX_OPEN_HANDOFFS = 8;
 
 /** Quests that may run at the same time. */
 export const MAX_RUNNING = 6;
@@ -146,25 +233,46 @@ export class QuestRunner {
     return questStore.list().filter((q) => q.status === "running" || q.status === "waiting");
   }
 
-  async start({ bot, text, project, title, template, parent }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string } }): Promise<Quest> {
+  async start({ bot, text, project, title, template, parent, kind }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string }; kind?: "question" | "decision" }): Promise<Quest> {
     if (this.running().length >= MAX_RUNNING) throw new Error(`${MAX_RUNNING} quests are already under way. Wait for one to finish, or stop one.`);
     // A bot that has used its month's budget starts nothing new.
     const blocked = budgetBlock(bot);
     if (blocked) throw new Error(blocked);
+    // The task is charged to its agent's group, which stops starting work at its monthly budget.
+    const org = orgs.active();
+    const group = groupOf(org, bot.id);
+    const charge = group ? { org: org.id, group: group.id } : undefined;
+    const groupBlocked = charge ? groupStop({ charge }) : null;
+    if (groupBlocked) throw new Error(groupBlocked);
     const conversation = await conversations.create({ title: (title ?? text).replace(/\s+/g, " ").slice(0, 80), source: "quest" });
     const now = new Date().toISOString();
-    const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now, ...(template ? { template } : {}) };
+    const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now, ...(template ? { template } : {}), ...(kind ? { kind } : {}) };
+    quest.root = quest.id;
+    if (charge) quest.charge = charge;
+    if (org.mission || group?.goal) quest.purpose = { org: org.id, ...(org.mission ? { mission: org.mission } : {}), ...(group ? { group: group.name } : {}), ...(group?.goal ? { goal: group.goal } : {}) };
     if (parent) {
       quest.parent = { ...parent, delivered: false };
-      quest.depth = (questStore.get(parent.id)?.depth ?? 0) + 1;
+      const from = questStore.get(parent.id);
+      quest.depth = (from?.depth ?? 0) + 1;
+      // Handed on from a task: it belongs to that task's chain. Handed on from a chat: it starts a chain of its own.
+      if (from) quest.root = from.root ?? from.id;
     }
     if (project) {
       quest.project = project;
       // Only bots that can change files get a branch and working copy of their own.
-      if (bot.powers.some((p) => p === "files" || p === "shell")) quest.copy = await prepareCopy(project, quest.id, WORKTREE_DIR());
+      if (!kind && bot.powers.some((p) => p === "files" || p === "shell")) quest.copy = await prepareCopy(project, quest.id, WORKTREE_DIR());
     }
     questStore.save(quest);
     journal.append(quest.id, { type: "quest_start", bot: bot.id, title: quest.title, project: project ?? null, branch: quest.copy?.branch ?? null });
+    audit({ actor: bot.id, actorName: bot.title || bot.name, kind: "task", action: parent ? `Started a task handed on by ${parent.by}` : kind ? `Received a ${kind}` : "Started a task", detail: quest.title, task: quest.id });
+    // A task the owner gave (not a hand-off or a question between agents) is checked first: does the agent have what it needs?
+    if (!parent && !kind && !template && getConfig().checkFirst !== false) {
+      const asked = await this.#checkFirst(quest, text, project).catch((err) => {
+        audit({ actor: bot.id, actorName: bot.title || bot.name, kind: "problem", action: "Could not check the task before starting; started anyway", detail: (err as Error).message, task: quest.id, ok: false });
+        return false;
+      });
+      if (asked) return questStore.get(quest.id)!;
+    }
     try {
       await this.#engine.startRun(quest.id, text, { keepTitle: true });
     } catch (err) {
@@ -172,6 +280,36 @@ export class QuestRunner {
       throw err;
     }
     return questStore.get(quest.id)!;
+  }
+
+  /**
+   * The check before a task starts. Returns true when the agent asked the owner for something instead of
+   * starting: the task, and the agent's questions, are then in its conversation, and the owner's reply starts it.
+   */
+  async #checkFirst(quest: Quest, text: string, project: string | undefined): Promise<boolean> {
+    const { checkReadiness, askingMessage } = await import("./readiness.ts");
+    const r = await checkReadiness(quest.bot, text, project, AbortSignal.timeout(90_000));
+    const conversation = conversations.get(quest.id);
+    if (conversation) {
+      // What the check cost belongs to the task, so it shows on its receipt and counts towards its budget.
+      conversation.usage.input += r.input;
+      conversation.usage.output += r.output;
+      conversation.usage.cost = (conversation.usage.cost ?? 0) + r.cost;
+    }
+    const who = { actor: quest.bot.id, actorName: quest.bot.title || quest.bot.name, task: quest.id, cost: r.cost };
+    if (r.ready) {
+      if (conversation) conversations.save(conversation, { touch: false });
+      audit({ ...who, kind: "task", action: "Checked the task before starting: has what it needs", detail: r.plan || undefined });
+      return false;
+    }
+    const message = askingMessage(r);
+    if (conversation) {
+      conversation.messages.push({ role: "user", content: text }, { role: "assistant", content: [{ type: "text", text: message, citations: null }] as never });
+      conversations.save(conversation);
+    }
+    this.#set(quest.id, { status: "asking", note: [...r.missing, ...r.questions].join(" · ").slice(0, 400) });
+    audit({ ...who, kind: "task", action: "Asked the owner for what the task needs before starting", detail: [...r.missing.map((m) => `Missing: ${m}`), ...r.questions.map((q) => `Question: ${q}`)].join(" | ") });
+    return true;
   }
 
   /**
@@ -264,14 +402,18 @@ export class QuestRunner {
    */
   async deliverReports(parentId: string) {
     if (this.#engine.isRunning(parentId)) return; // it gets them when its own turn ends
-    const children = questStore.list().filter((q) => q.parent?.id === parentId && !q.parent.delivered);
+    const all = questStore.list();
+    const children = all.filter((q) => q.parent?.id === parentId && !q.parent.delivered);
     if (!children.length || children.some((q) => q.status === "running" || q.status === "waiting")) return;
+    // A child that is still waiting for its own hand-offs has only said "I have asked, I am waiting": that is not
+    // its report. Its report goes up when its own reports have come in and it has finished again.
+    if (children.some((child) => all.some((q) => q.parent?.id === child.id && (!q.parent.delivered || q.status === "running" || q.status === "waiting")))) return;
     for (const child of children) this.#set(child.id, { parent: { ...child.parent!, delivered: true } });
     const reports = children.reverse().map((child) => {
       const said = [...(conversations.get(child.id)?.messages ?? [])].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text.trim()));
       const text = said && Array.isArray(said.content) ? said.content.map((b) => (b.type === "text" ? b.text : "")).join("\n").trim() : "";
       const how = { done: "finished", stopped: "was stopped", failed: `failed${child.note ? `: ${child.note}` : ""}`, budget: "stopped at its budget" }[child.status as string] ?? child.status;
-      return `${REPORT_MARK}${child.bot.name} · ${child.title} · ${how}]\n${text || "(It left no report.)"}`;
+      return `${REPORT_MARK}${child.bot.name} · ${child.title} · ${child.status === "done" && child.kind === "question" ? "answered" : child.status === "done" && child.kind === "decision" ? "decided" : how}]\n${text || "(It left no report.)"}`;
     });
     const parentQuest = questStore.get(parentId);
     const next = parentQuest
@@ -293,9 +435,23 @@ export class QuestRunner {
     // What the quest has cost so far counts towards its bot's month. A bot that
     // reaches its monthly budget part-way is stopped; its work so far is kept.
     if (event.type === "assistant" || event.type === "status") {
-      recordSpend(id, quest.bot.id, conversations.get(id)?.usage.cost ?? 0);
+      recordSpend(id, quest.bot.id, conversations.get(id)?.usage.cost ?? 0, new Date(), quest.charge);
       if (event.type === "assistant" && budgetBlock(asItIsNow(quest.bot))) {
         this.#ending.set(id, "budget");
+        this.#engine.stop(id);
+      }
+      // A group that reaches its monthly budget part-way stops its work too; what was done is kept.
+      const groupOver = event.type === "assistant" ? groupStop(quest) : null;
+      if (groupOver) {
+        this.#ending.set(id, "budget");
+        this.#set(id, { note: groupOver });
+        this.#engine.stop(id);
+      }
+      // A task and everything handed on from it share one budget. When it is used up, the hand-offs stop;
+      // the task itself carries on within its own limit, so it can still report what was found.
+      if (event.type === "assistant" && quest.parent && rootOf(quest) !== id && chainOver(rootOf(quest))) {
+        this.#ending.set(id, "budget");
+        this.#set(id, { note: "The task it belongs to used its whole budget of $" + chainBudget().toFixed(2) + ", counting everything handed on." });
         this.#engine.stop(id);
       }
     }
@@ -304,12 +460,21 @@ export class QuestRunner {
         if (event.running) {
           this.#ending.delete(id);
           this.#stopping.delete(id);
-          this.#set(id, { status: "running" });
+          // A task that was waiting for the owner's answers starts now; its questions are no longer a note.
+          this.#set(id, quest.status === "asking" ? { status: "running", note: undefined } : { status: "running" });
         } else {
           const status = this.#stopping.has(id) ? "stopped" : (this.#ending.get(id) ?? "done");
           this.#ending.delete(id);
           this.#stopping.delete(id);
           this.#set(id, { status });
+          // The organization keeps a line about each task an agent finishes, so later work can build on it.
+          if (status === "done" && !quest.kind) {
+            const said = [...(conversations.get(id)?.messages ?? [])].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text.trim()));
+            const report = said && Array.isArray(said.content) ? said.content.map((b) => (b.type === "text" ? b.text : "")).join(" ").trim() : "";
+            try {
+              orgMemory.logTask(orgs.active(), quest.bot.id, quest.title, report);
+            } catch {}
+          }
           // A task handed down the chart reports back to whoever assigned it.
           if (quest.parent && !quest.parent.delivered) setTimeout(() => this.deliverReports(quest.parent!.id).catch(() => {}), 80);
           if (quest.copy && !quest.outcome) {
@@ -383,7 +548,7 @@ export class QuestRunner {
   /** Keeps the quest's changes as a commit on its own branch. */
   async accept(id: string): Promise<{ branch: string | null }> {
     const quest = this.#closable(id);
-    const branch = await acceptCopy(quest.copy, `${quest.title}\n\nQuest by ${quest.bot.name} (${quest.bot.type}) in Talqava Agents.`);
+    const branch = await acceptCopy(quest.copy, `${quest.title}\n\nTask by ${quest.bot.name === quest.bot.title ? quest.bot.name : `${quest.bot.name} (${quest.bot.title})`} in Talqava.`);
     this.#set(id, { outcome: branch ? "accepted" : "no-changes" });
     journal.append(id, { type: "quest_accept", branch });
     return { branch };

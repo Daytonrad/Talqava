@@ -168,6 +168,11 @@ export interface RunSpec {
    * run in a conversation, every change asks first, whatever the approval mode.
    */
   cautionAfter?: string[];
+  /**
+   * Dollars this run may still spend of a budget it shares with other runs (a task and the parts handed on
+   * from it). Asked before every model call, so the run stops before a step that would likely go over.
+   */
+  remaining?: () => number;
 }
 
 /** Limits on one run (one quest). The run stops before going over either. */

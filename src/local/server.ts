@@ -21,17 +21,31 @@ import {
   skills,
   spaces,
   jobStore,
+  readJson,
+  writeJson,
 } from "./store.ts";
 import type { Config, ProviderConfig } from "./store.ts";
 import { CAUTION_TOOLS, localRunSpec } from "./tools.ts";
 import { closeConnectors } from "./connectors.ts";
 import { resolveModel, splitRef } from "./models.ts";
 import { botId, loadCrew, removeBot, saveBot } from "./crew.ts";
-import { addMarketBot, addTeam, loadMarketplace, loadTeams, onTeam } from "./marketplace.ts";
-import { orgs } from "./orgs.ts";
-import { budgetBlock, monthlyBudgets } from "./spend.ts";
+import { addMarketBot, addPack, addTeam, buildStructure, loadMarketplace, loadTeams, onTeam } from "./marketplace.ts";
+import { assignRule, requestRule, orgs } from "./orgs.ts";
+import { orgMemory } from "./orgmemory.ts";
+import { mcpIntegration, setClaudeDesktop } from "./mcpintegration.ts";
+import { EVERYONE, ensureFolders, library, libraryFolder, removeLibrary, syncLibrary } from "./library.ts";
+import { execFile } from "node:child_process";
+import { needsFor } from "./preflight.ts";
+import { acceptSuggestion, suggestPositions } from "./suggest.ts";
+import { audit, readAudit, redact } from "./audit.ts";
+import { finishOpenRouterSignIn, openrouterIntegration, openrouterModels, removeOpenRouter, saveOpenRouterKey, startOpenRouterSignIn, useOpenRouterModel } from "./openrouter.ts";
+import { autoSetupGit, cloneRepository, disconnectRepository, gitIntegration, githubAccounts, githubRepos, installGit, listIntegrations, pollGithubSignIn, removeGitIntegration, startGithubSignIn, testGithub } from "./integrations.ts";
+import { ASSIGN_RULES, INDUSTRIES, REQUEST_RULES, STRUCTURES, seatsFor } from "./structures.ts";
+import { budgetBlock, groupSpend, monthlyBudgets } from "./spend.ts";
+import { decide, listProposals } from "./proposals.ts";
+import { exportOrg, importOrg } from "./portable.ts";
 import { findTemplate, loadTemplates } from "./templates.ts";
-import { journal, questStore, quests } from "./quests.ts";
+import { chainBudget, chainCost, chainOf, chainSize, journal, questStore, quests, rootOf, whyOf } from "./quests.ts";
 import type { Quest } from "./quests.ts";
 import { currentBranch, repoRoot } from "./git.ts";
 
@@ -53,9 +67,78 @@ export const jobs = new JobBook(jobStore);
 export const engine = new Engine({
   conversations,
   resolveRun: localRunSpec(jobs),
-  onEvent: (id, event) => quests.onEvent(id, event),
+  onEvent: (id, event) => {
+    quests.onEvent(id, event);
+    auditEvent(id, event);
+  },
 });
 quests.attach(engine);
+
+// ---------- the audit log: what the owner does and what each agent does ----------
+const TOOL_WORDS: Record<string, string> = { bash: "Ran a command", str_replace_based_edit_tool: "Worked on a file", web_search: "Searched the web", web_fetch: "Read a web page", http_request: "Called a web API", memory: "Used memory", skill: "Used a skill", schedule: "Scheduled work", browser: "Used the browser", conversation_search: "Searched past chats", code_execution: "Ran code", assign_task: "Handed work to a colleague", request_work: "Requested work from another department", escalate: "Took a decision to their lead", ask_colleague: "Asked a colleague", team_memory: "Used team memory", library: "Used the library" };
+const lastCost = new Map<string, number>();
+/** Who is behind a conversation: the agent doing a task, or the chat assistant. */
+function actorOf(id: string) {
+  const quest = questStore.get(id);
+  if (quest) return { actor: quest.bot.id, actorName: quest.bot.title || quest.bot.name };
+  return { actor: "assistant", actorName: getConfig().agentName || "Assistant" };
+}
+function auditEvent(id: string, event: RunEvent) {
+  const who = { ...actorOf(id), task: id };
+  if (event.type === "assistant") {
+    for (const block of event.content as { type: string; name?: string; input?: unknown }[]) {
+      if (block.type !== "tool_use" && block.type !== "server_tool_use") continue;
+      const input = (block.input ?? {}) as Record<string, unknown>;
+      const detail = typeof input.command === "string" ? input.command : typeof input.path === "string" ? `${input.command ?? ""} ${input.path}`.trim() : typeof input.query === "string" ? input.query : typeof input.url === "string" ? input.url : JSON.stringify(redact(input));
+      audit({ ...who, kind: "tool", action: TOOL_WORDS[block.name ?? ""] ?? `Used ${block.name}`, detail });
+    }
+  } else if (event.type === "tool_result") {
+    const result = event.result as { is_error?: boolean; content?: unknown };
+    if (result.is_error) audit({ ...who, kind: "problem", ok: false, action: "A step did not work", detail: typeof result.content === "string" ? result.content : JSON.stringify(result.content ?? "").slice(0, 400) });
+  } else if (event.type === "approval") {
+    audit({ ...who, kind: "approval", action: `Asked for approval: ${TOOL_WORDS[event.approval.name] ?? event.approval.name}`, detail: JSON.stringify(redact(event.approval.input)) });
+  } else if (event.type === "approval_done") {
+    audit({ actor: "owner", actorName: "You", kind: "approval", task: id, action: event.decision === "deny" ? "Did not allow a step" : event.decision === "always" ? "Allowed a step, always" : "Allowed a step once" });
+  } else if (event.type === "status" && !event.running) {
+    const total = event.usage?.cost ?? conversations.get(id)?.usage.cost ?? 0;
+    const spent = Math.max(0, total - (lastCost.get(id) ?? 0));
+    lastCost.set(id, total);
+    const quest = questStore.get(id);
+    audit({ ...who, kind: "spend", action: quest ? `Stopped working (${quest.status === "asking" ? "waiting for you" : quest.status})` : "Finished answering", detail: `This run cost $${spent.toFixed(4)}; $${total.toFixed(4)} in all.`, cost: spent });
+  } else if (event.type === "error") {
+    audit({ ...who, kind: "problem", ok: false, action: "Stopped with an error", detail: event.text });
+  } else if (event.type === "notice" && /budget/i.test(event.text)) {
+    audit({ ...who, kind: "spend", ok: false, action: "Stopped at its budget", detail: event.text });
+  }
+}
+
+/** An owner's request, described in plain words for the log. */
+function describeRequest(method: string, parts: string[], body: any, url: URL): { kind: string; action: string; detail?: string; task?: string } | null {
+  const [area, id, action] = parts;
+  const words = (b: unknown) => JSON.stringify(redact(b ?? {})).slice(0, 400);
+  if (area === "login") return { kind: "settings", action: "Signed in" };
+  if (area === "quests" && !id && method === "POST") return null; // the route records it, knowing whether the task started
+  if (area === "quests" && id) return { kind: "task", task: id, action: action === "stop" ? "Stopped a task" : action === "escalate" ? "Handed a task to Claude" : action === "accept" ? "Kept a task's changes" : action === "undo" ? "Undid a task's changes" : method === "DELETE" ? "Deleted a task" : `${method} task ${action ?? ""}`.trim() };
+  if (area === "conversations") {
+    if (action === "messages") return { kind: "chat", task: id, action: questStore.get(id) ? "Replied to an agent" : "Sent a chat message", detail: String(body.text ?? "").slice(0, 300) };
+    if (action === "approvals") return null; // the agent's event records the decision
+    if (!id && method === "POST") return { kind: "chat", action: "Started a chat" };
+    return { kind: "chat", task: id, action: method === "DELETE" ? "Deleted a chat" : action === "stop" ? "Stopped a chat" : "Changed a chat" };
+  }
+  if (area === "settings") return { kind: "settings", action: "Changed settings", detail: Object.keys(body ?? {}).join(", ") + " · " + words(body) };
+  if (area === "library") {
+    const name = url.searchParams.get("name");
+    const map: Record<string, string> = { upload: `Uploaded “${name ?? "a file"}”`, folders: `Made the folder “${body.name ?? ""}”`, move: body.name ? `Renamed to “${body.name}”` : "Moved files", delete: "Deleted files", restore: "Restored from Deleted", purge: "Deleted for good", open: "Showed in Finder", launch: "Opened a file", search: "Searched the library", folder: "Changed who can use a folder" };
+    return { kind: "library", action: map[id] ?? (method === "PATCH" ? "Changed who can use a file" : method === "DELETE" ? "Deleted a file" : `${method} library ${id ?? ""}`.trim()), detail: name ? `into ${url.searchParams.get("folder") ?? ""}` : words(body) };
+  }
+  if (area === "integrations") return { kind: "integration", action: `${id ? id[0].toUpperCase() + id.slice(1) : "Integration"}: ${(action ?? method.toLowerCase()).replace(/-/g, " ")}`, detail: words(body) };
+  // These routes write their own, clearer entries.
+  if (area === "orgs" && (id === "import" || action === "proposals")) return null;
+  if (area === "orgs" && action === "pack") return { kind: "organization", action: `Added the ready-made team ${body.team ?? ""}${body.under ? ` under ${body.under}` : body.group ? ` into ${body.group}` : ""}` };
+  if (area === "orgs" || area === "marketplace") return { kind: "organization", action: area === "marketplace" ? "Added from the marketplace" : `Changed the organization${action ? ` (${action})` : ""}`, detail: words(body) };
+  if (area === "inbox") return { kind: "inbox", action: id === "names" ? `Renamed an agent to “${body.name || "its default"}”` : "Updated messages", detail: id === "names" ? parts[2] : words(body) };
+  return { kind: "other", action: `${method} ${parts.join(" / ")}`, detail: words(body) };
+}
 
 async function runJob(job: Job) {
   const { conversation } = await engine.runJob(job);
@@ -145,6 +228,8 @@ async function updateSettings(body: any) {
     patch.model = `${providerId}/${model}`;
   }
   if (EFFORTS.includes(body.effort)) patch.effort = body.effort;
+  if (body.savings === "balanced" || body.savings === "off") patch.savings = body.savings;
+  if (typeof body.checkFirst === "boolean") patch.checkFirst = body.checkFirst;
   if (["ask", "auto"].includes(body.approvalMode)) patch.approvalMode = body.approvalMode;
   if (typeof body.apiKey === "string") patch.apiKey = body.apiKey.trim();
 
@@ -302,6 +387,120 @@ function lastActivity(conversation: Conversation | null) {
 const readOutside = (conversation: Conversation | null, extra: string[] = []) =>
   Boolean(conversation && outsideContentRead(conversation.messages, [...CAUTION_TOOLS, ...extra]));
 
+/** The latest thing an agent wrote in a task, shortened: what the person sees as its update or its report. */
+function lastWords(conversation: Conversation | null): string {
+  for (const message of [...(conversation?.messages ?? [])].reverse()) {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    const text = message.content.map((b) => (b.type === "text" ? b.text : "")).join("\n").trim();
+    if (text) return text.length > 700 ? `${text.slice(0, 700)}…` : text;
+  }
+  return "";
+}
+
+/** How far the tasks handed on from one task have got. */
+function chainProgress(rootId: string) {
+  const parts = chainOf(rootId).filter((q) => q.id !== rootId);
+  return { finished: parts.filter((q) => q.status === "done").length, working: parts.filter((q) => q.status === "running" || q.status === "waiting").length, stopped: parts.filter((q) => q.status === "failed" || q.status === "budget" || q.status === "stopped").length, who: [...new Set(parts.map((q) => q.bot.name))].slice(0, 8) };
+}
+
+/** Every action an agent took in one task, in order, and whether each one worked. */
+function actionsOf(conversation: Conversation | null) {
+  const actions: { name: string; input: Record<string, unknown>; ok: boolean; error: string }[] = [];
+  const messages = conversation?.messages ?? [];
+  const short = (value: unknown) => (typeof value === "string" ? (value.length > 240 ? `${value.slice(0, 240)}…` : value) : typeof value === "number" || typeof value === "boolean" ? value : value == null ? "" : JSON.stringify(value).slice(0, 240));
+  messages.forEach((message, i) => {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return;
+    const reply = messages[i + 1];
+    const results = Array.isArray(reply?.content) ? (reply.content as { type: string; tool_use_id?: string; is_error?: boolean; content?: unknown }[]) : [];
+    for (const block of message.content as { type: string; id?: string; name?: string; input?: unknown }[]) {
+      if (block.type !== "tool_use" && block.type !== "server_tool_use") continue;
+      const result = results.find((r) => r.tool_use_id === block.id);
+      const text = typeof result?.content === "string" ? result.content : Array.isArray(result?.content) ? (result.content as { text?: string }[]).map((p) => p.text ?? "").join("\n") : "";
+      const failed = Boolean(result?.is_error);
+      actions.push({
+        name: block.name ?? "",
+        input: Object.fromEntries(Object.entries((block.input ?? {}) as Record<string, unknown>).map(([k, v]) => [k, short(v)])),
+        // A server-side tool (web search) reports its result elsewhere; with no error recorded it counts as done.
+        ok: !failed && (Boolean(result) || block.type === "server_tool_use"),
+        error: failed ? text.trim().slice(0, 300) : !result && block.type === "tool_use" ? "It was never carried out." : "",
+      });
+    }
+  });
+  return actions;
+}
+
+/**
+ * The receipt for a task the person assigned: every part it was split into, who did each part, each
+ * action taken and whether it worked, what was left undone, and what each agent cost.
+ */
+function receiptOf(rootId: string) {
+  const root = questStore.get(rootId);
+  if (!root) return null;
+  const parts = chainOf(rootId).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const lines = parts.map((quest) => {
+    const conversation = conversations.get(quest.id);
+    const actions = actionsOf(conversation);
+    const open = quest.status === "running" || quest.status === "waiting";
+    const notDone =
+      quest.status === "failed" ? `Failed: ${quest.note ?? "no reason was recorded"}`
+      : quest.status === "budget" ? "Stopped when the budget ran out, before it was finished."
+      : quest.status === "stopped" ? "Stopped before it was finished."
+      : quest.check && !quest.check.passed ? "Finished, but the result did not pass its check."
+      : open ? "Not finished yet."
+      : !lastWords(conversation) ? "Finished without leaving a report."
+      : "";
+    return {
+      id: quest.id,
+      agent: quest.bot.name,
+      agentId: quest.bot.id,
+      character: quest.bot.character,
+      type: quest.bot.type,
+      title: quest.title,
+      kind: quest.id === rootId ? "task" : (quest.kind ?? "handoff"),
+      from: quest.parent?.by ?? null,
+      status: quest.status,
+      model: botModel(quest.bot, quest.modelOverride)?.label ?? "",
+      steps: quest.steps,
+      cost: conversation?.usage.cost ?? 0,
+      input: conversation?.usage.input ?? 0,
+      output: conversation?.usage.output ?? 0,
+      startedAt: quest.createdAt,
+      endedAt: open ? null : quest.updatedAt,
+      actions,
+      notDone,
+      said: lastWords(conversation),
+    };
+  });
+  const agents = new Map<string, { agent: string; character: unknown; type: string; tasks: number; actions: number; failed: number; cost: number; input: number; output: number }>();
+  for (const line of lines) {
+    const row = agents.get(line.agentId) ?? { agent: line.agent, character: line.character, type: line.type, tasks: 0, actions: 0, failed: 0, cost: 0, input: 0, output: 0 };
+    row.tasks += 1;
+    row.actions += line.actions.length;
+    row.failed += line.actions.filter((a) => !a.ok).length;
+    row.cost += line.cost;
+    row.input += line.input;
+    row.output += line.output;
+    agents.set(line.agentId, row);
+  }
+  const total = lines.reduce((sum, line) => sum + line.cost, 0);
+  return {
+    id: rootId,
+    title: root.title,
+    status: root.status,
+    startedAt: root.createdAt,
+    endedAt: lines.some((l) => !l.endedAt) ? null : lines.map((l) => l.endedAt!).sort().at(-1),
+    budget: chainBudget(),
+    total,
+    input: lines.reduce((sum, line) => sum + line.input, 0),
+    output: lines.reduce((sum, line) => sum + line.output, 0),
+    actions: lines.reduce((sum, line) => sum + line.actions.length, 0),
+    failedActions: lines.reduce((sum, line) => sum + line.actions.filter((a) => !a.ok).length, 0),
+    byAgent: [...agents.values()].sort((a, b) => b.cost - a.cost),
+    lines,
+    notDone: lines.filter((l) => l.notDone).map((l) => ({ id: l.id, agent: l.agent, title: l.title, why: l.notDone })),
+  };
+}
+
 function questSummary(quest: Quest) {
   const conversation = conversations.get(quest.id);
   const { bot } = quest;
@@ -309,7 +508,7 @@ function questSummary(quest: Quest) {
   return {
     id: quest.id,
     title: quest.title,
-    bot: { id: bot.id, name: bot.name, type: bot.type, character: bot.character, source: bot.source, powers: bot.powers },
+    bot: { id: bot.id, name: bot.name, type: bot.type, title: bot.title, character: bot.character, source: bot.source, powers: bot.powers },
     model: botModel(bot, quest.modelOverride),
     handedTo: quest.modelOverride ?? null,
     template: quest.template ? { id: quest.template.id, name: quest.template.name, tries: quest.template.tries, maxTries: quest.template.maxTries } : null,
@@ -329,6 +528,15 @@ function questSummary(quest: Quest) {
     outcome: quest.outcome ?? null,
     changedFiles: quest.changedFiles ?? null,
     note: quest.note ?? null,
+    // What this task and everything handed on from it have cost together, and how many tasks that is.
+    chain: rootOf(quest) === quest.id ? { cost: chainCost(quest.id), tasks: chainSize(quest.id), budget: chainBudget(), ...chainProgress(quest.id) } : null,
+    // The agent's latest words: its report once it has finished, or what it last said while working.
+    said: lastWords(conversation),
+    // A question or an escalated decision rather than a task, and how many hand-offs deep it is.
+    kind: quest.kind ?? null,
+    depth: quest.depth ?? 0,
+    // Why the task exists: the mission, the group's goal, and each task above it.
+    why: whyOf(quest),
     resumedAt: quest.resumedAt ?? null,
     createdAt: quest.createdAt,
     updatedAt: quest.updatedAt,
@@ -336,11 +544,21 @@ function questSummary(quest: Quest) {
   };
 }
 
+/** How big a chart is: its agents, the departments (or teams) they sit in, and how many levels deep it goes below the person. */
+function chartSize(seats: ReturnType<typeof seatsFor>) {
+  const categories = new Map(loadMarketplace().bots.map((m) => [m.bot.id, m.listing.category]));
+  const depth = (bot: string): number => ((m) => (m ? 1 + depth(m) : 1))(seats.find((x) => x.bot === bot)?.manager ?? null);
+  return { agents: seats.length, departments: new Set(seats.map((x) => x.department ?? categories.get(x.bot) ?? "Other")).size, levels: seats.length ? Math.max(...seats.map((x) => depth(x.bot))) : 0 };
+}
+
 // ---------- routes ----------
 async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   const parts = url.pathname.split("/").filter(Boolean).slice(1); // after "api"
   const route = `${req.method} ${parts[0] || ""}`;
-  const body = ["POST", "PUT", "PATCH"].includes(req.method ?? "") ? await readBody(req) : {};
+  // A file dropped into the library arrives as it is, not as JSON; it is read after the sign-in check below.
+  const upload = route === "POST library" && parts[1] === "upload";
+  const body = upload ? {} : ["POST", "PUT", "PATCH"].includes(req.method ?? "") ? await readBody(req) : {};
+  (req as { auditBody?: unknown }).auditBody = route === "POST login" ? {} : body;
 
   if (route === "POST login") {
     const ok = PASSWORD && crypto.timingSafeEqual(sha(String(body.password || "")), sha(PASSWORD));
@@ -350,6 +568,21 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     }
     const secure = req.headers["x-forwarded-proto"] === "https" ? "; Secure" : "";
     return send(res, 200, { ok: true }, { "set-cookie": `${SESSION_COOKIE}=${sessionToken()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure}` });
+  }
+  if (route === "GET integrations" && parts[1] === "openrouter" && parts[2] === "callback") {
+    // OpenRouter sends the person's browser back here after they approve. The browser may not be signed in to
+    // this app (it can be a different browser), so the one-time state from the start of the sign-in is the proof.
+    let message = "OpenRouter is connected to Talqava. You can close this tab and go back to the app.";
+    let ok = true;
+    try {
+      await finishOpenRouterSignIn(url.searchParams.get("code"), url.searchParams.get("state"));
+    } catch (err) {
+      ok = false;
+      message = (err as Error).message;
+    }
+    const safe = message.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+    res.writeHead(ok ? 200 : 400, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" });
+    return res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenRouter ${ok ? "connected" : "not connected"}</title><body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0d0c;color:#e8ece9;font:16px/1.5 -apple-system,system-ui,sans-serif"><main style="max-width:440px;padding:32px;border:1px solid #2a302c;border-radius:16px;background:#121513"><p style="margin:0 0 8px;font-size:12px;letter-spacing:.12em;color:${ok ? "#39ff88" : "#ff8f8f"}">${ok ? "CONNECTED" : "NOT CONNECTED"}</p><h1 style="margin:0 0 12px;font-size:22px">${ok ? "You are all set" : "The sign-in did not finish"}</h1><p style="margin:0;color:#b5bdb8">${safe}</p></main></body>`);
   }
   if (!signedIn(req)) throw new HttpError(401, "Sign in first.");
 
@@ -456,6 +689,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     const provider = getConfig().providers.find((p) => p.id === parts[1]);
     if (!provider) throw new HttpError(404, "No such provider.");
     if (provider.kind === "anthropic") return send(res, 200, { models: MODELS.map((m) => m.id), reachable: true });
+    // OpenRouter lists hundreds of models; only those that can use tools are any good to an agent.
+    if (provider.id === "openrouter") return send(res, 200, { models: (await openrouterModels().catch(() => [])).map((m) => m.id), reachable: true });
     try {
       const r = await fetch(`${String(provider.baseUrl).replace(/\/+$/, "")}/models`, {
         headers: provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {},
@@ -536,7 +771,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     const [, id, action] = parts;
     if (!id && req.method === "GET") return send(res, 200, questStore.list().map(questSummary));
     if (!id && req.method === "POST") {
-      const project = body.project ? projectOrNull(String(body.project)) : null;
+      // With no repository chosen and exactly one connected, that one is meant: a task about "our repository" should find it.
+      const onlyOne = !body.project && body.project !== "" && getConfig().projects.length === 1 ? getConfig().projects[0] : null;
+      const project = body.project ? projectOrNull(String(body.project)) : onlyOne;
       if (body.project && !project) throw new HttpError(400, "Add that repository under Settings first.");
       if (body.template) {
         // A core quest: its own bot unless another was chosen.
@@ -555,8 +792,16 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       if (!text) throw new HttpError(400, "Say what the quest is.");
       const bot = loadCrew(project ?? undefined).bots.find((b) => b.id === body.bot);
       if (!bot) throw new HttpError(400, "Choose a bot from the crew.");
+      // What the task cannot do without is checked first, for free. The person can still start it anyway where that makes sense.
+      const needs = needsFor({ bot, text, project });
+      const blocking = needs.filter((n) => !n.canSkip || body.anyway !== true);
+      if (blocking.length) {
+        audit({ actor: "owner", actorName: "You", kind: "task", ok: false, action: `Tried to assign a task to the ${bot.title || bot.name}; not started`, detail: blocking.map((n) => `${n.title}: ${n.detail}`).join(" | ") });
+        return send(res, 200, { needs: blocking, repositories: getConfig().projects });
+      }
+      audit({ actor: "owner", actorName: "You", kind: "task", action: `Assigned a task to the ${bot.title || bot.name}`, detail: String(body.title || text).slice(0, 300) });
       try {
-        return send(res, 200, questSummary(await quests.start({ bot, text, project: project ?? undefined })));
+        return send(res, 200, questSummary(await quests.start({ bot, text, title: typeof body.title === "string" && body.title.trim() ? body.title.trim() : undefined, project: project ?? undefined })));
       } catch (err) {
         throw new HttpError(400, (err as Error).message);
       }
@@ -571,6 +816,8 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       }
     };
     if (!action && req.method === "GET") return send(res, 200, { ...questSummary(quest), journal: journal.read(id) });
+    // The receipt covers the whole task: asked for from one of its parts, it is the receipt of the task that part came from.
+    if (action === "receipt" && req.method === "GET") return send(res, 200, receiptOf(rootOf(quest)));
     if (action === "stop" && req.method === "POST") {
       quests.stop(id);
       return send(res, 200, { ok: true });
@@ -613,20 +860,234 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (route === "DELETE memory") return send(res, 200, await attempt(() => memory.remove(parts[1])));
 
+  // The library: documents the person shares with their agents, kept in the organization's database.
+  if (parts[0] === "library") {
+    const org = orgs.active();
+    if (upload) {
+      return send(res, 200, await attempt(async () => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of req) {
+          size += (chunk as Buffer).length;
+          if (size > 60_000_000) throw new Error("That file is larger than 60 MB. Put it in the library folder yourself; very large files are skipped.");
+          chunks.push(chunk as Buffer);
+        }
+        return library.add(org, decodeURIComponent(url.searchParams.get("name") ?? "file"), Buffer.concat(chunks), url.searchParams.get("folder") ?? EVERYONE);
+      }));
+    }
+    // Who may use a file or folder, as the page sends it: every agent, some departments and agents, private, or as its folder says.
+    const accessFrom = (b: any) => (b.mode === "inherit" ? null : b.mode === "private" ? { private: true } : b.mode === "everyone" ? { everyone: true } : { everyone: false, departments: b.departments, agents: b.agents });
+    const items = (list: unknown) => (Array.isArray(list) ? list : []).map((i: any) => ({ kind: i?.kind === "folder" ? ("folder" as const) : ("file" as const), path: String(i?.path ?? "") }));
+    if (route === "GET library" && !parts[1]) {
+      const changed = await syncLibrary(org).catch((err) => ({ error: (err as Error).message }));
+      const departments = [...new Set(org.members.map((m) => m.department))].sort();
+      return send(res, 200, { organization: org.name, folder: libraryFolder(org.id), departments, agents: org.members.map((m) => m.bot), documents: library.list(org), folders: library.folders(org), deleted: library.deleted(org), stats: library.stats(org), changed });
+    }
+    if (route === "GET library" && parts[2] === "raw") {
+      // The file itself, to show in the app. Anything that could run code is sent as plain text or kept in a sandbox.
+      const { doc, full } = (() => {
+        try {
+          return library.file(org, Number(parts[1]));
+        } catch (err) {
+          throw new HttpError(404, (err as Error).message);
+        }
+      })();
+      const VIEW: Record<string, string> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", ogg: "audio/ogg" };
+      const type = VIEW[doc.type] ?? (doc.readable ? "text/plain; charset=utf-8" : "application/octet-stream");
+      res.writeHead(200, {
+        "content-type": type,
+        "content-length": String(fs.statSync(full).size),
+        "content-disposition": `${type === "application/octet-stream" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(doc.name)}`,
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": doc.type === "pdf" ? "frame-ancestors 'self'" : "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'",
+      });
+      fs.createReadStream(full).pipe(res);
+      return;
+    }
+    if (route === "GET library" && parts[2] === "text") return send(res, 200, await attempt(() => library.read(org, null, Number(parts[1]), 1, 60_000)));
+    if (route === "POST library" && parts[1] === "search") {
+      return send(res, 200, await attempt(async () => {
+        await syncLibrary(org);
+        const as = typeof body.as === "string" && body.as ? body.as : null;
+        return { hits: library.search(org, as, String(body.query ?? ""), 8) };
+      }));
+    }
+    if (route === "POST library" && parts[1] === "open") {
+      return send(res, 200, await attempt(() => {
+        // Shows a folder (or one file, selected) in the computer's own file browser.
+        const root = ensureFolders(org);
+        const file = body.id !== undefined ? library.file(org, Number(body.id)).full : null;
+        const folder = file ? null : path.resolve(root, ...String(body.path ?? "").split("/").filter((x) => x && x !== ".."));
+        if (folder && folder !== root && !folder.startsWith(root + path.sep)) throw new Error("That is not in the library.");
+        const [command, args] = process.platform === "darwin" ? ["open", file ? ["-R", file] : [folder!]] : process.platform === "win32" ? ["explorer", file ? [`/select,${file}`] : [folder!]] : ["xdg-open", [file ? path.dirname(file) : folder!]];
+        execFile(command, args, () => {});
+        return { folder: root };
+      }));
+    }
+    if (route === "POST library" && parts[1] === "launch") {
+      // Opens a file in the app this computer uses for it (Preview, Word, Excel…).
+      return send(res, 200, await attempt(() => {
+        const { full } = library.file(org, Number(body.id));
+        const [command, args] = process.platform === "darwin" ? ["open", [full]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", full]] : ["xdg-open", [full]];
+        execFile(command, args, () => {});
+        return { ok: true };
+      }));
+    }
+    if (route === "POST library" && parts[1] === "folders") return send(res, 200, await attempt(() => library.makeFolder(org, body.parent, body.name)));
+    if (route === "POST library" && parts[1] === "move") return send(res, 200, await attempt(() => library.move(org, items(body.items), body.to, body.name)));
+    if (route === "POST library" && parts[1] === "delete") return send(res, 200, await attempt(async () => (await library.remove(org, items(body.items)), { ok: true })));
+    if (route === "POST library" && parts[1] === "restore") return send(res, 200, await attempt(() => library.restore(org, body.id)));
+    if (route === "POST library" && parts[1] === "purge") return send(res, 200, await attempt(() => library.purge(org, body.all === true ? "all" : body.id)));
+    if (route === "PATCH library" && parts[1] === "folder") return send(res, 200, await attempt(() => library.setFolderAccess(org, body.path, accessFrom(body))));
+    if (route === "PATCH library" && parts[1]) return send(res, 200, await attempt(() => library.setAccess(org, Number(parts[1]), body.mode ? accessFrom(body) : body.folderDecides === true ? null : { everyone: body.everyone === true, departments: body.departments, agents: body.agents })));
+    if (route === "DELETE library" && parts[1]) return send(res, 200, await attempt(async () => (await library.remove(org, Number(parts[1])), { ok: true })));
+  }
+
+  if (route === "GET audit") {
+    return send(res, 200, readAudit({ limit: Number(url.searchParams.get("limit")) || 500, actor: url.searchParams.get("actor") || undefined, kind: url.searchParams.get("kind") || undefined, q: url.searchParams.get("q") || undefined, since: url.searchParams.get("since") || undefined }));
+  }
+
+  // The inbox: what the person has read, saved, archived or deleted, and the names they gave their agents.
+  // Messages themselves come from the tasks; only these marks are kept here.
+  if (parts[0] === "inbox") {
+    type Mark = { readAt?: string; starred?: boolean; archived?: boolean; deletedAt?: string; purged?: boolean };
+    const file = path.join(DATA, "inbox.json");
+    const box = { messages: {} as Record<string, Mark>, names: {} as Record<string, string>, ...readJson<{ messages?: Record<string, Mark>; names?: Record<string, string> }>(file, {}) };
+    const save = () => writeJson(file, box);
+    const ids = (list: unknown) => (Array.isArray(list) ? list : []).map(String).filter((id) => /^[a-z]+:[\w:.-]{1,120}$/.test(id)).slice(0, 500);
+    if (route === "GET inbox") return send(res, 200, box);
+    if (route === "PATCH inbox") {
+      const now = new Date().toISOString();
+      for (const id of ids(body.ids)) {
+        const m = (box.messages[id] ??= {});
+        if (body.read === true) m.readAt = now;
+        if (body.read === false) delete m.readAt;
+        if (typeof body.starred === "boolean") m.starred = body.starred || undefined;
+        if (typeof body.archived === "boolean") m.archived = body.archived || undefined;
+        if (body.deleted === true) m.deletedAt = now;
+        if (body.deleted === false) delete m.deletedAt, delete m.purged;
+        if (body.purge === true && m.deletedAt) m.purged = true;
+      }
+      // Deleted messages are kept 30 days, then hidden for good.
+      for (const m of Object.values(box.messages) as Mark[]) if (m.deletedAt && Date.now() - new Date(m.deletedAt).getTime() > 30 * 24 * 3600 * 1000) m.purged = true;
+      save();
+      return send(res, 200, box);
+    }
+    if (route === "PUT inbox" && parts[1] === "names" && parts[2]) {
+      const bot = decodeURIComponent(parts[2]);
+      if (!/^[\w.-]{1,80}$/.test(bot)) throw new HttpError(400, "No such agent.");
+      const name = String(body.name ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+      if (name) box.names[bot] = name;
+      else delete box.names[bot];
+      save();
+      return send(res, 200, box);
+    }
+  }
+
+  // Integrations: the outside tools agents work with. Git is the first.
+  if (parts[0] === "integrations") {
+    if (route === "GET integrations" && !parts[1]) return send(res, 200, await listIntegrations());
+    if (route === "GET integrations" && parts[1] === "git") return send(res, 200, await gitIntegration());
+    if (route === "GET integrations" && parts[1] === "mcp") return send(res, 200, mcpIntegration());
+    if (route === "GET integrations" && parts[1] === "openrouter") return send(res, 200, await openrouterIntegration());
+    if (route === "POST integrations" && parts[1] === "openrouter") {
+      // Sign-in starts from the address the app is open on, so OpenRouter can send the person back to it.
+      if (parts[2] === "start") return send(res, 200, await attempt(async () => startOpenRouterSignIn(`${req.headers["x-forwarded-proto"] === "https" ? "https" : "http"}://${req.headers.host}`)));
+      if (parts[2] === "key") return send(res, 200, await attempt(async () => (await saveOpenRouterKey(body.key), { ok: true })));
+      if (parts[2] === "use") return send(res, 200, await attempt(() => useOpenRouterModel(body.model)));
+      if (parts[2] === "refresh") return send(res, 200, await attempt(async () => ({ models: (await openrouterModels(true)).length })));
+      if (parts[2] === "remove") return send(res, 200, await attempt(async () => removeOpenRouter()));
+    }
+    if (route === "POST integrations" && parts[1] === "mcp" && parts[2] === "claude-desktop") return send(res, 200, await attempt(() => setClaudeDesktop(body.remove !== true)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "clone") {
+      return send(res, 200, await attempt(async () => {
+        const folder = await cloneRepository(body.url);
+        saveConfig({ projects: [...new Set([...getConfig().projects, folder])] });
+        return { path: folder };
+      }));
+    }
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-start") return send(res, 200, await attempt(() => startGithubSignIn()));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-poll") return send(res, 200, await attempt(() => pollGithubSignIn()));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-client") {
+      return send(res, 200, await attempt(() => {
+        const id = String(body.clientId ?? "").trim();
+        if (id && !/^[A-Za-z0-9._-]{10,60}$/.test(id)) throw new Error("That does not look like a GitHub Client ID. It is a short code such as Ov23li… shown on the app's page on GitHub.");
+        saveConfig({ githubClientId: id });
+        return { ok: true };
+      }));
+    }
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-accounts") return send(res, 200, await attempt(() => githubAccounts()));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "github-repos") return send(res, 200, await attempt(() => githubRepos(body.account)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "remove") return send(res, 200, await attempt(() => removeGitIntegration(body.deleteCopies === true)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "disconnect") return send(res, 200, await attempt(() => disconnectRepository(body.path, body.deleteCopy === true)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "auto") return send(res, 200, await attempt(() => autoSetupGit(body.scan === true)));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "install") return send(res, 200, await attempt(() => installGit()));
+    if (route === "POST integrations" && parts[1] === "git" && parts[2] === "test-github") return send(res, 200, await attempt(() => testGithub()));
+  }
+
   // Organizations: bots in roles, with titles, departments and managers.
   if (parts[0] === "orgs") {
     const [, orgId, sub, memberId] = parts;
-    if (route === "GET orgs" && !orgId) return send(res, 200, orgs.list());
-    if (route === "POST orgs" && !orgId) return send(res, 200, await attempt(() => orgs.create(body.name, body.mission)));
+    if (route === "GET orgs" && !orgId) {
+      const listed = orgs.list();
+      // Each organization comes with the rule its structure sets; the structures themselves are sent once.
+      return send(res, 200, { ...listed, orgs: listed.orgs.map((o) => ({ ...o, assignRule: assignRule(o), requestRule: requestRule(o), groupSpend: groupSpend(o.id), proposals: listProposals(o.id).filter((p) => p.status === "open") })),
+        structures: STRUCTURES,
+        assignRules: ASSIGN_RULES,
+        requestRules: REQUEST_RULES,
+        // For each kind of business, the agents each structure would seat, so the page can say what setting one up adds.
+        industries: INDUSTRIES.map((i) => ({ id: i.id, name: i.name, examples: i.examples, recommended: i.recommended, why: i.why, seats: Object.fromEntries(STRUCTURES.map((x) => [x.id, seatsFor(x.id, i).map((seat) => seat.bot)])), sizes: Object.fromEntries(STRUCTURES.map((x) => [x.id, chartSize(seatsFor(x.id, i))])) })),
+      });
+    }
+    // An organization as one readable file, and a file imported as a new organization.
+    if (route === "POST orgs" && orgId === "import") return send(res, 200, await attempt(() => importOrg(body.text)));
+    if (route === "GET orgs" && sub === "export") return send(res, 200, await attempt(() => exportOrg(orgId)));
+    if (route === "POST orgs" && !orgId) return send(res, 200, await attempt(() => orgs.create(body.name, body.mission, body.structure)));
+    if (route === "POST orgs" && sub === "build") return send(res, 200, await attempt(() => buildStructure(orgId, String(body.structure ?? ""), body.industry === undefined ? undefined : String(body.industry), body.exact !== false)));
+    if (route === "POST orgs" && sub === "reset") {
+      // Start over, at the owner's request: an empty chart, or an empty chart with the organization's example copied onto it.
+      return send(res, 200, await attempt(() => {
+        const org = orgs.list().orgs.find((o) => o.id === orgId);
+        if (!org) throw new Error("No such organization.");
+        orgs.clear(orgId);
+        if (body.mode === "empty") return orgs.active();
+        return buildStructure(orgId, org.structure);
+      }));
+    }
+    // The app no longer redraws an owner's chart from a structure: lines are only ever drawn by the owner.
+    if (route === "POST orgs" && sub === "arrange") throw new HttpError(410, "The chart is no longer redrawn from a structure. Drag positions to set who reports to whom.");
+    if (route === "POST orgs" && sub === "suggest") return send(res, 200, await attempt(() => suggestPositions(orgId, body.mission, Number(body.limit) || 6)));
+    if (route === "POST orgs" && sub === "accept") return send(res, 200, await attempt(() => acceptSuggestion(orgId, body)));
+    // A ready-made team dropped where the owner put it: under a position, into a group, or under the owner.
+    if (route === "POST orgs" && sub === "pack") return send(res, 200, await attempt(() => addPack(orgId, String(body.team ?? ""), { under: body.under, group: body.group })));
+    // Positions the agents proposed, and the owner's answer to one.
+    if (route === "GET orgs" && sub === "proposals") return send(res, 200, listProposals(orgId));
+    if (route === "POST orgs" && sub === "proposals" && parts[3]) return send(res, 200, await attempt(() => decide(orgId, parts[3], body.decision, body.answer)));
+    if (route === "PUT orgs" && sub === "chart") return send(res, 200, await attempt(() => orgs.replaceChart(orgId, body)));
+    if (route === "POST orgs" && sub === "groups") return send(res, 200, await attempt(() => orgs.addGroup(orgId, body)));
+    if (route === "PATCH orgs" && sub === "groups" && memberId) return send(res, 200, await attempt(() => orgs.updateGroup(orgId, memberId, body)));
+    if (route === "DELETE orgs" && sub === "groups" && memberId) return send(res, 200, await attempt(() => orgs.removeGroup(orgId, memberId, url.searchParams.get("moveTo") ?? body.moveTo)));
+    if (route === "POST orgs" && sub === "members" && memberId && parts[4] === "agent") return send(res, 200, await attempt(() => orgs.swapAgent(orgId, memberId, body.to)));
+    if (route === "GET orgs" && sub === "memory") return send(res, 200, orgMemory.list(orgId));
+    if (route === "POST orgs" && sub === "memory") {
+      return send(res, 200, await attempt(() => {
+        const shelf = body.shelf === "dept" || body.shelf === "agent" ? body.shelf : "org";
+        return orgMemory.add({ org: orgId, shelf, key: String(body.key ?? ""), text: body.text, by: "You" });
+      }));
+    }
+    if (route === "PATCH orgs" && sub === "memory" && memberId) return send(res, 200, await attempt(() => orgMemory.update(orgId, memberId, body.text)));
+    if (route === "DELETE orgs" && sub === "memory" && memberId) return send(res, 200, await attempt(() => (orgMemory.remove(orgId, memberId), { ok: true })));
     if (route === "PATCH orgs" && orgId && !sub) {
       return send(res, 200, await attempt(() => {
         if (body.active) orgs.setActive(orgId);
-        return orgs.update(orgId, { name: body.name, mission: body.mission });
+        return orgs.update(orgId, { name: body.name, mission: body.mission, structure: body.structure, philosophy: body.philosophy, assign: body.assign, industry: body.industry, approvalLimit: body.approvalLimit });
       }));
     }
-    if (route === "DELETE orgs" && orgId && !sub) return send(res, 200, await attempt(() => orgs.remove(orgId)));
+    if (route === "DELETE orgs" && orgId && !sub) return send(res, 200, await attempt(() => (orgs.remove(orgId), orgMemory.purge(orgId), removeLibrary(orgId), { ok: true })));
     if (route === "PUT orgs" && sub === "members") return send(res, 200, await attempt(() => orgs.setMember(orgId, body)));
     if (route === "DELETE orgs" && sub === "members" && memberId) return send(res, 200, await attempt(() => orgs.removeMember(orgId, memberId)));
+    if (route === "DELETE orgs" && sub === "teams" && memberId) return send(res, 200, await attempt(() => orgs.removeTeam(orgId, memberId)));
   }
 
   if (route === "GET spaces") return send(res, 200, spaces.list());
@@ -656,7 +1117,24 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   try {
     checkOrigin(req);
     const url = new URL(req.url ?? "/", "http://local");
-    if (url.pathname.startsWith("/api/")) return await api(req, res, url);
+    if (url.pathname.startsWith("/api/")) {
+      const parts = url.pathname.split("/").filter(Boolean).slice(1);
+      const record = req.method !== "GET" && req.method !== "OPTIONS" && parts[0] !== "audit";
+      try {
+        await api(req, res, url);
+        if (record) {
+          const d = describeRequest(req.method ?? "", parts, (req as { auditBody?: unknown }).auditBody ?? {}, url);
+          if (d) audit({ actor: "owner", actorName: "You", ...d, ok: res.statusCode < 400 });
+        }
+      } catch (err) {
+        if (record) {
+          const d = describeRequest(req.method ?? "", parts, (req as { auditBody?: unknown }).auditBody ?? {}, url);
+          if (d && parts[0] !== "login") audit({ actor: "owner", actorName: "You", ...d, ok: false, detail: `${d.detail ? `${d.detail} · ` : ""}Refused: ${(err as Error).message}` });
+        }
+        throw err;
+      }
+      return;
+    }
     if (req.method !== "GET") throw new HttpError(405, "Method not allowed.");
     return serveStatic(res, url.pathname);
   } catch (err) {
@@ -679,8 +1157,17 @@ export function start() {
   getConfig();
   const server = http.createServer(handle);
   server.listen(PORT, HOST, () => {
+    // If Talqava was added to the Claude app from an older copy of this app (it was renamed), point Claude at this one.
+    // Only the desktop app does this, so running from the code folder never repoints Claude.
+    if (process.env.ELECTRON_RUN_AS_NODE === "1") import("./mcpintegration.ts").then((m) => m.refreshClaudeDesktop()).catch(() => {});
+    audit({ actor: "system", actorName: "Talqava", kind: "other", action: "Started the app" });
     console.log(`${BRAND.name} is running at http://${LOCAL_HOSTS.has(HOST) ? "localhost" : HOST}:${PORT}`);
     console.log(`Data: ${DATA}\nWorkspace: ${WORKSPACE}`);
+    // A note of where this app is listening, so the Talqava MCP server (run by Claude or another AI app) can find it.
+    try {
+      const address = server.address();
+      fs.writeFileSync(path.join(DATA, "running.json"), JSON.stringify({ port: typeof address === "object" && address ? address.port : PORT, pid: process.pid, startedAt: new Date().toISOString() }), { mode: 0o600 });
+    } catch {}
   });
   jobs.start(runJob);
   // Quests that were under way when the app last closed carry on.
