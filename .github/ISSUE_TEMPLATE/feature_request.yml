@@ -1,0 +1,22 @@
+name: Suggest an idea
+description: Something Talqava could do, or do better.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem or the job to be done, in your own words, before any solution.
+      placeholder: "When I give the Head of Sales a task, I want to ..."
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: Your idea of how Talqava could help, if you have one.
+  - type: textarea
+    id: who
+    attributes:
+      label: Who is it for?
+      description: Your kind of business or team, and how often this comes up.

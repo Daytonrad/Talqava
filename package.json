@@ -1,7 +1,31 @@
 {
   "name": "talqava",
   "version": "0.1.0",
-  "description": "A self-hosted AI agent: tools, memory, web, code, APIs and schedules, with a web chat page.",
+  "description": "Run your organization with AI agents: an org chart you draw, agents that work along it, budgets, an inbox, a library and an audit log, on any AI model.",
+  "keywords": [
+    "ai-agents",
+    "multi-agent",
+    "organization",
+    "org-chart",
+    "business-automation",
+    "operations",
+    "claude",
+    "openrouter",
+    "ollama",
+    "mcp",
+    "self-hosted",
+    "local-first"
+  ],
+  "homepage": "https://talqava.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Talqava/Talqava.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Talqava/Talqava/issues"
+  },
+  "license": "MIT",
+  "author": "Talqava",
   "type": "module",
   "private": true,
   "engines": {

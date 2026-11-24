@@ -2,7 +2,7 @@
   "name": "talqava-desktop",
   "productName": "Talqava",
   "version": "0.1.0",
-  "description": "Talqava as a Mac app: the same app, in its own window, with nothing else to install.",
+  "description": "Talqava as a Mac app: run your organization with AI agents, in its own window, with nothing else to install.",
   "main": "main.cjs",
   "private": true,
   "scripts": {
@@ -63,5 +63,13 @@
       ]
     },
     "afterPack": "after-pack.cjs"
+  },
+  "homepage": "https://talqava.com",
+  "author": "Talqava",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Talqava/Talqava.git",
+    "directory": "desktop"
   }
 }
