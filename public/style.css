@@ -1734,3 +1734,5 @@ dialog.guidedialog::backdrop { background: var(--scrim); }
 .jobcard .row { align-items: flex-start; }
 .jobprompt { margin-top: 6px; white-space: pre-wrap; }
 .jobactions { gap: 6px; justify-content: flex-end; max-width: 300px; }
+.warnline { color: var(--warn-ink, var(--warn)); }
+:root[data-theme="light"] .warnline { color: #8A5A00; }

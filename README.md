@@ -21,14 +21,14 @@ Talqava gives you a team of AI agents, each in a role on an org chart that **you
 
 ## What it does
 
-- **An organization you build.** Start with only you. Add positions one at a time, from 62 ready-made roles or your own, or accept positions suggested from your mission. Draw solid "reports to" lines and dotted "also works with" lines by dragging. Group positions into teams with a lead, a goal and a monthly budget. Drop a ready-made team under any position. Undo anything.
+- **An organization you build.** Start with only you. Add positions one at a time, from 81 ready-made roles or your own, or accept positions suggested from your mission. Draw solid "reports to" lines and dotted "also works with" lines by dragging. Group positions into teams with a lead, a goal and a monthly budget. Drop a ready-made team under any position. Undo anything.
 - **Work that follows your chart.** Give a task to anyone. Leads hand parts to the people below them, request work from other groups' leads, ask colleagues quick questions and escalate what is not theirs to decide. Every task knows why it exists: your mission, its group's goal, and the tasks above it.
 - **Checks before spending.** Before a task starts, the agent checks it has what it needs (a repository, a file, an answer from you) and asks first instead of spending your budget guessing. Every task has a budget it shares with everything handed on from it; every agent and every group has a monthly budget that stops new work when it is used up.
 - **An inbox like email.** Agents report to you as messages you can read, save, archive, search and sort. Give agents names of your own. Approve or decline steps, and positions agents propose, right from the message.
 - **A full record.** An audit log of every operation, by you and by each agent, and a receipt for every task: what was done, what was not, what it cost, and which agent spent it.
 - **A library for your documents.** A file manager for your organization's files, with folders. Each file or folder is either open to agents (all of them, some groups, or named agents) or private, never seen by any AI.
 - **Memory that lasts.** Shared memory for the whole organization, each group and each agent, plus skills agents write for themselves and work on a schedule.
-- **Any AI model, set up in a minute.** Settings → AI models lists more than 20 services: Claude, OpenAI, Google Gemini, xAI, Mistral, DeepSeek, Groq, Together, OpenRouter, Azure OpenAI, a LiteLLM gateway, and free local models (Ollama, LM Studio, llama.cpp) that keep everything on your computer. Pick one, paste its key, done. Backup models take over if a service is down.
+- **Any AI model, set up in a minute.** Integrations → AI models lists more than 20 services: Claude, OpenAI, Google Gemini, xAI, Mistral, DeepSeek, Groq, Together, OpenRouter, Azure OpenAI, a LiteLLM gateway, and free local models (Ollama, LM Studio, llama.cpp) that keep everything on your computer. Pick one, paste its key, done. Backup models take over if a service is down.
 - **Works with the tools you have.** Git and GitHub, connectors (MCP servers) for other services, and Talqava itself as an MCP server, so Claude and other AI apps can use your team.
 - **Light and dark.** A light theme by default and a dark one, in the Talqava greens.
 - **Share an organization.** Export it as one readable file and import it on another computer. No keys, tasks, memory or documents go in the file.
@@ -101,7 +101,7 @@ Drop files on the **Library** page or straight into the library folder (`data/or
 
 ### Models
 
-Everything is under **Settings → AI models**. Pick a service, paste its key, and Talqava checks the key with the service, finds its models and fills in the rest. Connect as many as you like: the team uses one model, and any agent can use another.
+Everything is under **Integrations → AI models**. Pick a service, paste its key, and Talqava checks the key with the service, finds its models and fills in the rest. Connect as many as you like: the team uses one model, and any agent can use another.
 
 - **Model makers:** Anthropic (Claude), OpenAI, Google Gemini, xAI (Grok), Mistral, DeepSeek, Moonshot (Kimi), Alibaba (Qwen) and Cohere. Claude gets Anthropic's web search and connectors.
 - **Hosts of open models:** Groq, Together AI, Fireworks, Cerebras, NVIDIA and Hugging Face.
@@ -174,7 +174,7 @@ and open <http://localhost:8787>. Tailscale, or an HTTPS reverse proxy such as C
 
 | Setting | Where | Notes |
 | --- | --- | --- |
-| AI model | Settings → AI models | Claude, OpenAI, Gemini, Mistral, OpenRouter, Azure, LiteLLM, local models and more |
+| AI model | Integrations → AI models | Claude, OpenAI, Gemini, Mistral, OpenRouter, Azure, LiteLLM, local models and more |
 | API key | Settings or `ANTHROPIC_API_KEY` | For Claude |
 | Budget per task | Settings | 40 steps and $1 by default, shared with everything handed on |
 | Check before starting | Settings | On by default |
@@ -198,7 +198,7 @@ For pages that need clicking or typing, install the optional browser (`npm insta
 | `src/local` | This edition: file storage, organizations (`orgs.ts`), tasks and their journal (`quests.ts`), the library (`library.ts`), budgets (`spend.ts`), the audit log, integrations, the MCP server, and the web server (`server.ts`). |
 | `public` | The page: plain JavaScript (`app.js`), the stylesheets, the brand video and fonts. |
 | `crew` | The six starter agents, one YAML file each. |
-| `marketplace` | The 62 ready-made roles and the ready-made teams (`teams.yaml`). |
+| `marketplace` | The 81 ready-made roles and the ready-made teams (`teams.yaml`). |
 | `quests` | The five ready-made checked tasks. |
 | `desktop` | The Electron Mac app. |
 | `evals` | The task test suite and its saved baselines. |

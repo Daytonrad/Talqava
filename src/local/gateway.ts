@@ -354,7 +354,19 @@ export function setBackups(list: unknown): { backups: string[] } {
 
 // ---------- what the page shows ----------
 
-export async function gatewayState() {
+/** Whether a model runner on this computer is answering now, and how many models it has. */
+async function liveLocal(baseUrl: string): Promise<{ running: boolean; models: number }> {
+  try {
+    const r = await fetch(`${baseUrl.replace(/\/+$/, "")}/models`, { signal: AbortSignal.timeout(1500) });
+    if (!r.ok) return { running: true, models: 0 };
+    const data = (await r.json()) as { data?: unknown[] };
+    return { running: true, models: data.data?.length ?? 0 };
+  } catch {
+    return { running: false, models: 0 };
+  }
+}
+
+export async function gatewayState({ live = true } = {}) {
   const cfg = getConfig();
   const connected = cfg.providers
     .filter((p) => (p.kind === "anthropic" ? Boolean(cfg.apiKey || process.env.ANTHROPIC_API_KEY) : true))
@@ -370,12 +382,17 @@ export async function gatewayState() {
         inUse: cfg.model.startsWith(`${p.id}/`),
         // The standard local entry is there from the start; it only counts once something answers.
         standard: p.id === LEGACY_LOCAL && !p.service,
+        local: service?.group === "local",
       };
     });
+  // A model runner on this computer may have been closed since it was connected: say how it is now.
+  const withLive = await Promise.all(
+    connected.map(async (c) => (live && c.local && c.address && !c.standard ? { ...c, live: await liveLocal(c.address) } : { ...c, live: null as null | { running: boolean; models: number } })),
+  );
   return {
     services: SERVICES.map(({ id, name, about, group, needsKey, keyUrl, keyPrefix, addressHint, baseUrl, ownSetup }) => ({ id, name, about, group, needsKey, keyUrl, keyPrefix, addressHint: addressHint ?? null, address: group === "local" ? baseUrl : null, ownSetup: ownSetup ?? null })),
     groups: GROUP_NAMES,
-    connected,
+    connected: withLive,
     model: cfg.model,
     backups: cfg.backups ?? [],
   };

@@ -26,11 +26,11 @@ If you have been given the Talqava Mac app, copy it to your Applications folder.
 
 The first time, Talqava asks for an AI model.
 
-1. Open **Settings**. Under **AI models**, pick a service. **Anthropic (Claude)** is the standard and works best for agent work.
+1. Open **Integrations** and choose **AI models**. (Talqava opens it for you the first time.) Pick a service: **Anthropic (Claude)** is the standard and works best for agent work.
 2. Press **Connect**, follow the link to get a key from that company's website, paste it in, and press **Connect**.
 3. Choose a model and press **Use for my team**.
 
-Prefer something free and private? Install Ollama or LM Studio, download a model, start it, and press **Find models on this computer**. Your key stays on your computer and is only sent to its own service. See [Settings](settings.md) for more.
+Prefer something free and private? Install Ollama or LM Studio, download a model, start it, and press **Find models on this computer**. Your key stays on your computer and is only sent to its own service. See [AI models](ai-models.md) for more.
 
 ### 3. Build your organization
 

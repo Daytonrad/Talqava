@@ -237,10 +237,10 @@ test("an organization puts bots in roles on a chart, and a team joins with its r
   assert.throws(() => orgs.create("acme"), /already an organization/);
 
   // A team from the marketplace arrives lead first, with its reporting lines.
-  assert.deepEqual(market.loadTeams().map((t) => t.id).sort(), ["development-team", "engineering-team", "finance-team", "marketing-team", "operations-team", "people-team", "research-team", "sales-team", "starter-company", "support-team"]);
+  assert.deepEqual(market.loadTeams().map((t) => t.id).sort(), ["development-team", "engineering-team", "finance-team", "marketing-team", "nonprofit-team", "operations-team", "people-team", "professional-services-team", "research-team", "sales-team", "starter-company", "support-team"]);
   market.addTeam("marketing-team");
   let org = orgs.active();
-  assert.deepEqual(reportsOf(org, "head-of-marketing").map((m) => m.bot).sort(), ["content-writer", "designer", "paid-ads-specialist", "seo-researcher", "social-drafter"]);
+  assert.deepEqual(reportsOf(org, "head-of-marketing").map((m) => m.bot).sort(), ["content-writer", "designer", "email-marketer", "paid-ads-specialist", "seo-researcher", "social-drafter"]);
   assert.equal(org.members.find((m) => m.bot === "head-of-marketing")!.manager, null); // no general manager here yet
   assert.equal(org.members.find((m) => m.bot === "content-writer")!.title, "Content Writer");
 
@@ -2086,6 +2086,27 @@ test("a schedule with an agent becomes a task in its queue; without one, or if t
     await call("DELETE", `jobs/${job.id}`);
   } finally {
     server.close();
+    orgs.remove(org0.id);
+  }
+});
+
+test("the new ready-made teams arrive with their reporting lines, and every listed agent exists", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const listed = new Set(market.loadMarketplace().bots.map((b) => b.bot.id));
+  assert.deepEqual(market.loadMarketplace().problems, []);
+  for (const team of market.loadTeams()) for (const id of team.bots) assert.ok(listed.has(id), `${team.id}: ${id} is in the marketplace`);
+  const org0 = orgs.create("Firm Co", "Advise clients well.", "custom");
+  try {
+    market.addTeam("professional-services-team");
+    const org = orgs.active();
+    const managerOf = (bot: string) => org.members.find((m) => m.bot === bot)?.manager;
+    // The conflicts checker usually reports to the compliance manager and the proposal writer to the head of sales; in this team, both report to the practice manager.
+    for (const bot of ["client-intake-coordinator", "conflicts-checker", "matter-coordinator", "proposal-writer", "billing-specialist"]) assert.equal(managerOf(bot), "practice-manager", bot);
+    market.addTeam("nonprofit-team");
+    const after = orgs.active();
+    assert.equal(after.members.find((m) => m.bot === "grant-writer")?.manager, "head-of-fundraising");
+  } finally {
     orgs.remove(org0.id);
   }
 });
