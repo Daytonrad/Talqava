@@ -17,6 +17,8 @@ export { OpenAICompatibleModel, toChatMessages, toChatTools } from "./models/ope
 export type { OpenAICompatibleOptions, SummaryCache, ConversationSummary } from "./models/openai.ts";
 export { CLAUDE_PRICES, FREE, costOf } from "./models/pricing.ts";
 export { checkModel } from "./models/check.ts";
+export { FallbackModel } from "./models/fallback.ts";
+export type { OnSwitch } from "./models/fallback.ts";
 export type { CheckResult } from "./models/check.ts";
 export { pageTool, htmlToText, isPrivateAddress } from "./tools/page.ts";
 export { POWERS, LEGENDS, TEXTURES, defaultLegend, defaultTexture, isLegend, parseBot, limitProjectBot, botPrompt } from "./crew.ts";

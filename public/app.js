@@ -97,6 +97,14 @@ async function attempt(fn, where) {
   }
 }
 
+/** A short message at the bottom of the window that goes away by itself. */
+function toast(text) {
+  document.querySelector(".toast")?.remove();
+  const box = h("div", { class: "toast", role: "status" }, text);
+  document.body.append(box);
+  setTimeout(() => box.remove(), 6000);
+}
+
 const when = (iso) => (iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "never");
 const shortWhen = (iso) => {
   if (!iso) return "";
@@ -5298,6 +5306,250 @@ async function jobsView() {
 }
 
 // ---------- settings ----------
+/**
+ * AI models: every AI service Talqava can use, in one place. Pick a service, paste its key,
+ * and Talqava checks it and finds the service's models. Connected services can be used by
+ * the whole team or one agent, and backups take over when a service is down.
+ */
+function aiModelsSection(col) {
+  const box = h("div", { class: "aimodels" }, h("p", { class: "note" }, "Loading the AI services…"));
+  col.append(
+    h("h3", { id: "ai-models" }, "AI models"),
+    h("p", { class: "note" }, "Connect the AI services your agents use. Pick one, paste its key, and Talqava checks it and finds its models. Connect as many as you like: your team can use one, and any agent can use another."),
+    box,
+  );
+  let g = null;
+  const refresh = async () => {
+    g = await api("GET", "gateway").catch(() => null);
+    state.config = await api("GET", "state").catch(() => state.config);
+    if (box.isConnected) draw();
+  };
+  const short = (url) => (url ? url.replace(/^https?:\/\//, "").replace(/\/v1$/, "") : "");
+  const keyLink = (s) => (s.keyUrl ? h("a", { href: s.keyUrl, target: "_blank", rel: "noopener" }, s.keyUrl.replace(/^https:\/\//, "")) : null);
+  const modelName = (ref) => {
+    const at = ref.indexOf("/");
+    const p = g?.connected.find((c) => c.id === ref.slice(0, at));
+    return `${ref.slice(at + 1)}${p ? ` · ${p.name}` : ""}`;
+  };
+
+  const draw = () => {
+    if (!g) return fill(box, h("p", { class: "note" }, "The list of AI services could not be loaded."));
+    const live = g.connected.filter((c) => !c.standard);
+    const connectedIds = new Set(live.map((c) => c.service));
+    const findButton = h("button", { class: "small" }, "Find models on this computer");
+    findButton.addEventListener("click", () =>
+      attempt(async () => {
+        findButton.disabled = true;
+        findButton.textContent = "Looking…";
+        const { found } = await api("POST", "gateway/find-local");
+        toast(found.length ? `Connected ${found.map((f) => `${f.name} (${f.models} model${f.models === 1 ? "" : "s"})`).join(", ")}.` : "No model runner is running on this computer. Install Ollama or LM Studio, download a model, then look again.");
+        await refresh();
+      }, col).finally(() => ((findButton.disabled = false), (findButton.textContent = "Find models on this computer"))),
+    );
+
+    fill(
+      box,
+      // What is connected now.
+      h(
+        "div",
+        { class: "aiconnected" },
+        live.length
+          ? live.map((c) =>
+              h(
+                "div",
+                { class: "aiconn" },
+                h("div", { class: "grow" }, h("strong", {}, c.name), c.inUse ? h("span", { class: "tag ok" }, "Your team's model") : null, h("div", { class: "note small" }, c.address ? short(c.address) : "Connected with your key")),
+                h("button", { class: "small", onclick: () => modelsDialog(c) }, "Models"),
+                h("button", { class: "small plain danger", onclick: () => confirm(`Disconnect ${c.name}?\n\nIts key is forgotten on this computer.${c.inUse ? " Your team goes back to Claude." : ""}`) && attempt(async () => (await api("DELETE", `gateway/${encodeURIComponent(c.id)}`), refresh()), col) }, "Disconnect"),
+              ),
+            )
+          : h("p", { class: "banner" }, "No AI service is connected yet. Choose one below: Anthropic (Claude) is the standard, or find free models on this computer."),
+      ),
+      // Backups, once there is something to choose from.
+      live.length ? backupsBox(live) : null,
+      // Every service, by group.
+      Object.entries(g.groups).map(([group, title]) =>
+        h(
+          "div",
+          { class: "aigroup" },
+          h("div", { class: "row" }, h("h4", { class: "grow" }, title), group === "local" ? findButton : null),
+          h(
+            "div",
+            { class: "aigrid" },
+            g.services
+              .filter((s) => s.group === group)
+              .map((s) => {
+                const on = connectedIds.has(s.id) && s.id !== "custom";
+                return h(
+                  "div",
+                  { class: `aicard${on ? " on" : ""}` },
+                  h("div", { class: "aicardhead" }, h("strong", {}, s.name), on ? h("span", { class: "tag ok" }, "Connected") : null),
+                  h("p", { class: "note small" }, s.about),
+                  h(
+                    "div",
+                    { class: "row" },
+                    s.ownSetup === "openrouter"
+                      ? h("button", { class: on ? "small" : "small primary", onclick: () => ((ui.integration = "openrouter"), go("integrations")) }, on ? "Manage" : "Set up")
+                      : h("button", { class: on ? "small" : "small primary", onclick: () => connectDialog(s) }, on ? "Change key" : "Connect"),
+                  ),
+                );
+              }),
+          ),
+        ),
+      ),
+    );
+  };
+
+  const backupsBox = (live) => {
+    const options = [];
+    const list = g.backups.slice();
+    const wrap = h("div", { class: "aibackups card" });
+    const save = (next) => attempt(async () => (await api("PUT", "gateway/backups", { backups: next }), refresh()), col);
+    const pick = h("select", { "aria-label": "Add a backup model" }, h("option", { value: "" }, "Add a backup model…"));
+    // The models of every connected service that can use tools are offered.
+    Promise.all(live.map((c) => api("GET", `providers/${encodeURIComponent(c.id)}/models`).then((r) => ({ c, r })).catch(() => null))).then((rows) => {
+      for (const row of rows.filter(Boolean)) {
+        const ok = (row.r.details ?? []).filter((m) => m.tools !== false).slice(0, 60);
+        if (!ok.length) continue;
+        pick.append(h("optgroup", { label: row.c.name }, ok.map((m) => h("option", { value: `${row.c.id}/${m.id}`, disabled: list.includes(`${row.c.id}/${m.id}`) || `${row.c.id}/${m.id}` === g.model }, m.id))));
+        options.push(row);
+      }
+    });
+    pick.addEventListener("change", () => pick.value && save([...list, pick.value]));
+    return fill(
+      wrap,
+      h("strong", {}, "Backup models"),
+      h("p", { class: "note small" }, `If ${modelName(g.model)} cannot answer (its service is down, busy or out of credit), the first backup answers instead, then the next. Each switch is noted in the audit log.`),
+      list.length
+        ? h(
+            "ol",
+            { class: "aibackuplist" },
+            list.map((ref, i) =>
+              h(
+                "li",
+                {},
+                h("span", { class: "grow" }, modelName(ref)),
+                i > 0 ? h("button", { class: "plain small", "aria-label": "Move up", onclick: () => save([...list.slice(0, i - 1), ref, list[i - 1], ...list.slice(i + 1)]) }, "↑") : null,
+                h("button", { class: "plain small danger", onclick: () => save(list.filter((r) => r !== ref)) }, "Remove"),
+              ),
+            ),
+          )
+        : h("p", { class: "note small" }, "No backups yet."),
+      list.length < 4 ? pick : null,
+    );
+  };
+
+  const connectDialog = (s) => {
+    const key = s.needsKey || s.id === "custom" || s.id === "litellm" ? h("input", { type: "password", autocomplete: "off", placeholder: s.keyPrefix ? `${s.keyPrefix}…` : s.needsKey ? "Paste the key" : "Key, if it needs one", "aria-label": "Key" }) : null;
+    const address = s.addressHint ? h("input", { placeholder: s.addressHint, "aria-label": "Address" }) : null;
+    const name = s.id === "custom" ? h("input", { placeholder: "Its name, e.g. Portkey", "aria-label": "Name", maxlength: 60 }) : null;
+    const status = h("p", { class: "note", role: "status" });
+    const go = h("button", { class: "primary" }, "Connect");
+    const close = () => (dialog.close(), dialog.remove());
+    const form = h(
+      "form",
+      {
+        class: "form",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          go.disabled = true;
+          status.textContent = `Checking with ${s.name}…`;
+          try {
+            const r = await api("POST", `gateway/${encodeURIComponent(s.id)}/connect`, { key: key?.value, address: address?.value, name: name?.value });
+            close();
+            toast(r.models ? `${s.name} is connected: ${r.models} model${r.models === 1 ? "" : "s"} ready.` : `${s.name} is connected. ${r.note ?? ""}`);
+            await refresh();
+            const c = g?.connected.find((x) => x.id === r.provider);
+            if (c) modelsDialog(c);
+          } catch (err) {
+            status.textContent = err.message;
+            status.className = "note bad";
+            go.disabled = false;
+          }
+        },
+      },
+      h("p", { class: "note" }, s.about),
+      s.group === "local"
+        ? h("p", { class: "note small" }, `Start ${s.name} on this computer, then press Connect. `, s.keyUrl ? ["Don't have it? Get it at ", keyLink(s), "."] : null)
+        : s.keyUrl
+          ? h("p", { class: "note small" }, "Get a key at ", keyLink(s), ", then paste it here. It is kept on this computer and sent only to ", s.name, ".")
+          : null,
+      name,
+      address,
+      key,
+      status,
+      h("div", { class: "row" }, h("button", { type: "button", class: "plain", onclick: close }, "Cancel"), go),
+    );
+    const dialog = h("dialog", { class: "needs aidialog" }, h("h2", {}, `Connect ${s.name}`), form);
+    dialog.addEventListener("cancel", () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+    (name ?? address ?? key)?.focus();
+  };
+
+  const modelsDialog = async (c) => {
+    const list = h("div", { class: "aimodellist" }, h("p", { class: "note" }, "Loading its models…"));
+    const filter = h("input", { placeholder: "Find a model", "aria-label": "Find a model" });
+    const typed = h("input", { placeholder: "Or type a model's name", "aria-label": "Model name" });
+    const close = () => (dialog.close(), dialog.remove());
+    const use = (id) =>
+      attempt(async () => {
+        state.config = await api("PUT", "settings", { model: `${c.id}/${id}` });
+        close();
+        toast(`Your team now uses ${id}. Agents you gave a model of their own keep theirs.`);
+        await refresh();
+        settingsView();
+      }, col);
+    const dialog = h(
+      "dialog",
+      { class: "needs aidialog wide" },
+      h("div", { class: "row" }, h("h2", { class: "grow" }, `${c.name}: models`), h("button", { class: "plain small", "aria-label": "Close", onclick: close }, "✕")),
+      h("p", { class: "note small" }, "Models that can use tools work for agents; they are listed first. Prices are per million words-pieces (tokens) going in and out, from the service's list prices."),
+      filter,
+      list,
+      h("form", { class: "row", onsubmit: (e) => (e.preventDefault(), typed.value.trim() && use(typed.value.trim())) }, typed, h("button", { class: "small" }, "Use this")),
+    );
+    dialog.addEventListener("cancel", () => dialog.remove());
+    document.body.append(dialog);
+    dialog.showModal();
+    const r = await api("GET", `providers/${encodeURIComponent(c.id)}/models`).catch((err) => ({ details: [], note: err.message }));
+    const money = (n) => (n === 0 ? "free" : `$${n < 1 ? n.toFixed(2) : n.toFixed(n < 10 ? 2 : 0)}`);
+    const show = () => {
+      const q = filter.value.trim().toLowerCase();
+      const rows = (r.details ?? []).filter((m) => !q || m.id.toLowerCase().includes(q)).slice(0, 200);
+      fill(
+        list,
+        r.note ? h("p", { class: "note" }, r.note) : null,
+        rows.length
+          ? rows.map((m) =>
+              h(
+                "div",
+                { class: "aimodel" },
+                h(
+                  "div",
+                  { class: "grow" },
+                  h("code", {}, m.id),
+                  h(
+                    "div",
+                    { class: "note small" },
+                    [m.tools === true ? "Works for agents" : m.tools === false ? "Cannot use tools" : "Not known if it can use tools", m.contextTokens ? `holds ${Math.round(m.contextTokens / 1000)}k tokens` : null, m.prices ? (m.prices.input === 0 && m.prices.output === 0 ? "free" : `${money(m.prices.input)} in · ${money(m.prices.output)} out`) : null].filter(Boolean).join(" · "),
+                  ),
+                ),
+                g.model === `${c.id}/${m.id}` ? h("span", { class: "tag ok" }, "In use") : h("button", { class: "small", onclick: () => use(m.id) }, "Use for my team"),
+              ),
+            )
+          : r.note
+            ? null
+            : h("p", { class: "note" }, q ? "No model matches." : "It lists no models. Type the model's name below."),
+      );
+    };
+    filter.addEventListener("input", show);
+    show();
+  };
+
+  refresh();
+}
+
 function settingsView() {
   const c = state.config;
   const col = page("Settings", `Files the agent works on live in ${c.workspace}`);
@@ -5311,16 +5563,9 @@ function settingsView() {
   const select = (options, value) => h("select", {}, options.map(([id, label]) => h("option", { value: id, selected: id === value }, label)));
 
   if (needsKey(c)) {
-    col.append(
-      h("div", { class: "banner" }, "To get started, paste an Anthropic API key below (console.anthropic.com → API keys), or choose a free local model under Agent."),
-    );
+    col.append(h("div", { class: "banner" }, "To get started, connect an AI service under AI models below: Anthropic (Claude), OpenAI, Google Gemini and many more, or free models on this computer."));
   }
-
-  const key = h("input", { type: "password", placeholder: c.hasApiKey ? (c.apiKeyFromEnv ? "Set in the .env file" : "Saved. Paste a new key to replace it.") : "sk-ant-…", autocomplete: "off" });
-  col.append(
-    h("h3", {}, "Anthropic API key"),
-    h("form", { class: "form", onsubmit: (e) => (e.preventDefault(), key.value.trim() && save({ apiKey: key.value })) }, key, h("div", {}, h("button", { class: "primary" }, "Save key"))),
-  );
+  aiModelsSection(col);
 
   // The accent is a per-person choice, kept in this browser, so it changes at once without saving.
   const accentLabel = h("span", {}, NEON[accent][0]);
@@ -5448,9 +5693,10 @@ function settingsView() {
   const pOut = h("input", { type: "number", min: 0, step: 0.01, placeholder: "$ per million output tokens (0 if free)" });
   const pContext = h("input", { type: "number", min: 2000, step: 1000, placeholder: "Context size in tokens (default 32000)" });
   const others = c.providers.filter((p) => p.kind !== "anthropic");
-  col.append(
-    h("h3", {}, "Model providers"),
-    h("p", { class: "note" }, "Anything that offers the common chat completions format: local runners, or hosted services with your own key. Prices are optional; without them only the step budget applies."),
+  const advanced = h("details", { class: "aiadvanced" }, h("summary", {}, "Advanced: set up a service by hand, with its prices and size"));
+  col.append(advanced);
+  advanced.append(
+    h("p", { class: "note" }, "For a service that is not in the list, or to set a service's prices and how much it holds yourself. Anything that offers the common chat completions format works. Prices are optional; without them only the step budget applies."),
     ...others.map((p) =>
       h(
         "div",

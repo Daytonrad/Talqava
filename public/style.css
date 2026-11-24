@@ -1687,3 +1687,33 @@ dialog.needs.legaldialog[open] { display: flex; }
 .taskcomment { padding: 8px 10px; border-radius: var(--r-m); background: color-mix(in srgb, var(--text) 4%, transparent); font-size: 14px; }
 .taskcomment.mine { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .taskdanger { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+
+/* ---------- AI models: every AI service in one place ---------- */
+.aimodels { display: flex; flex-direction: column; gap: 14px; }
+.aiconnected { display: flex; flex-direction: column; gap: 8px; }
+.aiconn { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--r-m, 8px); background: var(--panel); border: 1px solid var(--glass-line, var(--line)); }
+.aiconn .tag { margin-left: 8px; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 500; background: var(--line); color: var(--muted, inherit); vertical-align: 1px; }
+.tag.ok { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-ink, var(--text)); }
+.aigroup h4 { margin: 6px 0 8px; font-size: 13px; letter-spacing: 0.01em; }
+.aigroup > .row { align-items: center; }
+.aigrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.aicard { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: var(--r-m, 8px); background: var(--panel); border: 1px solid var(--glass-line, var(--line)); }
+.aicard.on { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.aicard p { margin: 0; flex: 1; }
+.aicardhead { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.aibackups { display: flex; flex-direction: column; gap: 6px; }
+.aibackups p { margin: 0; }
+.aibackuplist { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.aibackuplist li > * { vertical-align: middle; }
+.aibackuplist li { display: list-item; }
+.aibackuplist li .grow { margin-right: 8px; }
+.aidialog { width: min(520px, calc(100vw - 32px)); }
+.aidialog.wide { width: min(720px, calc(100vw - 32px)); max-width: 720px; }
+.aidialog .note.bad { color: var(--bad-ink, var(--bad)); }
+.aimodellist { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow-y: auto; margin: 8px 0; }
+.aimodel { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--r-s, 6px); border: 1px solid var(--line); }
+.aimodel code { font-size: 12.5px; word-break: break-all; }
+.aiadvanced { margin-top: 18px; }
+.aiadvanced summary { cursor: pointer; font-weight: 500; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1000; max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: var(--r-m, 8px); background: var(--raised, var(--panel)); border: 1px solid var(--glass-line, var(--line2)); box-shadow: var(--shadow-l, 0 8px 24px rgba(0,0,0,.12)); }

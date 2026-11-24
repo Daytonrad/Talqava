@@ -22,6 +22,10 @@ export interface OpenAICompatibleOptions {
   summaries?: SummaryCache;
   /** Extra headers sent with every request, e.g. a service's app attribution. */
   headers?: Record<string, string>;
+  /** Where the key goes. Most services want "Authorization: Bearer <key>"; Azure wants "api-key: <key>". */
+  keyHeader?: "bearer" | "api-key";
+  /** What the reply-length limit is called. OpenAI's newer models want max_completion_tokens; most others max_tokens. */
+  tokenLimit?: "max_tokens" | "max_completion_tokens";
   /** For tests: replaces the global fetch. */
   fetch?: typeof fetch;
 }
@@ -194,6 +198,15 @@ async function* events(body: ReadableStream<Uint8Array>): AsyncGenerator<string>
   if (last.startsWith("data:")) yield last.slice(5).trim();
 }
 
+/** The key, in the header the service wants. */
+function keyHeaders(apiKey: string | undefined, keyHeader: OpenAICompatibleOptions["keyHeader"]): Record<string, string> {
+  if (!apiKey) return {};
+  return keyHeader === "api-key" ? { "api-key": apiKey } : { authorization: `Bearer ${apiKey}` };
+}
+
+/** Learned per service and model: what a service refused once is not sent again. */
+const learned = new Map<string, { tokenLimit?: "max_tokens" | "max_completion_tokens"; noUsage?: boolean }>();
+
 export class OpenAICompatibleModel implements Model {
   readonly kind = "openai";
   readonly ref: string;
@@ -224,32 +237,50 @@ export class OpenAICompatibleModel implements Model {
         return messages;
       });
     }
-    const body = {
+    const known = learned.get(`${baseUrl}|${model}`) ?? {};
+    const limitName = known.tokenLimit ?? this.#options.tokenLimit ?? "max_tokens";
+    const makeBody = (limit: string, usage: boolean) => ({
       model,
       messages: fitToContext(messages, budget),
       ...(tools.length ? { tools } : {}),
       stream: true,
-      stream_options: { include_usage: true },
-      max_tokens: this.#options.maxTokens ?? 8192,
-    };
+      ...(usage ? { stream_options: { include_usage: true } } : {}),
+      [limit]: this.#options.maxTokens ?? 8192,
+    });
+    const send = (limit: string, usage: boolean) =>
+      doFetch(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...this.#options.headers, ...keyHeaders(apiKey, this.#options.keyHeader) },
+        body: JSON.stringify(makeBody(limit, usage)),
+        signal: request.signal,
+      });
 
     let response: Response;
     try {
-      response = await doFetch(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...this.#options.headers, ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
-        body: JSON.stringify(body),
-        signal: request.signal,
-      });
+      let limit = limitName;
+      let usage = !known.noUsage;
+      response = await send(limit, usage);
+      // Services differ in small ways. When one refuses a setting by name, the other form is tried once, and remembered.
+      if (response.status === 400 || response.status === 422) {
+        const detail = await response.clone().text().catch(() => "");
+        const other = limit === "max_tokens" ? "max_completion_tokens" : "max_tokens";
+        if (detail.includes(limit)) limit = other;
+        else if (usage && /stream_options|include_usage/.test(detail)) usage = false;
+        if (limit !== limitName || usage !== !known.noUsage) {
+          response = await send(limit, usage);
+          if (response.ok) learned.set(`${baseUrl}|${model}`, { tokenLimit: limit as "max_tokens" | "max_completion_tokens", noUsage: !usage });
+        }
+      }
     } catch (err) {
       if (request.signal.aborted) throw err;
       throw new ModelError(`Could not reach ${providerName} at ${baseUrl}. If it is a local model runner, check that it is running.`);
     }
     if (!response.ok || !response.body) {
       const detail = (await response.text().catch(() => "")).slice(0, 300);
-      if (response.status === 401 || response.status === 403) throw new ModelError(`${providerName} rejected the API key. Check it under Settings.`, response.status);
+      if (response.status === 401 || response.status === 403) throw new ModelError(`${providerName} rejected the API key. Check it under Settings → AI models.`, response.status);
       if (response.status === 402) throw new ModelError(`${providerName} says the account has no credit left. Add credit on the ${providerName} website, or choose another model. ${detail}`.trim(), 402);
       if (response.status === 404) throw new ModelError(`${providerName} does not know the model "${model}". ${detail}`.trim(), 404);
+      if (response.status === 429) throw new ModelError(`${providerName} is busy or the account's rate limit was reached. ${detail}`.trim(), 429);
       throw new ModelError(`${providerName} returned an error (${response.status}). ${detail}`.trim(), response.status);
     }
 
@@ -350,8 +381,8 @@ export class OpenAICompatibleModel implements Model {
     const { baseUrl, apiKey, model } = this.#options;
     const response = await (this.#options.fetch ?? fetch)(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
-      body: JSON.stringify({ model, stream: false, max_tokens: 1500, messages: [{ role: "system", content: SUMMARY_INSTRUCTIONS }, { role: "user", content: ask }] }),
+      headers: { "content-type": "application/json", ...this.#options.headers, ...keyHeaders(apiKey, this.#options.keyHeader) },
+      body: JSON.stringify({ model, stream: false, [learned.get(`${baseUrl}|${model}`)?.tokenLimit ?? this.#options.tokenLimit ?? "max_tokens"]: 1500, messages: [{ role: "system", content: SUMMARY_INSTRUCTIONS }, { role: "user", content: ask }] }),
       signal,
     });
     if (!response.ok) throw new Error(`summary failed (${response.status})`);

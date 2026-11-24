@@ -243,3 +243,85 @@ test("a run stops before a step that would go past a budget it shares with other
   delete spec.remaining;
   script.length = 0;
 });
+
+test("services' small differences: the key's header, the reply limit's name, and a retry when a service refuses one", async () => {
+  const seen: { headers: http.IncomingHttpHeaders; body: any }[] = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw);
+    seen.push({ headers: req.headers, body });
+    // Like OpenAI's newer models: max_tokens is refused by name.
+    if ("max_tokens" in body) {
+      res.writeHead(400, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ error: { message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead." } }));
+    }
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "Hi." }, finish_reason: "stop" }] })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+  try {
+    const request = { system: "s", messages: [{ role: "user" as const, content: "hello" }], tools: [], hostedTools: [], mcpServers: [], signal: new AbortController().signal };
+    const quiet = { onText() {}, onThinking() {}, onToolStart() {} };
+    // Azure: the key goes in "api-key", not "Authorization".
+    const azure = new OpenAICompatibleModel({ providerId: "azure", providerName: "Azure", baseUrl, apiKey: "az-key", model: "gpt-x", keyHeader: "api-key", tokenLimit: "max_completion_tokens" });
+    assert.equal(((await azure.call(request, quiet)).content[0] as { text: string }).text, "Hi.");
+    assert.equal(seen[0].headers["api-key"], "az-key");
+    assert.equal(seen[0].headers.authorization, undefined);
+    assert.equal(seen[0].body.max_completion_tokens, 8192);
+    // A service that was not told: the refusal is read, the other name is sent, and it is remembered.
+    seen.length = 0;
+    const plain = new OpenAICompatibleModel({ providerId: "x", providerName: "X", baseUrl, apiKey: "k", model: "gpt-y" });
+    await plain.call(request, quiet);
+    assert.deepEqual(seen.map((s) => "max_tokens" in s.body), [true, false]);
+    assert.equal(seen[1].headers.authorization, "Bearer k");
+    seen.length = 0;
+    await plain.call(request, quiet);
+    assert.deepEqual(seen.map((s) => "max_completion_tokens" in s.body), [true]);
+  } finally {
+    server.close();
+  }
+});
+
+test("backup models: a service that is down or out of credit hands over before answering; a bad request does not", async () => {
+  const { FallbackModel, ModelError } = await import("../../src/core/index.ts");
+  const request = { system: "s", messages: [{ role: "user" as const, content: "hello" }], tools: [], hostedTools: [{ type: "web_search_20260209", name: "web_search" } as never], mcpServers: [], signal: new AbortController().signal };
+  const quiet = { onText() {}, onThinking() {}, onToolStart() {} };
+  const failing = (status: number | undefined, kind: "anthropic" | "openai" = "anthropic", partly = false): Model => ({
+    ref: `a/${status}`,
+    label: `fails ${status}`,
+    kind,
+    async call(_r, callbacks) {
+      if (partly) callbacks.onText("Half");
+      throw new ModelError("nope", status);
+    },
+  });
+  const seenHosted: number[] = [];
+  const good: Model = {
+    ref: "b/good",
+    label: "good",
+    kind: "openai",
+    prices: { input: 1, output: 2 },
+    async call(r) {
+      seenHosted.push(r.hostedTools.length);
+      return { content: [{ type: "text", text: "From the backup." }] as never, stopReason: "end_turn", usage: { input: 1_000_000, output: 1_000_000 } };
+    },
+  };
+  const switches: string[] = [];
+  const onSwitch = (from: Model, to: Model) => switches.push(`${from.label} → ${to.label}`);
+
+  for (const status of [undefined, 401, 402, 429, 500, 529]) {
+    const reply = await new FallbackModel([failing(status), good], onSwitch).call(request, quiet);
+    assert.equal((reply.content[0] as { text: string }).text, "From the backup.");
+    // Counted at the backup's prices; Claude's hosted tools are not sent to another kind of model.
+    assert.equal(reply.usage.cost, 3);
+  }
+  assert.equal(switches.length, 6);
+  assert.deepEqual([...new Set(seenHosted)], [0]);
+  await assert.rejects(new FallbackModel([failing(400), good]).call(request, quiet), /nope/);
+  // Once a reply has started arriving, it is not switched halfway.
+  await assert.rejects(new FallbackModel([failing(500, "anthropic", true), good]).call(request, quiet), /nope/);
+  await assert.rejects(new FallbackModel([failing(500), failing(503)]).call(request, quiet), /nope/);
+});
