@@ -192,7 +192,7 @@ For pages that need clicking or typing, install the optional browser (`npm insta
 | `desktop` | The Electron Mac app. |
 | `evals` | The task test suite and its saved baselines. |
 | `test` | Tests for the core and the local edition. |
-| `docs` | The architecture map ([open it in a browser](docs/architecture.html)) and plans. |
+| `docs` | The architecture map ([open it in a browser](docs/architecture.html)), plans, and the [brand guide](docs/brand/README.md) with the logos. |
 
 The code is TypeScript, run directly by Node: there is no build step. Agents are files: a short YAML file each, with a name, a role, instructions, powers, a model, approvals and a budget. A file with the same name in your data folder's `crew/` folder replaces a starter.
 
