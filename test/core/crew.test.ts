@@ -14,16 +14,19 @@ test("the six starter bots are valid bot files", () => {
   const bots = fs.readdirSync(folder).map((name) => parseBot(name.replace(/\.yaml$/, ""), fs.readFileSync(path.join(folder, name), "utf8"), "starter"));
   assert.deepEqual(bots.map((b) => b.type).sort(), ["counter", "keeper", "maker", "scout", "scribe", "spark"]);
   const pip = bots.find((b) => b.id === "pip")!;
-  assert.equal(pip.name, "Pip");
+  assert.equal(pip.name, "Research Analyst");
+  assert.equal(pip.title, "Research Analyst");
+  assert.equal(pip.group, "Research");
   assert.equal(pip.approvals, "ask");
   assert.equal(pip.model, undefined);
-  assert.deepEqual(pip.character, { legend: "?", texture: "dots", color: "cyan", shape: "round", eyes: "wide", top: "antenna" });
-  // No two starter bots look alike: each has its own mix of body, eyes and what it wears on top.
-  assert.equal(new Set(bots.map((b) => `${b.character.shape}/${b.character.eyes}/${b.character.top}`)).size, bots.length);
+  assert.equal(pip.character.legend, "RA");
+  assert.equal(pip.character.color, "cyan");
+  // Every starter agent is a role: its name is its job title, and it sits in a department.
+  for (const bot of bots) assert.ok(bot.title === bot.name && bot.group && bot.group !== "Other", bot.id);
   assert.deepEqual(bots.map((b) => b.character.texture).sort(), ["dots", "grid", "hatch", "lines", "solid", "zigzag"]);
   // Every starter bot glows in a colour of its own.
   assert.equal(new Set(bots.map((b) => b.character.color)).size, bots.length);
-  assert.deepEqual(bots.map((b) => b.character.legend).sort(), ["!", "#", "</>", "?", "Aa", "zz"]);
+  assert.deepEqual(bots.map((b) => b.character.legend).sort(), ["BD", "FN", "MK", "OC", "RA", "TS"]);
   // A scout cannot touch files.
   assert.ok(!pip.powers.includes("files") && !pip.powers.includes("shell"));
 });

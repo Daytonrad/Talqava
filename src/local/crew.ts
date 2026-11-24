@@ -66,12 +66,16 @@ export function saveBot(id: string, input: Record<string, unknown>): Bot {
   const file: Record<string, unknown> = {
     name: input.name,
     type: input.type,
+    ...(typeof input.title === "string" && input.title.trim() ? { title: input.title.trim() } : {}),
     character: input.character,
     instructions: input.instructions,
     model: input.model || "default",
     powers: input.powers,
     approvals: input.approvals === "auto" || input.approvals === "run-everything" ? "run-everything" : "ask-before-changes",
   };
+  if (input.lead === true) file.lead = true;
+  const g = input.governance as { kpis?: unknown[]; decides?: unknown[]; escalates?: unknown[] } | undefined;
+  if (g && [g.kpis, g.decides, g.escalates].some((x) => Array.isArray(x) && x.length)) file.governance = { kpis: g.kpis ?? [], decides: g.decides ?? [], escalates: g.escalates ?? [] };
   if (input.budget && typeof input.budget === "object") file.budget = input.budget;
   if (typeof input.group === "string" && input.group.trim()) file.group = input.group.trim();
   if (typeof input.monthly === "number") file.monthly_budget = input.monthly;

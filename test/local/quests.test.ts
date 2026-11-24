@@ -51,6 +51,8 @@ before(async () => {
   app = await import("../../src/local/server.ts");
   runner = await import("../../src/local/quests.ts");
   store.initStore();
+  // These tests script each reply the agent gets, so the check before a task starts (one extra model call) is off; it has its own test.
+  store.saveConfig({ checkFirst: false });
 
   // A personal bot that may change files without asking, for the code quests.
   fs.mkdirSync(path.join(store.DATA, "crew"), { recursive: true });
@@ -97,15 +99,20 @@ test("three bots run at once, each in its own quest with its own journal", async
   }
   // Each quest ran as its own bot.
   const system = mock.requests.filter((r) => /quest for ember/.test(JSON.stringify(r.body.messages))).at(-1)!.body.system;
-  assert.match(JSON.stringify(system), /You are Ember, the spark/);
+  assert.match(JSON.stringify(system), /You are the Business Development Specialist in the user's organization/);
 });
 
-test("a bot only gets the tools its powers grant", async () => {
+test("a bot only gets the tools its powers grant, plus the organization's: hand-offs, questions and shared memory", async () => {
   const pip = (await crew()).bots.find((b) => b.id === "pip")!;
+  // The first organization starts empty; the owner places the starter agents, each reporting to them.
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const first = orgs.active();
+  for (const b of (await crew()).bots) orgs.setMember(first.id, { bot: b.id, manager: null });
   const quest = await runner.quests.start({ bot: pip, text: "quest for tools" });
   await waitFor(() => runner.questStore.get(quest.id)!.status === "done");
   const request = mock.requests.filter((r) => /quest for tools/.test(JSON.stringify(r.body.messages))).at(-1)!;
-  assert.deepEqual(request.body.tools.map((t: { name: string }) => t.name), ["memory", "skill", "conversation_search", "web_search", "web_fetch"]);
+  // Everyone placed reports to the owner, so nobody is below the analyst: it hands nothing out, and asks other groups' leads instead. It leads its own one-person group, so it may propose a position.
+  assert.deepEqual(request.body.tools.map((t: { name: string }) => t.name), ["memory", "skill", "conversation_search", "request_work", "ask_colleague", "team_memory", "library", "propose_position", "web_search", "web_fetch"]);
 });
 
 test("a code quest works on its own branch: preview, then undo leaves no trace", async () => {

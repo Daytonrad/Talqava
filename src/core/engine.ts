@@ -233,7 +233,16 @@ export class Engine {
       emit({ type: "notice", text: `The cost of ${spec.model.label} is not known, so only the step budget (${steps}) applies to this run.` });
     }
     let spent = 0;
+    let lastCall = 0;
     let badInputRetries = 0;
+    // What the next model call will probably cost: the last one (they grow as a conversation does), or for
+    // the first, the size of what is about to be sent with a modest reply. Used to stop before going over.
+    const nextCall = () => {
+      if (lastCall > 0) return lastCall;
+      if (!prices) return 0;
+      const chars = spec.system.length + JSON.stringify(conversation.messages).length + JSON.stringify(spec.tools.map((t) => t.definition ?? t)).length;
+      return costOf(prices, { input: Math.ceil(chars / 3.5), output: 800 });
+    };
 
     for (let step = 0; ; step++) {
       if (run.abort.signal.aborted) return;
@@ -241,8 +250,13 @@ export class Engine {
         emit({ type: "notice", text: `Stopped at its budget: ${steps} steps. Say "continue" to keep going.` });
         return;
       }
-      if (spendLimit !== undefined && prices && spent >= spendLimit) {
-        emit({ type: "notice", text: `Stopped at its budget: about ${dollars(spent)} spent of ${dollars(spendLimit)}. Say "continue" to keep going.` });
+      if (spendLimit !== undefined && (prices || spent > 0) && (spent >= spendLimit || (lastCall > 0 && spent + lastCall > spendLimit))) {
+        emit({ type: "notice", text: `Stopped at its budget: about ${dollars(spent)} spent of ${dollars(spendLimit)}${spent < spendLimit ? "; the next step would have gone over" : ""}. Say "continue" to keep going.` });
+        return;
+      }
+      const left = spec.remaining?.();
+      if (left !== undefined && (left <= 0 || nextCall() > left)) {
+        emit({ type: "notice", text: `Stopped at its budget: the task's shared budget has ${dollars(Math.max(0, left))} left, less than the next step would cost. Say "continue" to keep going.` });
         return;
       }
 
@@ -274,9 +288,11 @@ export class Engine {
 
       conversation.usage.input += reply.usage.input + (reply.usage.cacheRead ?? 0) + (reply.usage.cacheWrite ?? 0);
       conversation.usage.output += reply.usage.output;
-      if (prices) {
-        const cost = costOf(prices, reply.usage);
+      // The cost the service reported, or else an estimate from the model's list prices.
+      const cost = reply.usage.cost ?? (prices ? costOf(prices, reply.usage) : undefined);
+      if (cost !== undefined) {
         spent += cost;
+        lastCall = cost;
         conversation.usage.cost = (conversation.usage.cost ?? 0) + cost;
       }
       conversation.messages.push({ role: "assistant", content: reply.content });

@@ -11,6 +11,8 @@ interface Ledger {
   months: Record<string, Record<string, number>>;
   /** The cost already counted for each quest, so only what is new is added. */
   seen: Record<string, number>;
+  /** Dollars spent by each group, by month: "orgId/groupId" for the group a task was charged to when it started. */
+  groups?: Record<string, Record<string, number>>;
 }
 
 const file = () => path.join(DATA, "spend.json");
@@ -18,14 +20,20 @@ const read = (): Ledger => ({ months: {}, seen: {}, ...readJson<Partial<Ledger>>
 export const monthKey = (now = new Date()) => `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 export const WARN_AT = 0.8;
 
-/** Counts a quest's cost so far towards its bot's month. Safe to call as often as the cost changes. */
-export function recordSpend(questId: string, botId: string, cost: number, now = new Date()) {
+/** Counts a quest's cost so far towards its bot's month, and its group's. Safe to call as often as the cost changes. */
+export function recordSpend(questId: string, botId: string, cost: number, now = new Date(), group?: { org: string; group: string }) {
   if (!(cost > 0)) return;
   const ledger = read();
   const delta = cost - (ledger.seen[questId] ?? 0);
   if (delta <= 0) return;
   const month = (ledger.months[monthKey(now)] ??= {});
   month[botId] = Math.round(((month[botId] ?? 0) + delta) * 1e6) / 1e6;
+  if (group) {
+    const groups = ((ledger.groups ??= {})[monthKey(now)] ??= {});
+    const key = `${group.org}/${group.group}`;
+    groups[key] = Math.round(((groups[key] ?? 0) + delta) * 1e6) / 1e6;
+    ledger.groups = Object.fromEntries(Object.entries(ledger.groups).sort().slice(-12));
+  }
   ledger.seen[questId] = cost;
   // Only the latest quests need remembering, and the last year of months.
   ledger.seen = Object.fromEntries(Object.entries(ledger.seen).slice(-1000));
@@ -69,4 +77,24 @@ export function budgetBlock(bot: Bot, now = new Date()): string | null {
   if (own.state === "stopped") return `${bot.name} has reached its monthly budget (${dollars(own.spent)} of ${dollars(own.limit!)}). Raise it on the bot's page, or wait until ${budgets.resets}.`;
   if (budgets.total.state === "stopped") return `Your bots have reached the monthly budget for all bots (${dollars(budgets.total.spent)} of ${dollars(budgets.total.limit!)}). Raise it on the team page, or wait until ${budgets.resets}.`;
   return null;
+}
+
+/** What each group of an organization has spent this month, by group id. */
+export function groupSpend(orgId: string, now = new Date()): Record<string, number> {
+  const month = read().groups?.[monthKey(now)] ?? {};
+  return Object.fromEntries(Object.entries(month).filter(([k]) => k.startsWith(`${orgId}/`)).map(([k, v]) => [k.slice(orgId.length + 1), v]));
+}
+
+/** A group's month against its budget. */
+export function groupBudget(orgId: string, group: { id: string; budget?: number | null }, now = new Date()): BudgetLine {
+  return line(groupSpend(orgId, now)[group.id] ?? 0, group.budget ?? null);
+}
+
+/** Why work charged to this group may not start or go on now, or null if it may. */
+export function groupBlock(orgId: string, group: { id: string; name: string; budget?: number | null } | undefined, now = new Date()): string | null {
+  if (!group || group.budget == null) return null;
+  const b = groupBudget(orgId, group, now);
+  if (b.state !== "stopped") return null;
+  const resets = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return `The ${group.name} group has reached its monthly budget (${dollars(b.spent)} of ${dollars(b.limit!)}). Raise it on the Organization page, or wait until ${resets.getFullYear()}-${String(resets.getMonth() + 1).padStart(2, "0")}-01.`;
 }

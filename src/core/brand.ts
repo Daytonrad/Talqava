@@ -2,7 +2,7 @@
 // a change to this file. (Prose in the README and docs is plain text.)
 export const BRAND = {
   /** The product name, as people see it. */
-  name: "Talqava Agents",
+  name: "Talqava",
   /** The default name of the agent itself. */
   agentName: "Talqava",
   /** Lowercase, for package names, cookies and file names. */

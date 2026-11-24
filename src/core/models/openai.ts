@@ -20,6 +20,8 @@ export interface OpenAICompatibleOptions {
   contextTokens?: number;
   /** Where summaries of long conversations are kept between calls. Kept in this process when not given. */
   summaries?: SummaryCache;
+  /** Extra headers sent with every request, e.g. a service's app attribution. */
+  headers?: Record<string, string>;
   /** For tests: replaces the global fetch. */
   fetch?: typeof fetch;
 }
@@ -235,7 +237,7 @@ export class OpenAICompatibleModel implements Model {
     try {
       response = await doFetch(`${baseUrl.replace(/\/+$/, "")}/chat/completions`, {
         method: "POST",
-        headers: { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
+        headers: { "content-type": "application/json", ...this.#options.headers, ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
         body: JSON.stringify(body),
         signal: request.signal,
       });
@@ -246,14 +248,15 @@ export class OpenAICompatibleModel implements Model {
     if (!response.ok || !response.body) {
       const detail = (await response.text().catch(() => "")).slice(0, 300);
       if (response.status === 401 || response.status === 403) throw new ModelError(`${providerName} rejected the API key. Check it under Settings.`, response.status);
+      if (response.status === 402) throw new ModelError(`${providerName} says the account has no credit left. Add credit on the ${providerName} website, or choose another model. ${detail}`.trim(), 402);
       if (response.status === 404) throw new ModelError(`${providerName} does not know the model "${model}". ${detail}`.trim(), 404);
       throw new ModelError(`${providerName} returned an error (${response.status}). ${detail}`.trim(), response.status);
     }
 
     let text = "";
     let finish: string | null | undefined;
-    const usage = { input: 0, output: 0 };
-    const total = () => ({ input: usage.input + summaryUsage.input, output: usage.output + summaryUsage.output });
+    const usage: { input: number; output: number; cost?: number } = { input: 0, output: 0 };
+    const total = () => ({ input: usage.input + summaryUsage.input, output: usage.output + summaryUsage.output, ...(usage.cost !== undefined ? { cost: usage.cost } : {}) });
     const calls: { id: string; name: string; args: string }[] = [];
 
     for await (const data of events(response.body)) {
@@ -268,6 +271,8 @@ export class OpenAICompatibleModel implements Model {
       if (chunk.usage) {
         usage.input = chunk.usage.prompt_tokens ?? usage.input;
         usage.output = chunk.usage.completion_tokens ?? usage.output;
+        // OpenRouter reports what the call actually cost.
+        if (typeof chunk.usage.cost === "number" && Number.isFinite(chunk.usage.cost)) usage.cost = chunk.usage.cost;
       }
       const choice = chunk.choices?.[0];
       if (!choice) continue;
