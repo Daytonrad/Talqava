@@ -250,7 +250,7 @@ export const orgs = {
     const data = read();
     const org = find(data, id);
     const bot = loadCrew().bots.find((b) => b.id === input.bot);
-    if (!bot) throw new Error("There is no such bot.");
+    if (!bot) throw new Error("There is no such agent.");
     const existing = org.members.find((m) => m.bot === bot.id);
     const manager = input.manager === undefined ? (existing?.manager ?? null) : input.manager ? String(input.manager) : null;
     if (manager) {
@@ -258,7 +258,7 @@ export const orgs = {
       if (!org.members.some((m) => m.bot === manager)) throw new Error("Its manager must be a member of this organization.");
       // Walking up from the new manager must not come back to this bot.
       for (let at: string | null = manager, steps = 0; at; steps++) {
-        if (at === bot.id || steps > org.members.length) throw new Error(`${bot.name} is above that bot in the chart, so it cannot report to it.`);
+        if (at === bot.id || steps > org.members.length) throw new Error(`${bot.name} is above that agent in the chart, so it cannot report to it.`);
         at = org.members.find((m) => m.bot === at)?.manager ?? null;
       }
     }
@@ -408,7 +408,7 @@ export const orgs = {
     const data = read();
     const org = find(data, id);
     const leaving = org.members.find((m) => m.bot === botId);
-    if (!leaving) throw new Error("That bot is not a member.");
+    if (!leaving) throw new Error("That agent is not in this organization.");
     org.members = org.members.filter((m) => m.bot !== botId).map((m) => ({ ...m, manager: m.manager === botId ? leaving.manager : m.manager, also: m.also === botId ? null : m.also }));
     for (const g of org.groups ?? []) if (g.lead === botId) g.lead = null;
     save(data);
@@ -428,7 +428,7 @@ export const orgs = {
   removeTeam(id: string, botId: string): Org {
     const data = read();
     const org = find(data, id);
-    if (!org.members.some((m) => m.bot === botId)) throw new Error("That bot is not a member.");
+    if (!org.members.some((m) => m.bot === botId)) throw new Error("That agent is not in this organization.");
     const going = new Set([botId]);
     for (let grew = true; grew; ) {
       grew = false;

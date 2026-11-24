@@ -283,6 +283,7 @@ const ICONS = {
   audit: "M6 3.5h6l3 3v10H6A1.5 1.5 0 0 1 4.5 15V5A1.5 1.5 0 0 1 6 3.5zM7.5 9h5M7.5 11.5h5M7.5 14h3",
   workspace: "M5.5 3.5h6l3 3v10h-9zM11.5 3.5v3h3M7.5 10h5M7.5 12.5h5M7.5 7.5h2",
   tasks: "M4 4.5h3v11H4zM8.5 4.5h3v7h-3zM13 4.5h3v4h-3z",
+  guide: "M10 5.5C8.5 4.3 6.5 4 4 4v11c2.5 0 4.5.3 6 1.5 1.5-1.2 3.5-1.5 6-1.5V4c-2.5 0-4.5.3-6 1.5zM10 5.5v11",
   library: "M3.5 6A1.5 1.5 0 0 1 5 4.5h3l1.5 2H15A1.5 1.5 0 0 1 16.5 8v6A1.5 1.5 0 0 1 15 15.5H5A1.5 1.5 0 0 1 3.5 14zM7 10.5h6M7 12.8h4",
 };
 const icon = (name) => {
@@ -301,14 +302,35 @@ function renderRail() {
   fill(
     ui.rail,
     h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava, chat" }, brandLogo()),
-    h("div", { class: "railgroup" }, item("chat", "Chat", v === "chat"), inbox),
+    h("div", { class: "railgroup" }, item("chat", "Chat", v === "chat", "Talk to your agents, or ask anything"), inbox),
+    h("div", { class: "raillabel" }, "Work"),
+    h(
+      "div",
+      { class: "railgroup" },
+      item("tasks", "Tasks", v === "tasks", "Every task and goal: queued, working, needing you, to review and done"),
+      item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Your agents and what each is doing right now"),
+      item("jobs", "Schedules", v === "jobs", "Work that runs by itself on a schedule"),
+    ),
     h("div", { class: "raillabel" }, "Team"),
-    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("tasks", "Tasks", v === "tasks", "Every task: queued, working, needing you, to review and done"), item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Your agents and what each is doing right now"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department"), item("audit", "Audit log", v === "audit", "Every operation, by you and by each agent")),
+    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department")),
     h("div", { class: "raillabel" }, "Knowledge"),
-    h("div", { class: "railgroup" }, item("workspace", "Workspace", v === "workspace", "Pages your agents work from: procedures, checklists and decisions"), item("library", "Library", v === "library", "Documents you share with your agents"), item("memory", "Memory", v === "memory"), item("skills", "Skills", v === "skills"), item("jobs", "Schedules", v === "jobs")),
-    h("div", { class: "raillabel" }, "Connect"),
-    h("div", { class: "railgroup" }, item("integrations", "Integrations", v === "integrations", "Connect the tools your business already uses, starting with Git")),
-    h("div", { class: "railgroup railend" }, item("settings", "Settings", v === "settings")),
+    h(
+      "div",
+      { class: "railgroup" },
+      item("workspace", "Workspace", v === "workspace", "Pages your agents work from: procedures, checklists and decisions"),
+      item("library", "Library", v === "library", "Documents you share with your agents"),
+      item("memory", "Memory", v === "memory", "What your agents remember between tasks"),
+      item("skills", "Skills", v === "skills", "Step-by-step know-how your agents can follow"),
+    ),
+    h("div", { class: "raillabel" }, "Oversight"),
+    h("div", { class: "railgroup" }, item("audit", "Audit log", v === "audit", "Every operation, by you and by each agent")),
+    h(
+      "div",
+      { class: "railgroup railend" },
+      item("integrations", "Integrations", v === "integrations", "Connect the tools your business already uses"),
+      item("settings", "Settings", v === "settings", "AI models, approvals, budgets and how Talqava looks"),
+      h("button", { class: "railitem", onclick: () => showGuide(guideFor(v) ?? "getting-started"), title: "How to use Talqava, page by page" }, icon("guide"), h("span", { class: "grow" }, "User guide")),
+    ),
   );
   syncInboxCount();
 }
@@ -383,6 +405,7 @@ function renderTop() {
         : null,
       paletteBox(),
       bots ? ui.spent : null,
+      guideFor(state.view) ? h("button", { class: "small guidebtn", onclick: () => showGuide(guideFor(state.view)), title: "How to use this page, step by step" }, icon("guide"), "Guide") : null,
     ].filter(Boolean),
   );
   renderSpent();
@@ -399,6 +422,7 @@ function renderSpent() {
 // ---------- the command box ----------
 const COMMANDS = [
   ["New chat", () => go("chat")],
+  ["User guide", () => showGuide(guideFor(state.view) ?? "getting-started")],
   ["Inbox", () => go("inbox")],
   ["Bots", () => go("home")],
   ["Organization", () => go("team")],
@@ -1495,7 +1519,7 @@ function questCard(q) {
           "div",
           { class: "row" },
           h("button", { class: "primary", onclick: decide(approval, "allow") }, "Allow once"),
-          approval.reason ? null : h("button", { onclick: decide(approval, "always") }, `Always for ${q.bot.name}`),
+          approval.reason ? null : h("button", { onclick: decide(approval, "always") }, "Always, for this task"),
           h("button", { class: "danger", onclick: decide(approval, "deny") }, "Deny"),
         )
       : null,
@@ -2636,7 +2660,7 @@ function renderOrg() {
       return orgChange("Started over with an empty chart", async () => (await api("POST", `orgs/${org.id}/reset`, { mode: "empty" }), (o.sel = null), (o.suggest = null), (o.suggestOpen = false)));
     }
     if (choice === "delete") {
-      if (!confirm(`Delete the organization “${org.name}”?\n\nIts chart is deleted. The agents themselves are kept. This cannot be undone.`)) return;
+      if (!confirm(`Delete the organization “${org.name}”?\n\nIts chart, its memory and its library documents are deleted. The agents themselves are kept. This cannot be undone.`)) return;
       return attempt(async () => (await api("DELETE", `orgs/${org.id}`), await loadOrgs(), (o.sel = null), (o.undo = []), renderOrg()), col);
     }
     if (choice === "export") {
@@ -3148,7 +3172,7 @@ async function libraryView() {
 }
 
 // ---------- the audit log: every operation, by you and by each agent ----------
-const AUDIT_KINDS = [["", "Everything"], ["task", "Tasks"], ["tool", "Agent actions"], ["approval", "Approvals"], ["spend", "Spending"], ["problem", "Problems"], ["library", "Library"], ["settings", "Settings"], ["integration", "Integrations"], ["organization", "Organization"], ["chat", "Chats"], ["inbox", "Inbox"]];
+const AUDIT_KINDS = [["", "Everything"], ["task", "Tasks"], ["tool", "Agent actions"], ["approval", "Approvals"], ["spend", "Spending"], ["problem", "Problems"], ["library", "Library"], ["settings", "Settings"], ["integration", "Integrations"], ["organization", "Organization"], ["workspace", "Workspace"], ["chat", "Chats"], ["inbox", "Inbox"]];
 const AUDIT_SINCE = [["", "All time"], ["1", "Last 24 hours"], ["7", "Last 7 days"], ["30", "Last 30 days"]];
 
 async function auditView() {
@@ -5552,7 +5576,7 @@ function aiModelsSection(col) {
 
 function settingsView() {
   const c = state.config;
-  const col = page("Settings", `Files the agent works on live in ${c.workspace}`);
+  const col = page("Settings", "Connect AI models, and choose how your agents work, what they may spend and how Talqava looks.");
   const save = (patch) =>
     attempt(async () => {
       state.config = await api("PUT", "settings", patch);
@@ -5772,6 +5796,7 @@ function settingsView() {
   col.append(
     h("h3", {}, "About and legal"),
     h("p", { class: "note" }, "Talqava is open-source software under the MIT licence, developed by GR Investments LLC. It runs on your computer and sends nothing to us: your data goes only to the services you connect, such as your AI model provider."),
+    h("p", { class: "note small" }, "Files your agents work on are kept in ", h("code", {}, c.workspace), ". Everything else Talqava knows is in ", h("code", {}, c.dataDir), "."),
     legal,
   );
 }
@@ -6150,6 +6175,54 @@ async function renderWsPage(col, id) {
   }
 }
 
+/** Which guide explains each page. */
+const GUIDES_BY_VIEW = { chat: "chat", inbox: "inbox", tasks: "tasks", home: "work-in-progress", quest: "work-in-progress", bot: "work-in-progress", jobs: "schedules", team: "organization", market: "marketplace", marketbot: "marketplace", workspace: "workspace", library: "library", memory: "memory", skills: "skills", audit: "audit-log", integrations: "integrations", settings: "settings" };
+const guideFor = (view) => GUIDES_BY_VIEW[view] ?? null;
+
+/** Shows a user guide in a reader beside the page. Links between guides open in the reader; the list of guides is on the left. */
+async function showGuide(id) {
+  let doc;
+  let list = [];
+  try {
+    [doc, list] = await Promise.all([api("GET", `guide/${encodeURIComponent(id)}`), api("GET", "guide").catch(() => [])]);
+  } catch (err) {
+    return attempt(() => Promise.reject(err));
+  }
+  document.querySelector("dialog.guidedialog")?.remove();
+  const body = h("div", { class: "md guidedoc" }, renderMarkdown(doc.markdown.replace(/^#\s+[^\n]*\n+/, "")));
+  body.addEventListener("click", (e) => {
+    const a = e.target.closest("a[href]");
+    if (!a) return;
+    const href = a.dataset.doc ?? a.getAttribute("href");
+    if (a.dataset.doc) e.preventDefault();
+    const other = href.match(/^(?:\.\/)?([a-z-]+)\.md(?:#.*)?$/);
+    if (other) return showGuide(other[1]);
+    // A guide that points at a policy opens it in the policy reader.
+    const legal = { "TERMS.md": "terms", "PRIVACY.md": "privacy", "ACCEPTABLE_USE.md": "acceptable-use", LICENSE: "license", "SECURITY.md": "security", "THIRD_PARTY_NOTICES.md": "notices" }[href.split("/").pop().split("#")[0]];
+    if (legal) return close(), showLegal(legal);
+    if (/^https?:/.test(href)) a.target = "_blank";
+  });
+  const nav = h(
+    "nav",
+    { class: "guidenav", "aria-label": "All guides" },
+    list.map((g) => h("button", { class: `plain${g.id === doc.id ? " on" : ""}`, "aria-current": g.id === doc.id ? "page" : null, onclick: () => showGuide(g.id) }, g.title)),
+  );
+  const close = () => (dialog.close(), dialog.remove());
+  const dialog = h(
+    "dialog",
+    { class: "guidedialog" },
+    h("div", { class: "row guidehead" }, h("span", { class: "guidekicker" }, "User guide"), h("h2", { class: "grow" }, doc.title), h("button", { class: "plain small", "aria-label": "Close", onclick: close }, "✕")),
+    h("div", { class: "guidecols" }, nav, body),
+  );
+  dialog.addEventListener("cancel", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  body.scrollTop = 0;
+}
+window.talqavaShowGuide = showGuide;
+// A link to one of Talqava's own documents never leaves the page; the reader showing it opens it.
+document.addEventListener("click", (e) => e.target.closest?.("a.doclink") && e.preventDefault(), true);
+
 /** Shows one of the app's documents (terms, privacy policy, licence, notices…) in a reader. Links between them open here. */
 async function showLegal(id) {
   let doc;
@@ -6165,7 +6238,8 @@ async function showLegal(id) {
   body.addEventListener("click", (e) => {
     const a = e.target.closest("a[href]");
     if (!a) return;
-    const name = a.getAttribute("href").split(/[/#]/).filter(Boolean).find((p) => files[p]);
+    if (a.dataset.doc) e.preventDefault();
+    const name = (a.dataset.doc ?? a.getAttribute("href")).split(/[/#]/).filter(Boolean).find((p) => files[p]);
     if (name) return e.preventDefault(), showLegal(files[name]);
     if (/^https?:/.test(a.getAttribute("href"))) a.target = "_blank";
   });

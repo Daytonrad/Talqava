@@ -83,7 +83,7 @@ export function loadMarketplace(): { bots: MarketBot[]; problems: string[] } {
 
 export function findMarketBot(id: string): MarketBot {
   const found = loadMarketplace().bots.find((m) => m.bot.id === id);
-  if (!found) throw new Error(`The marketplace has no bot called "${id}".`);
+  if (!found) throw new Error(`The marketplace has no agent called "${id}".`);
   return found;
 }
 

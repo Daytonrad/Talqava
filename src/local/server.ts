@@ -60,6 +60,25 @@ const SESSION_COOKIE = `${BRAND.slug}_session`;
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const PUBLIC = path.join(ROOT, "public");
 /** The documents shown under About and legal, in order. Each lives in the repository and ships with the app. */
+/** The user guides, in the order of the menu. Each page's Guide button opens its own. */
+const GUIDES = [
+  ["getting-started", "Getting started"],
+  ["chat", "Chat"],
+  ["inbox", "Inbox"],
+  ["tasks", "Tasks and goals"],
+  ["work-in-progress", "Work in progress"],
+  ["schedules", "Schedules"],
+  ["organization", "Organization"],
+  ["marketplace", "Marketplace"],
+  ["workspace", "Workspace"],
+  ["library", "Library"],
+  ["memory", "Memory"],
+  ["skills", "Skills"],
+  ["audit-log", "Audit log"],
+  ["integrations", "Integrations"],
+  ["settings", "Settings and AI models"],
+].map(([id, title]) => ({ id, title, file: `guide/${id}.md` }));
+
 const LEGAL_DOCS = [
   { id: "terms", title: "Terms of Use", file: "legal/TERMS.md" },
   { id: "privacy", title: "Privacy Policy", file: "legal/PRIVACY.md" },
@@ -654,7 +673,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
         if (body.space && !spaces.get(String(body.space))) throw new HttpError(400, "No such project.");
         // A chat with one bot in its role answers as that bot, with its powers and limits.
         const withBot = body.bot ? loadCrew().bots.find((b) => b.id === body.bot) : undefined;
-        if (body.bot && !withBot) throw new HttpError(400, "There is no such bot.");
+        if (body.bot && !withBot) throw new HttpError(400, "There is no such agent.");
         return send(res, 200, conversations.create({ ...(body.space ? { space: String(body.space) } : {}), ...(withBot ? { bot: withBot.id, title: `Chat with ${withBot.name}` } : {}) }));
       }
     }
@@ -773,7 +792,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     // A new bot gets a file name from its name; an existing one keeps its own.
     const id = parts[1] && parts[1] !== "new" ? parts[1] : botId(String(body.name || ""));
     if ((!parts[1] || parts[1] === "new") && loadCrew().bots.some((b) => b.id === id)) {
-      throw new HttpError(409, `There is already a bot called ${id}. Choose another name, or edit that bot instead.`);
+      throw new HttpError(409, `There is already an agent called ${id}. Choose another name, or edit that agent instead.`);
     }
     try {
       const saved = saveBot(id, body);
@@ -962,6 +981,15 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (route === "POST work" && id && action === "retry") return send(res, 200, await attempt(() => work.retry(org, id)));
     if (route === "POST work" && id && action === "comment") return send(res, 200, await attempt(() => work.comment(org, id, body.text)));
     throw new HttpError(404, "Not found.");
+  }
+
+  // ---------- the user guides ----------
+  if (parts[0] === "guide" && req.method === "GET") {
+    const ready = GUIDES.filter((g) => fs.existsSync(path.join(ROOT, g.file)));
+    if (!parts[1]) return send(res, 200, ready.map(({ id, title }) => ({ id, title })));
+    const doc = ready.find((g) => g.id === parts[1]);
+    if (!doc) throw new HttpError(404, "There is no such guide.");
+    return send(res, 200, { id: doc.id, title: doc.title, markdown: fs.readFileSync(path.join(ROOT, doc.file), "utf8") });
   }
 
   // ---------- the app's licence, privacy policy, terms and other policies, for the About and legal pages ----------

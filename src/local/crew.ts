@@ -48,7 +48,7 @@ export function loadCrew(project?: string): { bots: Bot[]; problems: CrewProblem
 
 export function findBot(id: string, project?: string): Bot {
   const bot = loadCrew(project).bots.find((b) => b.id === id);
-  if (!bot) throw new Error(`There is no bot called "${id}".`);
+  if (!bot) throw new Error(`There is no agent called "${id}".`);
   return bot;
 }
 

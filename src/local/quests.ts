@@ -256,7 +256,7 @@ export class QuestRunner {
   }
 
   async start({ bot, text, project, title, template, parent, kind, item }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string }; kind?: "question" | "decision"; item?: string }): Promise<Quest> {
-    if (this.running().length >= MAX_RUNNING) throw new Error(`${MAX_RUNNING} quests are already under way. Wait for one to finish, or stop one.`);
+    if (this.running().length >= MAX_RUNNING) throw new Error(`${MAX_RUNNING} tasks are already under way. Wait for one to finish, or stop one.`);
     // A bot that has used its month's budget starts nothing new.
     const blocked = budgetBlock(bot);
     if (blocked) throw new Error(blocked);

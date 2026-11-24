@@ -196,6 +196,8 @@ function buildMenu() {
       {
         role: "help",
         submenu: [
+          { label: "Talqava User Guide", accelerator: "CmdOrCtrl+?", click: () => showGuide("getting-started") },
+          { type: "separator" },
           ...[
             ["Terms of Use", "terms"],
             ["Privacy Policy", "privacy"],
@@ -216,6 +218,12 @@ function buildMenu() {
 function showLegal(id) {
   showWindow();
   win?.webContents.executeJavaScript(`window.talqavaShowLegal && window.talqavaShowLegal(${JSON.stringify(id)})`).catch(() => {});
+}
+
+/** Opens the user guide in the window. */
+function showGuide(id) {
+  showWindow();
+  win?.webContents.executeJavaScript(`window.talqavaShowGuide && window.talqavaShowGuide(${JSON.stringify(id)})`).catch(() => {});
 }
 
 // ---------- start and stop ----------

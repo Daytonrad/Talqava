@@ -11,6 +11,8 @@ function el(tag, children = [], attrs = {}) {
 const INLINE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\s][^*\n]*\*)|(\[[^\]\n]+\]\([^)\s]+\))|(https?:\/\/[^\s<>)\]]+)/g;
 
 function link(text, href) {
+  // A link to another of Talqava's own documents (a guide, a policy) is opened by the reader showing it; elsewhere it goes nowhere.
+  if (/^(\.\.?\/)*[\w./-]+\.md(#[\w-]*)?$|^(\.\.\/)+LICENSE$/.test(href)) return el("a", [text], { href: "#", "data-doc": href, class: "doclink" });
   if (!/^(https?:|mailto:)/i.test(href)) return document.createTextNode(text);
   return el("a", [text], { href, target: "_blank", rel: "noopener noreferrer" });
 }
