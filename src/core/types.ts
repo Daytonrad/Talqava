@@ -80,6 +80,12 @@ export interface Job {
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastConversationId: string | null;
+  /** The agent that does it, as a task in its queue. None: the assistant does it in a chat. */
+  owner?: string | null;
+  /** The organization the agent is in. */
+  org?: string | null;
+  /** The task the last run made, when an agent does it. */
+  lastTaskId?: string | null;
 }
 
 export interface Secret {

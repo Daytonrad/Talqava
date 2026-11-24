@@ -53,8 +53,38 @@ export function parseSchedule(text: string): Schedule {
     return { kind: "cron", sets, domAny: fields[2] === "*", dowAny: fields[4] === "*" };
   }
   throw new Error(
-    'Schedule must be "every 30m" / "every 2h" / "every 1d", "at 2026-12-01T09:00", or a 5-field cron line such as "0 9 * * 1-5".',
+    'That time could not be read. Choose one from the list, or write "every 30m", "every 2h", "every 1d", "at 2026-12-01T09:00", or a 5-field cron line such as "0 9 * * 1-5" (9:00 am on weekdays).',
   );
+}
+
+const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const clock = (h: number, m: number) => `${h % 12 === 0 ? 12 : h % 12}:${String(m).padStart(2, "0")} ${h < 12 ? "am" : "pm"}`;
+const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"}`;
+
+/** A schedule in plain words, e.g. "Every weekday at 8:00 am". Falls back to the schedule itself when it is unusual. */
+export function describeSchedule(text: string): string {
+  const s = String(text).trim();
+  let match = /^every\s+(\d+)\s*(m|h|d)\w*$/i.exec(s);
+  if (match) {
+    const n = Number(match[1]);
+    const unit = { m: "minute", h: "hour", d: "day" }[match[2].toLowerCase() as "m" | "h" | "d"];
+    return n === 1 ? `Every ${unit}` : `Every ${n} ${unit}s`;
+  }
+  match = /^at\s+(.+)$/i.exec(s);
+  if (match) {
+    const when = new Date(match[1]);
+    if (!Number.isNaN(when.getTime())) return `Once, on ${when.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })} at ${clock(when.getHours(), when.getMinutes())}`;
+  }
+  match = /^(\d{1,2}) (\d{1,2}) (\*|\d{1,2}) \* (\*|1-5|[0-7])$/.exec(s);
+  if (match) {
+    const at = clock(Number(match[2]), Number(match[1]));
+    if (Number(match[1]) > 59 || Number(match[2]) > 23) return s;
+    if (match[3] !== "*" && match[4] === "*") return `Every month on the ${ordinal(Number(match[3]))} at ${at}`;
+    if (match[3] === "*" && match[4] === "*") return `Every day at ${at}`;
+    if (match[3] === "*" && match[4] === "1-5") return `Every weekday at ${at}`;
+    if (match[3] === "*") return `Every ${DAYS[Number(match[4]) % 7]} at ${at}`;
+  }
+  return s;
 }
 
 /** The next time a schedule fires strictly after `after`, or null if it never will. */
@@ -108,10 +138,11 @@ export class JobBook {
     return this.#store.list();
   }
 
-  async create(input: { name?: string; prompt?: string; schedule?: string }): Promise<Job> {
+  async create(input: { name?: string; prompt?: string; schedule?: string; owner?: string | null; org?: string | null }): Promise<Job> {
     const name = String(input.name || "").trim();
     const prompt = String(input.prompt || "").trim();
-    if (!name || !prompt) throw new Error("A scheduled job needs a name and a prompt.");
+    if (!name) throw new Error("Give the schedule a name, e.g. Morning news digest.");
+    if (!prompt) throw new Error("Write the instructions: what should be done each time?");
     const next = nextRun(String(input.schedule ?? ""));
     if (!next) throw new Error("That time is already in the past.");
     const job: Job = {
@@ -124,6 +155,9 @@ export class JobBook {
       nextRunAt: next.toISOString(),
       lastRunAt: null,
       lastConversationId: null,
+      owner: input.owner || null,
+      org: input.owner ? (input.org ?? null) : null,
+      lastTaskId: null,
     };
     await this.#store.saveAll([...(await this.#store.list()), job]);
     return job;
@@ -132,7 +166,7 @@ export class JobBook {
   async update(id: string, patch: Partial<Job>): Promise<Job> {
     const jobs = await this.#store.list();
     const job = jobs.find((j) => j.id === id);
-    if (!job) throw new Error(`No scheduled job with id ${id}.`);
+    if (!job) throw new Error("That schedule no longer exists.");
     Object.assign(job, patch);
     if (patch.enabled === true) {
       const next = nextRun(job.schedule);
@@ -143,9 +177,39 @@ export class JobBook {
     return job;
   }
 
+  /** Changes a job's name, instructions, timing or who does it. A new timing starts counting from now. */
+  async edit(id: string, input: { name?: unknown; prompt?: unknown; schedule?: unknown; owner?: unknown; org?: unknown }): Promise<Job> {
+    const jobs = await this.#store.list();
+    const job = jobs.find((j) => j.id === id);
+    if (!job) throw new Error("That schedule no longer exists.");
+    if (input.name !== undefined) {
+      const name = String(input.name).trim();
+      if (!name) throw new Error("Give the schedule a name, e.g. Morning news digest.");
+      job.name = name;
+    }
+    if (input.prompt !== undefined) {
+      const prompt = String(input.prompt).trim();
+      if (!prompt) throw new Error("Write the instructions: what should be done each time?");
+      job.prompt = prompt;
+    }
+    if (input.schedule !== undefined && String(input.schedule).trim() !== job.schedule) {
+      const next = nextRun(String(input.schedule));
+      if (!next) throw new Error("That time is already in the past.");
+      job.schedule = String(input.schedule).trim();
+      job.nextRunAt = next.toISOString();
+      job.enabled = true;
+    }
+    if (input.owner !== undefined) {
+      job.owner = input.owner ? String(input.owner) : null;
+      job.org = job.owner ? String(input.org ?? job.org ?? "") || null : null;
+    }
+    await this.#store.saveAll(jobs);
+    return job;
+  }
+
   async remove(id: string) {
     const jobs = await this.#store.list();
-    if (!jobs.some((j) => j.id === id)) throw new Error(`No scheduled job with id ${id}.`);
+    if (!jobs.some((j) => j.id === id)) throw new Error("That schedule no longer exists.");
     await this.#store.saveAll(jobs.filter((j) => j.id !== id));
   }
 

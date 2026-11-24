@@ -1772,3 +1772,12 @@ dialog.guidedialog::backdrop { background: var(--scrim); }
   .guidenav { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .guidenav button { white-space: nowrap; }
 }
+
+/* ---------- schedules ---------- */
+.whenrow { align-items: center; gap: 8px; }
+.whenrow select, .whenrow input { width: auto; }
+.whenrow input.mono { flex: 1; min-width: 260px; }
+.joblist { display: flex; flex-direction: column; gap: 10px; }
+.jobcard .row { align-items: flex-start; }
+.jobprompt { margin-top: 6px; white-space: pre-wrap; }
+.jobactions { gap: 6px; justify-content: flex-end; max-width: 300px; }

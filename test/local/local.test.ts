@@ -2038,3 +2038,54 @@ test("the user guides: one for every page, and every link between them leads som
     }
   }
 });
+
+test("a schedule with an agent becomes a task in its queue; without one, or if the agent leaves, the assistant does it in a chat", { timeout: 30_000 }, async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const { work } = await import("../../src/local/work.ts");
+  const org0 = orgs.create("Schedule Co", "Bake bread.", "custom");
+  const server = (await import("node:http")).createServer(app.handle).listen(0, "127.0.0.1");
+  await new Promise((r) => server.once("listening", r));
+  const base = `http://127.0.0.1:${(server.address() as import("node:net").AddressInfo).port}/api`;
+  const call = async (method: string, route: string, body?: unknown) => {
+    const r = await fetch(`${base}/${route}`, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    return { status: r.status, data: await r.json() };
+  };
+  try {
+    market.addTeam("sales-team");
+    const lead = orgs.active().members.find((m) => m.department === "Sales" && m.manager === null)!.bot;
+    assert.match((await call("POST", "jobs", { name: "Weekly pipeline", prompt: "List open deals.", schedule: "0 9 * * 1", owner: "nobody" })).data.error, /organization chart/);
+    const job = (await call("POST", "jobs", { name: "Weekly pipeline", prompt: "List open deals.", schedule: "0 9 * * 1", owner: lead })).data;
+    const listed = (await call("GET", "jobs")).data.find((j: { id: string }) => j.id === job.id);
+    assert.equal(listed.plain, "Every Monday at 9:00 am");
+    assert.equal(listed.ownerName, orgs.active().members.find((m) => m.bot === lead)!.title);
+
+    // Run now: a task for the agent, reviewed like any other.
+    script.length = 0;
+    script.push(say("Three open deals."));
+    const ran = (await call("POST", `jobs/${job.id}/run`, {})).data;
+    assert.ok(ran.taskId);
+    const task = work.get(orgs.active(), ran.taskId);
+    assert.deepEqual([task.title, task.owner], ["Weekly pipeline", lead]);
+    assert.match(task.description, /List open deals\.[\s\S]*every monday at 9:00 am/);
+
+    // Its agent leaves the chart: the assistant does it, and the log says why.
+    const sdr = orgs.active().members.find((m) => m.manager === lead)!.bot;
+    await call("PATCH", `jobs/${job.id}`, { owner: sdr });
+    orgs.removeMember(orgs.active().id, sdr);
+    script.push(say("Covered for them."));
+    assert.ok((await call("POST", `jobs/${job.id}/run`, {})).data.conversationId);
+    assert.equal((await call("GET", "jobs")).data.find((j: { id: string }) => j.id === job.id).ownerName, null);
+
+    // Changed to the assistant: a chat.
+    const edited = (await call("PATCH", `jobs/${job.id}`, { owner: null, name: "Monday pipeline" })).data;
+    assert.deepEqual([edited.owner, edited.name], [null, "Monday pipeline"]);
+    script.push(say("Done in chat."));
+    const chat = (await call("POST", `jobs/${job.id}/run`, {})).data;
+    assert.ok(chat.conversationId && !chat.taskId);
+    await call("DELETE", `jobs/${job.id}`);
+  } finally {
+    server.close();
+    orgs.remove(org0.id);
+  }
+});
