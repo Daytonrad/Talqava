@@ -1746,3 +1746,29 @@ dialog.needs.legaldialog[open] { display: flex; }
 .goalactions { gap: 6px; }
 .goalempty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 20px; max-width: 620px; }
 .goalempty p { margin: 0; }
+
+/* ---------- the user guide ---------- */
+.guidebtn { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; white-space: nowrap; }
+.guidebtn .ico { display: inline-flex; }
+dialog.guidedialog { width: min(980px, calc(100vw - 32px)); max-width: 980px; height: min(86vh, 900px); padding: 0; border: 1px solid var(--line2); border-radius: var(--r-l); background: var(--panel); color: var(--text); overflow: hidden; }
+dialog.guidedialog[open] { display: flex; flex-direction: column; }
+dialog.guidedialog::backdrop { background: var(--scrim); }
+.guidehead { align-items: center; gap: 10px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.guidehead h2 { margin: 0; font-size: 19px; }
+.guidekicker { font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--accent-ink, var(--soft)); }
+.guidecols { display: grid; grid-template-columns: 210px 1fr; min-height: 0; flex: 1; }
+.guidenav { display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; border-right: 1px solid var(--line); overflow-y: auto; }
+.guidenav button { justify-content: flex-start; text-align: left; height: auto; padding: 7px 10px; border-radius: var(--r-s, 6px); font-weight: 400; }
+.guidenav button.on { background: color-mix(in srgb, var(--accent) 14%, transparent); font-weight: 600; }
+.guidedoc { padding: 18px 28px 40px; overflow-y: auto; line-height: 1.6; max-width: none; }
+.guidedoc h2 { margin-top: 26px; font-size: 17px; }
+.guidedoc h3 { margin-top: 18px; font-size: 15px; }
+.guidedoc ol, .guidedoc ul { padding-left: 22px; }
+.guidedoc li { margin: 4px 0; }
+.guidedoc table { border-collapse: collapse; margin: 10px 0; }
+.guidedoc th, .guidedoc td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+@media (max-width: 720px) {
+  .guidecols { grid-template-columns: 1fr; }
+  .guidenav { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .guidenav button { white-space: nowrap; }
+}

@@ -171,7 +171,7 @@ test("the marketplace lists ready-made bots with their instructions, and adding 
   // The copy is the person's to edit, and adding again leaves their edits alone.
   crew.saveBot("proofreader", { ...added, instructions: "My own version." });
   assert.equal(market.addMarketBot("proofreader").instructions, "My own version.");
-  assert.throws(() => market.addMarketBot("no-such-bot"), /no bot called/);
+  assert.throws(() => market.addMarketBot("no-such-bot"), /no agent called/);
   crew.removeBot("proofreader");
 });
 
@@ -246,7 +246,7 @@ test("an organization puts bots in roles on a chart, and a team joins with its r
 
   // Roles can be changed, but the chart stays a tree.
   orgs.setMember(org.id, { bot: "pip", title: "Researcher", department: "Marketing", manager: "seo-researcher" });
-  assert.throws(() => orgs.setMember(org.id, { bot: "head-of-marketing", manager: "pip" }), /above that bot/);
+  assert.throws(() => orgs.setMember(org.id, { bot: "head-of-marketing", manager: "pip" }), /above that agent/);
   assert.throws(() => orgs.setMember(org.id, { bot: "pip", manager: "pip" }), /cannot report to itself/);
   assert.throws(() => orgs.setMember(org.id, { bot: "pip", manager: "rivet" }), /must be a member/);
 
@@ -382,7 +382,7 @@ test("a structure sets who may hand work to whom; anyone may ask anyone; the org
   assert.deepEqual(names("functional-analyst"), ["frontend-developer"]);
   assert.match(rolePrompt(crew.findBot("frontend-developer")), /Your project lead is the Requirements Analyst/);
   // The chart must stay a tree.
-  assert.throws(() => orgs.setMember(org.id, { bot: "lead-developer", manager: "frontend-developer" }), /above that bot/);
+  assert.throws(() => orgs.setMember(org.id, { bot: "lead-developer", manager: "frontend-developer" }), /above that agent/);
 
   // Groups: the team's department is a group led by its lead; a new group, its lead, renaming and removing it.
   org = orgs.active();
@@ -2019,4 +2019,22 @@ test("an organization's older task table gets the goal and project links", async
   goalsDb(id);
   const cols = (d.prepare("pragma table_info(work_items)").all() as unknown as { name: string }[]).map((c) => c.name);
   assert.ok(cols.includes("goal") && cols.includes("project_id"));
+});
+
+test("the user guides: one for every page, and every link between them leads somewhere", () => {
+  const dir = path.join(import.meta.dirname, "..", "..", "guide");
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".md"));
+  const views = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "public", "app.js"), "utf8").match(/const GUIDES_BY_VIEW = (\{[^}]+\})/)![1];
+  for (const id of new Set(Object.values(JSON.parse(views.replace(/(\w[\w-]*):/g, '"$1":')) as Record<string, string>))) assert.ok(files.includes(`${id}.md`), `${id}.md is written`);
+  const server = fs.readFileSync(path.join(import.meta.dirname, "..", "..", "src", "local", "server.ts"), "utf8");
+  for (const f of files) {
+    assert.ok(server.includes(`["${f.replace(/\.md$/, "")}", `), `${f} is listed in the app`);
+    const text = fs.readFileSync(path.join(dir, f), "utf8");
+    assert.match(text, /^# /, `${f} starts with its title`);
+    assert.doesNotMatch(text, /notion/i, `${f} does not name other products`);
+    for (const [, href] of text.matchAll(/\]\(([^)\s]+)\)/g)) {
+      if (/^https?:|^mailto:|^#/.test(href)) continue;
+      assert.ok(fs.existsSync(path.join(dir, href.split("#")[0])), `${f} links to ${href}, which exists`);
+    }
+  }
 });
