@@ -189,3 +189,28 @@ export function buildStructure(orgId: string, structure: string, industry?: stri
   for (const seat of seatsOf) if (!had.has(seat.bot) && seat.also) try { orgs.setMember(orgId, { bot: seat.bot, also: seat.also }); } catch {}
   return { added };
 }
+
+/**
+ * Drops a ready-made team (a pack) onto an organization's chart, where the owner put it: under a position (its lead
+ * reports to that position), into a group (everyone joins it), or under the owner. Its members keep the lines the
+ * pack gives them, and each keeps its own department's group unless dropped into a group. Nothing else on the chart
+ * moves, and no empty group is left behind.
+ */
+export function addPack(orgId: string, teamId: string, where: { under?: unknown; group?: unknown } = {}) {
+  const team = loadTeams().find((t) => t.id === teamId);
+  if (!team) throw new Error(`The marketplace has no team called "${teamId}".`);
+  orgs.setActive(orgId);
+  const before = orgs.active();
+  const under = where.under ? String(where.under) : null;
+  if (under && !before.members.some((m) => m.bot === under)) throw new Error("That position is not on the chart.");
+  if (under && team.bots.includes(under)) throw new Error("A team cannot report to one of its own members.");
+  const group = String(where.group ?? "").trim().slice(0, 30) || null;
+  const had = new Set((before.groups ?? []).map((g) => g.id));
+  addTeam(teamId);
+  const lead = team.bots[0];
+  orgs.setMember(orgId, { bot: lead, manager: under, ...(group ? { department: group } : {}) });
+  if (group) for (const botId of team.bots.slice(1)) orgs.setMember(orgId, { bot: botId, department: group });
+  let org = orgs.active();
+  for (const g of org.groups ?? []) if (!had.has(g.id) && !org.members.some((m) => m.department === g.name)) org = orgs.removeGroup(orgId, g.id);
+  return { org, added: team.bots };
+}

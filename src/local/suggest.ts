@@ -66,11 +66,15 @@ export async function acceptSuggestion(orgId: string, s: { bot?: unknown; group?
   const id = String(s.bot ?? "");
   if (!loadMarketplace().bots.some((m) => m.bot.id === id)) throw new Error("There is no such role in the marketplace.");
   orgs.setActive(orgId);
+  const had = new Set((orgs.active().groups ?? []).map((g) => g.id));
   addMarketBot(id);
   const org = orgs.active();
   const manager = s.reportsTo && org.members.some((m) => m.bot === s.reportsTo) ? String(s.reportsTo) : null;
   const group = String(s.group ?? "").trim().slice(0, 30) || undefined;
-  return orgs.setMember(orgId, { bot: id, manager, ...(group ? { department: group } : {}) });
+  let placed = orgs.setMember(orgId, { bot: id, manager, ...(group ? { department: group } : {}) });
+  // Adding the role puts it in its usual department first; a group made only for that, and left empty by the move, goes.
+  for (const g of placed.groups ?? []) if (!had.has(g.id) && !placed.members.some((m) => m.department === g.name)) placed = orgs.removeGroup(orgId, g.id);
+  return placed;
 }
 
 /** Up to `limit` positions the organization could start with, or add next, for its mission. */

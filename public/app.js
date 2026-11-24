@@ -1601,7 +1601,28 @@ function mailMessages() {
     else if (n.kind === "monthly") out.push({ id: `need:monthly:${n.bot.id}:${MONTH_START().slice(0, 7)}`, kind: "need", need: n, bot: n.bot, subject: "I have reached my monthly budget", snippet: `${money(n.bot.month.spent)} of ${money(n.bot.month.limit)}. I start no new work until you raise it.`, at: MONTH_START(), activityAt: MONTH_START(), label: "needs" });
     else if (n.kind === "total") out.push({ id: `need:total:${MONTH_START().slice(0, 7)}`, kind: "need", need: n, bot: null, subject: "Your agents have reached this month's budget", snippet: "No agent starts new work until you raise it or the month turns.", at: MONTH_START(), activityAt: MONTH_START(), label: "needs" });
   }
+  // A position an agent proposed waits in the inbox for the owner's answer.
+  for (const org of state.orgs?.orgs ?? [])
+    for (const p of org.proposals ?? []) {
+      const bot = state.crew?.bots.find((b) => b.id === p.by) ?? null;
+      out.push({ id: `proposal:${p.id}`, kind: "proposal", proposal: p, org, bot, subject: `Proposal: add a ${p.title}`, snippet: p.why, at: p.createdAt, activityAt: p.createdAt, label: "needs" });
+    }
   return out;
+}
+
+/** The owner's answer to a position an agent proposed. Declining asks, optionally, why: the agent is told and does not ask again. */
+async function answerProposal(org, p, decision, where) {
+  let answer = "";
+  if (decision === "decline") {
+    const why = h("input", { maxlength: 300, placeholder: "e.g. Not this quarter; the Head of Sales covers it.", "aria-label": "Why not" });
+    const got = await libDialog(`Decline the ${p.title}?`, h("div", { class: "composeform" }, h("p", { class: "note" }, `The ${p.byName} won't propose it again. You can say why, so they know.`), h("label", {}, "Why not (optional)", why)), [["Decline", () => ({ answer: why.value.trim() }), true]]);
+    if (!got) return;
+    answer = got.answer;
+  }
+  return attempt(async () => {
+    await api("POST", `orgs/${org.id}/proposals/${p.id}`, { decision, answer });
+    await Promise.all([loadOrgs(), loadCrew()]);
+  }, where);
 }
 
 const markOf = (m) => state.mail?.messages?.[m.id] ?? {};
@@ -1839,6 +1860,18 @@ function readMail(m) {
 
   const body = h("div", { class: "readbody" });
   const act = (fn) => attempt(async () => (await fn(), await Promise.all([loadQuests(), refreshList(), loadCrew()]), renderInbox(), syncInboxCount()), body);
+  if (m.kind === "proposal") {
+    const p = m.proposal;
+    const after = () => ((ui.mailOpen = null), renderInbox(), syncInboxCount());
+    fill(
+      body,
+      h("p", {}, `I'd like to add a ${p.title} to ${p.group}, reporting to ${p.reportsTo === p.by ? "me" : (m.org.members.find((x) => x.bot === p.reportsTo)?.title ?? "you")}.`),
+      h("blockquote", { class: "proposalwhy" }, p.why),
+      h("p", { class: "note small" }, "Nothing changes until you approve. You can move or remove the position afterwards, like any other."),
+      h("div", { class: "row" }, h("button", { class: "primary", onclick: () => answerProposal(m.org, p, "approve", body).then(after) }, "Approve"), h("button", { onclick: () => answerProposal(m.org, p, "decline", body).then(after) }, "Decline"), h("button", { class: "plain", onclick: () => go("team") }, "See the chart")),
+    );
+    return [tools, h("h2", { class: "readsubject" }, m.subject, h("span", { class: `mlabel ${m.label}` }, LABEL_WORDS[m.label])), from, body];
+  }
   if (m.kind === "need") {
     const n = m.need;
     if (n.kind === "approval") {
@@ -1866,6 +1899,7 @@ function readMail(m) {
     live && !q.approvals?.length ? h("div", { class: "readnow" }, h("i", { class: "dot", "aria-hidden": "true" }), q.activity ? `Working on it: ${NAMES[q.activity.name] || q.activity.name}` : "Working on it now.") : null,
     q.status === "failed" && q.note ? h("div", { class: "banner error" }, q.note) : null,
     !live && q.chain?.stopped ? h("div", { class: "banner" }, `${q.chain.stopped} part${q.chain.stopped === 1 ? "" : "s"} of this task stopped before finishing${q.chain.cost >= q.chain.budget ? `, because the task reached its ${money(q.chain.budget)} budget` : ""}. The receipt shows which, and what each cost. Reply “continue” to carry on, or raise the budget per task under Settings.`) : null,
+    whyChain(q),
     q.said || !live ? report : null,
     !q.said && !live && q.status !== "failed" ? h("p", { class: "note" }, "I finished without writing a report.") : null,
     h("div", { class: "readfacts" }, [parts, q.chain ? `${money(q.chain.cost)} for the whole task` : q.cost ? money(q.cost) : "", LABEL_WORDS[m.label]].filter(Boolean).map((x) => h("span", {}, x)), h("span", { class: "grow" }), h("button", { class: "plain small", onclick: () => ((state.openReceipt = q.id), go("quest", q.id)) }, "See the receipt"), h("button", { class: "plain small", onclick: () => go("quest", q.id) }, "Open the task")),
@@ -2005,6 +2039,7 @@ async function orgChange(label, fn) {
     ui.orgx.undo.push({ ...before, label });
     ui.orgx.undo = ui.orgx.undo.slice(-40);
     ui.orgx.note = label;
+    ui.orgx.noteUndoes = true; // a note about a change offers Undo; any other note is information only
     await loadOrgs();
     renderOrg();
   }, ui.orgxCol);
@@ -2080,6 +2115,14 @@ function renderOrg() {
     col.classList.remove("dragging-on");
     if (!d) return;
     const dotted = e?.altKey;
+    // A ready-made team is a pack: its lead goes under the position it was dropped on (or into the group, or under you),
+    // and its members come with it, in one step that Undo takes back.
+    if (d.kind === "team") {
+      if (target.kind === "position" && dotted) return ((o.note = "A team joins with reporting lines. Drop it without Option to put it under this position."), renderOrg());
+      const where = target.kind === "position" ? { under: target.id } : target.kind === "group" ? { group: target.name } : {};
+      const label = `Added the ${d.name ?? "team"} ${target.kind === "position" ? `under ${nameOf(target.id)}` : target.kind === "group" ? `into ${target.name}` : "reporting to you"}`;
+      return orgChange(label, async () => (await api("POST", `orgs/${org.id}/pack`, { team: d.id, ...where }), await loadCrew(), (state.market = null)));
+    }
     if (target.kind === "position") {
       if (d.kind === "position" && d.id === target.id) return;
       if (d.kind === "position" && below(d.id).some((m) => m.bot === target.id)) return ((o.note = `${nameOf(d.id)} is above ${nameOf(target.id)}, so it cannot report to it.`), renderOrg());
@@ -2136,16 +2179,19 @@ function renderOrg() {
     roots.forEach((m) => walk(m, 0));
     return out;
   };
+  /** ok, warned (80% used) or stopped (used up: its positions start no new work this month). */
+  const groupState = (g) => (g.budget == null ? "ok" : (org.groupSpend?.[g.id] ?? 0) >= g.budget ? "stopped" : (org.groupSpend?.[g.id] ?? 0) >= g.budget * 0.8 ? "warned" : "ok");
   const frame = (g) => {
     const inIt = members.filter((m) => m.department === g.name);
-    const spend = inIt.reduce((n, m) => n + (byId.get(m.bot)?.month?.spent ?? 0), 0);
+    const spend = org.groupSpend?.[g.id] ?? 0;
+    const st = groupState(g);
     return h(
       "section",
-      { class: `groupframe ${o.sel?.kind === "group" && o.sel.id === g.id ? "on" : ""}`, ...drop({ kind: "group", name: g.name }) },
+      { class: `groupframe ${o.sel?.kind === "group" && o.sel.id === g.id ? "on" : ""} ${st}`, ...drop({ kind: "group", name: g.name }) },
       h(
         "header",
         { role: "button", tabindex: "0", title: "Click to edit the group", onclick: () => select({ kind: "group", id: g.id }), onkeydown: (e) => e.key === "Enter" && select({ kind: "group", id: g.id }) },
-        h("div", { class: "grow" }, h("h2", {}, g.name), h("div", { class: "note small" }, [`${inIt.length} position${inIt.length === 1 ? "" : "s"}`, g.lead ? `led by ${nameOf(g.lead)}` : "no lead yet", g.budget != null ? `${money(spend)} of ${money(g.budget)} this month` : null].filter(Boolean).join(" · ")), g.goal ? h("div", { class: "groupgoal" }, g.goal) : null),
+        h("div", { class: "grow" }, h("h2", {}, g.name), h("div", { class: "note small" }, [`${inIt.length} position${inIt.length === 1 ? "" : "s"}`, g.lead ? `led by ${nameOf(g.lead)}` : "no lead yet", g.budget != null ? `${money(spend)} of ${money(g.budget)} this month${st === "stopped" ? ", used up" : ""}` : spend >= 0.01 ? `${money(spend)} this month` : null].filter(Boolean).join(" · ")), g.goal ? h("div", { class: "groupgoal" }, g.goal) : null),
         inIt.length ? h("button", { class: "plain small", title: "Its lead shares the work out and brings back one result", onclick: (e) => (e.stopPropagation(), (state.selectedTeam = g.lead ?? inIt[0].bot), go("home")) }, "Give a task") : null,
       ),
       h("div", { class: "groupbody" }, inIt.length ? groupTree(g) : h("p", { class: "note small dropnote" }, "Drag positions here.")),
@@ -2265,6 +2311,11 @@ function renderOrg() {
       h("p", { class: "note small" }, g.leadChosen ? "You chose this lead." : "Picked from the chart: the position at the top of the group. Choose one to keep it."),
       h("label", {}, "Goal", goal),
       h("label", {}, "Monthly budget, all its positions together ($)", budget),
+      h("p", { class: `note small ${groupState(g) === "stopped" ? "loudnote" : ""}` }, [
+        `Spent this month: ${money(org.groupSpend?.[g.id] ?? 0)}.`,
+        groupState(g) === "stopped" ? " Used up: its positions start no new work until you raise it or the month turns." : groupState(g) === "warned" ? " Over 80% used." : "",
+        " Work counts towards the group its agent was in when the task started.",
+      ].join("")),
       h("div", { class: "row wrap" }, inIt.length ? h("button", { class: "primary small", onclick: () => ((state.selectedTeam = g.lead ?? inIt[0].bot), (state.selectedBot = g.lead ?? inIt[0].bot), go("home")) }, "Give this group a task") : null),
       h(
         "div",
@@ -2305,7 +2356,7 @@ function renderOrg() {
             h("div", { class: "label" }, "Ready-made teams"),
             teams.map((t) => {
               const lead = marketById.get(t.bots[0]);
-              return h("div", { class: "additem team", ...drag({ kind: "team", id: t.id, lead: t.bots[0] }), role: "button", tabindex: "0", title: "Drag onto the position it should report to, or click to add it under you", onclick: () => ((o.drag = { kind: "team", id: t.id, lead: t.bots[0] }), dropOn({ kind: "you" })) }, lead ? keycap(lead.character, 24, "", lead.type) : null, h("span", { class: "posmain" }, h("b", {}, t.name), h("span", { class: "possub" }, `${t.bots.length} positions, led by ${lead?.name ?? "its lead"}`)));
+              return h("div", { class: "additem team", ...drag({ kind: "team", id: t.id, lead: t.bots[0], name: t.name }), role: "button", tabindex: "0", title: "Drag onto the position it should report to, or into a group, or click to add it under you", onclick: () => ((o.drag = { kind: "team", id: t.id, lead: t.bots[0], name: t.name }), dropOn({ kind: "you" })) }, lead ? keycap(lead.character, 24, "", lead.type) : null, h("span", { class: "posmain" }, h("b", {}, t.name), h("span", { class: "possub" }, `${t.bots.length} positions, led by ${lead?.name ?? "its lead"}`)));
             }),
           ]
         : null,
@@ -2397,6 +2448,30 @@ function renderOrg() {
     );
   };
 
+  const proposals = () =>
+    org.proposals?.length
+      ? h(
+          "section",
+          { class: "suggestbox proposalbox" },
+          h("b", {}, `${org.proposals.length === 1 ? "A position your agents propose" : `${org.proposals.length} positions your agents propose`}`),
+          h(
+            "div",
+            { class: "suggestlist" },
+            org.proposals.map((p) => {
+              const bot = (state.market ?? []).find((b) => b.id === p.bot) ?? byId.get(p.bot);
+              const box = h(
+                "div",
+                { class: "suggestcard", style: bot ? botStyle(bot) : "" },
+                bot ? keycap(bot.character, 30, "", bot.type) : null,
+                h("span", { class: "posmain" }, h("b", {}, p.title), h("span", { class: "possub" }, `${p.group} · reports to ${p.reportsTo ? nameOf(p.reportsTo) : "you"} · proposed by ${nameOf(p.by)}`), h("span", { class: "suggestwhy" }, p.why)),
+                h("div", { class: "suggestacts" }, h("button", { class: "primary small", onclick: () => answerProposal(org, p, "approve", box).then(renderOrg) }, "Approve"), h("button", { class: "plain small", onclick: () => answerProposal(org, p, "decline", box).then(renderOrg) }, "Decline")),
+              );
+              return box;
+            }),
+          ),
+        )
+      : null;
+
   const side = panel();
   const views = [["groups", "Groups"], ["chart", "Chart"], ["list", "List"], ["memory", "Memory"]];
   fill(
@@ -2419,7 +2494,7 @@ function renderOrg() {
       h("button", { class: "small", disabled: !o.undo.length, title: o.undo.length ? `Undo: ${o.undo.at(-1).label} (Cmd-Z)` : "Nothing to undo", onclick: () => orgUndo() }, "Undo"),
       h("button", { class: "plain small", title: "Every change is recorded in the audit log", onclick: () => ((ui.audit = { kind: "organization", actor: "", since: "30", q: "" }), go("audit")) }, "History"),
     ),
-    o.note ? h("div", { class: "banner" }, o.note, o.undo.length && !o.note.startsWith("Undone") ? h("button", { class: "plain small", onclick: () => orgUndo() }, "Undo") : null) : null,
+    o.note ? h("div", { class: "banner" }, o.note, o.undo.length && o.noteUndoes ? h("button", { class: "plain small", onclick: () => orgUndo() }, "Undo") : null) : null,
     problems.length ? h("div", { class: "orgproblems" }, problems.map(([text, fix, fn]) => h("div", { class: "orgproblem" }, h("span", { class: "grow" }, text), h("button", { class: "small", onclick: fn }, fix)))) : null,
     o.view === "memory"
       ? orgMemoryPanel(org, groups)
@@ -2427,11 +2502,12 @@ function renderOrg() {
           "div",
           { class: `orgwork ${side ? "withpanel" : ""}` },
           h("aside", { class: "addbar" }, h("div", { class: "row" }, h("b", { class: "grow" }, "Add"), h("button", { class: "small", onclick: () => newGroup() }, "+ Group")), addFind, h("p", { class: "note small" }, "Drag onto a position to report to it, onto a group to join it, or onto You."), addList),
-          h("div", { class: "orgcanvas" }, suggestions(), members.length ? (o.view === "chart" ? chartView() : o.view === "list" ? listView() : groupsView()) : startPanel()),
+          h("div", { class: "orgcanvas" }, proposals(), suggestions(), members.length ? (o.view === "chart" ? chartView() : o.view === "list" ? listView() : groupsView()) : startPanel()),
           side,
         ),
   );
   o.note = "";
+  o.noteUndoes = false;
 
   // ----- dialogs -----
   async function newGroup() {
@@ -2461,6 +2537,9 @@ function renderOrg() {
       h("div", { class: "label", style: "margin-top: 10px" }, "Copy an example"),
       h("p", { class: "note small" }, "Adds the example's positions you don't have yet, with its lines. Nothing you have is removed or moved."),
       h("div", { class: "row wrap" }, exIndustry, exStructure, h("button", { class: "small", onclick: () => (dialogDone("example"), null) }, "Copy")),
+      h("div", { class: "label", style: "margin-top: 10px" }, "Save or share it"),
+      h("p", { class: "note small" }, "One readable file with the chart and the agents you made or edited. No keys, tasks, memory or library files."),
+      h("div", { class: "row wrap" }, h("button", { class: "small", onclick: () => dialogDone("export") }, "Export this organization"), h("button", { class: "small", onclick: () => dialogDone("import") }, "Import an organization…")),
       h("div", { class: "label", style: "margin-top: 10px" }, "Other organizations"),
       h("div", { class: "row wrap" }, h("button", { class: "small", onclick: () => dialogDone("new") }, "New organization"), h("button", { class: "small danger", onclick: () => dialogDone("clear") }, "Start over (empty chart)"), state.orgs.orgs.length > 1 ? h("button", { class: "small danger", onclick: () => dialogDone("delete") }, "Delete this organization") : null),
     );
@@ -2484,6 +2563,37 @@ function renderOrg() {
     if (choice === "delete") {
       if (!confirm(`Delete the organization “${org.name}”?\n\nIts chart is deleted. The agents themselves are kept. This cannot be undone.`)) return;
       return attempt(async () => (await api("DELETE", `orgs/${org.id}`), await loadOrgs(), (o.sel = null), (o.undo = []), renderOrg()), col);
+    }
+    if (choice === "export") {
+      return attempt(async () => {
+        const file = await api("GET", `orgs/${org.id}/export`);
+        const a = h("a", { href: URL.createObjectURL(new Blob([file.text], { type: "text/yaml" })), download: file.name });
+        document.body.append(a);
+        a.click();
+        setTimeout(() => (URL.revokeObjectURL(a.href), a.remove()), 1000);
+        o.note = `Exported ${org.name} as “${file.name}”.`;
+        renderOrg();
+      }, col);
+    }
+    if (choice === "import") {
+      const picker = h("input", { type: "file", accept: ".yaml,.yml,.txt", style: "display:none" });
+      document.body.append(picker);
+      picker.addEventListener("change", () => {
+        const chosen = picker.files?.[0];
+        picker.remove();
+        if (!chosen) return;
+        attempt(async () => {
+          const got = await api("POST", "orgs/import", { text: await chosen.text() });
+          await Promise.all([loadOrgs(), loadCrew()]);
+          state.market = null;
+          o.sel = null;
+          o.undo = [];
+          o.note = `Imported ${got.org.name}: ${got.org.members.length} position${got.org.members.length === 1 ? "" : "s"} in ${got.org.groups.length} group${got.org.groups.length === 1 ? "" : "s"}.${got.added.length ? ` Added ${got.added.length} agent${got.added.length === 1 ? "" : "s"} of its own.` : ""}${got.kept.length ? ` You already had your own ${got.kept.join(", ")}, so yours ${got.kept.length === 1 ? "was" : "were"} kept.` : ""}`;
+          renderOrg();
+        }, col);
+      });
+      picker.click();
+      return;
     }
     if (choice === "new") {
       const nm = h("input", { placeholder: "Name, e.g. your company", maxlength: 50, "aria-label": "Name" });
@@ -4124,11 +4234,30 @@ function checkBlock(q) {
   );
 }
 
+/** Why a task exists, from the top: the mission, the group's goal, the owner's task, and each hand-off down to this one. */
+function whyChain(q) {
+  const steps = q.why ?? [];
+  if (steps.length <= 1) return null;
+  return h(
+    "ol",
+    { class: "whychain", "aria-label": "Why this task exists" },
+    steps.map((st) =>
+      h(
+        "li",
+        { class: `why-${st.kind} ${st.id === q.id ? "here" : ""}` },
+        h("span", { class: "whykind" }, st.kind === "mission" ? "Mission" : st.kind === "goal" ? `${st.who} goal` : st.id === q.id ? (st.by ? `This task · ${st.who}` : `Your task · ${st.who}`) : st.by ? `Handed to ${st.who}` : `You asked ${st.who}`),
+        st.kind === "task" && st.id !== q.id ? h("a", { href: "#", onclick: (e) => (e.preventDefault(), go("quest", st.id)) }, st.text) : h("span", {}, st.text),
+      ),
+    ),
+  );
+}
+
 function renderQuestRight(q) {
   const spend = q.budget?.spend;
   const share = spend ? Math.min(1, (q.cost || 0) / spend) : q.budget?.steps ? Math.min(1, q.steps / q.budget.steps) : 0;
   const bot = state.crew?.bots.find((b) => b.id === q.bot.id);
   fill(ui.qright,
+    q.why?.length > 1 ? h("section", { class: "panel-block" }, h("h2", { class: "label" }, "Why"), whyChain(q)) : null,
     checkBlock(q),
     h(
       "section",

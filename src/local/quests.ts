@@ -6,9 +6,9 @@ import path from "node:path";
 import type { Bot, Engine, RunEvent } from "../core/index.ts";
 import { DATA, WORKSPACE, conversations, getConfig, readJson, writeJson } from "./store.ts";
 import { feedback, runChecks } from "./checks.ts";
-import { budgetBlock, recordSpend } from "./spend.ts";
+import { budgetBlock, groupBlock, recordSpend } from "./spend.ts";
 import { loadCrew } from "./crew.ts";
-import { orgs } from "./orgs.ts";
+import { groupOf, orgs } from "./orgs.ts";
 import { orgMemory } from "./orgmemory.ts";
 import { audit } from "./audit.ts";
 import type { CheckResult } from "./checks.ts";
@@ -53,12 +53,65 @@ export interface Quest {
   root?: string;
   /** How many hand-offs deep this quest is: 0 for one the person sent. */
   depth?: number;
+  /** The group whose monthly budget this task is charged to: the group its agent was in when it started. */
+  charge?: { org: string; group: string };
+  /** Why the task exists, as it stood when it started: the organization's mission and the group's goal. */
+  purpose?: { org: string; mission?: string; group?: string; goal?: string };
   createdAt: string;
   updatedAt: string;
 }
 
 /** How a report from a hand-off starts, so the window can show it as a report rather than something the person typed. */
 export const REPORT_MARK = "[Report from ";
+
+/** The group a task is charged to, as the chart says now (so a raised budget counts at once). */
+function chargedGroup(quest: Pick<Quest, "charge">) {
+  if (!quest.charge) return undefined;
+  const org = orgs.list().orgs.find((o) => o.id === quest.charge!.org);
+  return org ? { org, group: (org.groups ?? []).find((g) => g.id === quest.charge!.group) } : undefined;
+}
+/** Why the group a task is charged to may not spend more, or null. */
+const groupStop = (quest: Pick<Quest, "charge">) => ((c) => (c ? groupBlock(c.org.id, c.group) : null))(chargedGroup(quest));
+
+export interface WhyStep {
+  /** mission: the organization's; goal: the group's; task: a task in the chain, the owner's first. */
+  kind: "mission" | "goal" | "task";
+  text: string;
+  /** For a goal, the group; for a task, the agent doing it and who handed it on. */
+  who?: string;
+  by?: string;
+  id?: string;
+}
+
+/**
+ * Why a task exists, from the top: the organization's mission, the goal of the group whose work it is, the task
+ * the owner gave, and each hand-off down to this one. Every link is as it stood when that task started.
+ */
+export function whyOf(quest: Quest): WhyStep[] {
+  const tasks: Quest[] = [quest];
+  for (let at = quest, n = 0; at.parent && n < 12; n++) {
+    const from = questStore.get(at.parent.id);
+    if (!from) break;
+    tasks.unshift(from);
+    at = from;
+  }
+  const top = tasks[0];
+  const purpose = top.purpose ?? quest.purpose;
+  const steps: WhyStep[] = [];
+  if (purpose?.mission) steps.push({ kind: "mission", text: purpose.mission });
+  // The goal that matters is the group of the one the owner asked: the work is for that group's goal.
+  if (purpose?.goal) steps.push({ kind: "goal", text: purpose.goal, who: purpose.group });
+  for (const t of tasks) steps.push({ kind: "task", text: t.title, who: t.bot.name, by: t.parent?.by, id: t.id });
+  return steps;
+}
+
+/** The why chain in words, for the agent doing the task. Empty for a task the owner gave with no mission or goal set. */
+export function whyPrompt(quest: Quest): string {
+  const steps = whyOf(quest);
+  if (steps.length <= 1) return "";
+  const lines = steps.map((s) => (s.kind === "mission" ? `- The organization's mission: ${s.text}` : s.kind === "goal" ? `- The ${s.who} group's goal: ${s.text}` : s.id === quest.id ? `- Your task: ${s.text}` : `- ${s.by ? `Handed on to ${s.who}` : `The owner asked ${s.who}`}: ${s.text}`));
+  return `Why this task exists, from the top:\n${lines.join("\n")}\nKeep the work aimed at this. If the task as written would not serve it, say so in your report rather than doing it anyway.`;
+}
 
 /** The budget a task shares with everything handed on from it: the budget per task in Settings. */
 export const chainBudget = () => getConfig().budget.spend ?? 1;
@@ -185,10 +238,18 @@ export class QuestRunner {
     // A bot that has used its month's budget starts nothing new.
     const blocked = budgetBlock(bot);
     if (blocked) throw new Error(blocked);
+    // The task is charged to its agent's group, which stops starting work at its monthly budget.
+    const org = orgs.active();
+    const group = groupOf(org, bot.id);
+    const charge = group ? { org: org.id, group: group.id } : undefined;
+    const groupBlocked = charge ? groupStop({ charge }) : null;
+    if (groupBlocked) throw new Error(groupBlocked);
     const conversation = await conversations.create({ title: (title ?? text).replace(/\s+/g, " ").slice(0, 80), source: "quest" });
     const now = new Date().toISOString();
     const quest: Quest = { id: conversation.id, title: conversation.title, bot, status: "running", steps: 0, createdAt: now, updatedAt: now, ...(template ? { template } : {}), ...(kind ? { kind } : {}) };
     quest.root = quest.id;
+    if (charge) quest.charge = charge;
+    if (org.mission || group?.goal) quest.purpose = { org: org.id, ...(org.mission ? { mission: org.mission } : {}), ...(group ? { group: group.name } : {}), ...(group?.goal ? { goal: group.goal } : {}) };
     if (parent) {
       quest.parent = { ...parent, delivered: false };
       const from = questStore.get(parent.id);
@@ -374,9 +435,16 @@ export class QuestRunner {
     // What the quest has cost so far counts towards its bot's month. A bot that
     // reaches its monthly budget part-way is stopped; its work so far is kept.
     if (event.type === "assistant" || event.type === "status") {
-      recordSpend(id, quest.bot.id, conversations.get(id)?.usage.cost ?? 0);
+      recordSpend(id, quest.bot.id, conversations.get(id)?.usage.cost ?? 0, new Date(), quest.charge);
       if (event.type === "assistant" && budgetBlock(asItIsNow(quest.bot))) {
         this.#ending.set(id, "budget");
+        this.#engine.stop(id);
+      }
+      // A group that reaches its monthly budget part-way stops its work too; what was done is kept.
+      const groupOver = event.type === "assistant" ? groupStop(quest) : null;
+      if (groupOver) {
+        this.#ending.set(id, "budget");
+        this.#set(id, { note: groupOver });
         this.#engine.stop(id);
       }
       // A task and everything handed on from it share one budget. When it is used up, the hand-offs stop;

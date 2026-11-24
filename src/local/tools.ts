@@ -21,7 +21,8 @@ import {
   setting,
 } from "../core/index.ts";
 import type { Bot, Conversation, JobBook, Power, RunSpec, Tool } from "../core/index.ts";
-import { MAX_DEPTH, MAX_OPEN_HANDOFFS, chainBudget, chainCost, chainOf, chainOver, questStore, quests, rootOf } from "./quests.ts";
+import { MAX_DEPTH, MAX_OPEN_HANDOFFS, chainBudget, chainCost, chainOf, chainOver, questStore, quests, rootOf, whyPrompt } from "./quests.ts";
+import { propose } from "./proposals.ts";
 import { loadCrew } from "./crew.ts";
 import { assignableBy, memberOf, oneLine, orgs, reportsOf, requestableBy, rolePrompt } from "./orgs.ts";
 import { orgMemoryPrompt, teamMemoryTool } from "./orgmemory.ts";
@@ -459,7 +460,31 @@ const teamMemory = teamMemoryTool((conversationId) => {
 });
 
 /** What a member of the organization gets for working with others: hand-offs to those it leads, requests across departments, escalation to its lead, questions, and the shared memory. */
+/**
+ * Proposes a new position to the owner. Only a lead (of a group, or of anyone) may, since it is the one that sees
+ * where work falls through. The chart does not change: the owner approves or declines in the app.
+ */
+export const proposeTool: Tool = defineTool<{ role: string; why: string; reportsTo?: string; group?: string }>({
+  name: "propose_position",
+  description:
+    "Propose a new position for the organization, when your group keeps meeting work nobody on the chart can do. The owner approves or declines it in the app; nothing changes until then, so carry on with the team you have and do not wait. Use it rarely: one well-argued proposal, not several. Leave the role empty to see which roles can be proposed.",
+  properties: {
+    role: { type: "string", description: "The role, by its title, e.g. Bookkeeper." },
+    why: { type: "string", description: "What work it would do that nobody does now, and what that costs the organization today. One or two sentences, for the owner." },
+    reportsTo: { type: "string", description: "Who it would report to, by title. Leave it out to have it report to you." },
+    group: { type: "string", description: "The group it would join. Leave it out for the group of whoever it reports to." },
+  },
+  required: ["why"],
+  async run(input, { conversation }) {
+    const caller = agentOf(conversation.id);
+    if (!caller) throw new Error("You speak for the owner, so tell them what position you would add and why.");
+    const p = propose(orgs.active().id, caller.id, input);
+    return `Proposed ${p.title} in ${p.group}, reporting to ${p.reportsTo === caller.id ? "you" : p.reportsTo}. The owner decides in the app; nothing changes until then. Carry on with the team you have.`;
+  },
+});
+
 function teamworkTools(org: ReturnType<typeof orgs.active>, botId: string): Tool[] {
+  const leads = assignableBy(org, botId).length > 0 || (org.groups ?? []).some((g) => g.lead === botId);
   return [
     ...(assignableBy(org, botId).length ? [assignTool] : []),
     ...(requestableBy(org, botId).length ? [requestTool] : []),
@@ -467,6 +492,7 @@ function teamworkTools(org: ReturnType<typeof orgs.active>, botId: string): Tool
     ...(org.members.length > 1 ? [askTool] : []),
     teamMemory,
     libraryForAgents,
+    ...(leads ? [proposeTool] : []),
   ];
 }
 
@@ -576,6 +602,8 @@ export function localRunSpec(jobs: JobBook) {
       const onChart = Boolean(memberOf(org, bot.id));
       const remembered = onChart ? [orgMemoryPrompt(org, bot.id, topicOf(conversation)), libraryPrompt(org, bot.id, topicOf(conversation))].filter(Boolean).join("\n\n") : "";
       const question = Boolean(quest.kind);
+      // Why the task exists, from the mission down: so a hand-off three levels deep still knows what it is for.
+      const why = question ? "" : whyPrompt(quest);
       // Whoever may hand work to someone gets assign_task; every member can ask a colleague and use the shared memory.
       const teamwork = !onChart ? [] : question ? [teamMemory, libraryForAgents] : teamworkTools(org, bot.id);
       if (question) {
@@ -605,7 +633,7 @@ export function localRunSpec(jobs: JobBook) {
       }
       return {
         model,
-        system: `${localPrompt(root, bot.name, [...where, ...linked.note], conversation)}\n\n${botPrompt(bot)}${role ? `\n\n${role}` : ""}${remembered ? `\n\n${remembered}` : ""}`,
+        system: `${localPrompt(root, bot.name, [...where, ...linked.note], conversation)}\n\n${botPrompt(bot)}${role ? `\n\n${role}` : ""}${why ? `\n\n${why}` : ""}${remembered ? `\n\n${remembered}` : ""}`,
         tools: [...(await botTools(bot, root, jobs, claude)), ...teamwork, ...linked.tools],
         hostedTools: claude && bot.powers.includes("web") ? HOSTED_WEB : [],
         // Connectors are reached from this machine (see connectors.ts), so every model can use them.

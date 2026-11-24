@@ -1435,3 +1435,158 @@ test("suggested positions come from the mission and are only proposals; acceptin
     orgs.remove(org.id);
   }
 });
+
+test("a group stops at its monthly budget: work is charged to the group its agent was in, and a raised budget counts at once", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const crew = await import("../../src/local/crew.ts");
+  const spend = await import("../../src/local/spend.ts");
+  const quests = await import("../../src/local/quests.ts");
+  const org = orgs.create("Budget Co", "Keep the books straight.", "custom");
+  try {
+    market.addTeam("finance-team");
+    const finance = orgs.active().groups.find((g) => orgs.active().members.some((m) => m.department === g.name && m.bot === "bookkeeper"))!;
+    orgs.updateGroup(org.id, finance.id, { budget: 1, goal: "Close every month within five days." });
+    // Spending charged to the group counts towards it, and only to it.
+    spend.recordSpend("budgetco-0000001", "bookkeeper", 0.85, new Date(), { org: org.id, group: finance.id });
+    assert.equal(spend.groupBudget(org.id, orgs.active().groups.find((g) => g.id === finance.id)!).state, "warned");
+    spend.recordSpend("budgetco-0000002", "bookkeeper", 0.2, new Date(), { org: org.id, group: finance.id });
+    assert.equal(spend.groupSpend(org.id)[finance.id], 1.05);
+    const bookkeeper = crew.findBot("bookkeeper")!;
+    await assert.rejects(quests.quests.start({ bot: bookkeeper, text: "Reconcile November." }), /Finance group has reached its monthly budget \(\$1\.05 of \$1\.00\)/);
+    // Raising the budget lets work start again, and the task records what it is charged to and why it exists.
+    orgs.updateGroup(org.id, finance.id, { budget: 5 });
+    script.push(say("Reconciled."));
+    const q = await quests.quests.start({ bot: bookkeeper, text: "Reconcile November." });
+    assert.deepEqual(q.charge, { org: org.id, group: finance.id });
+    assert.deepEqual(quests.whyOf(q).map((s) => s.kind), ["mission", "goal", "task"]);
+    assert.match(quests.whyPrompt(q), /mission: Keep the books straight[\s\S]*Finance group's goal: Close every month within five days[\s\S]*Your task: Reconcile November/);
+    for (let i = 0; i < 100 && quests.questStore.get(q.id)!.status === "running"; i++) await new Promise((r) => setTimeout(r, 50));
+  } finally {
+    orgs.remove(org.id);
+  }
+});
+
+test("a lead may propose a position; only the owner adds it, and a declined one is not proposed again", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const proposals = await import("../../src/local/proposals.ts");
+  const org = orgs.create("Propose Co", "", "custom");
+  try {
+    market.addTeam("finance-team");
+    const lead = orgs.active().members.find((m) => m.manager === null)!.bot;
+    const member = orgs.active().members.find((m) => m.manager === lead)!.bot;
+    // A lead gets the tool; someone with nobody below and no group to lead does not.
+    const runFor = async (botId: string) => (await tools.localRunSpec(app.jobs)({ id: "0".repeat(16), bot: botId, messages: [] } as unknown as Conversation)).tools.map((t) => t.name);
+    assert.ok((await runFor(lead)).includes("propose_position"));
+    assert.ok(!(await runFor(member)).includes("propose_position"));
+
+    assert.throws(() => proposals.propose(org.id, lead, { role: "Head of Sales", why: "short" }), /Say why/);
+    assert.throws(() => proposals.propose(org.id, lead, { role: "Unicorn Wrangler", why: "We need someone to wrangle unicorns every single week." }), /no such role/);
+    assert.throws(() => proposals.propose(org.id, lead, { role: member, why: "We need this role for the month-end close and audits." }), /already on the chart/);
+    const p = proposals.propose(org.id, lead, { role: "Head of Sales", why: "Invoices go out but nobody chases new customers, so revenue is flat." });
+    assert.equal(p.reportsTo, lead);
+    assert.throws(() => proposals.propose(org.id, lead, { role: "head-of-sales", why: "Invoices go out but nobody chases new customers at all." }), /already been proposed/);
+    // Proposing changes nothing on the chart.
+    assert.ok(!orgs.active().members.some((m) => m.bot === "head-of-sales"));
+
+    const approved = await proposals.decide(org.id, p.id, "approve");
+    assert.equal(approved.status, "approved");
+    assert.equal(orgs.active().members.find((m) => m.bot === "head-of-sales")!.manager, lead);
+    // It joins its lead's group; no empty group is left behind for its usual department.
+    assert.ok(!orgs.active().groups.some((g) => !orgs.active().members.some((m) => m.department === g.name)));
+    await assert.rejects(proposals.decide(org.id, p.id, "decline"), /already been answered/);
+
+    const q = proposals.propose(org.id, lead, { role: "Head of Marketing", why: "Nobody writes about the business, so customers never hear of us." });
+    await proposals.decide(org.id, q.id, "decline", "Not this quarter.");
+    assert.ok(!orgs.active().members.some((m) => m.bot === "head-of-marketing"));
+    assert.throws(() => proposals.propose(org.id, lead, { role: "Head of Marketing", why: "Nobody writes about the business, so customers never hear of us." }), /declined.*Not this quarter/);
+  } finally {
+    orgs.remove(org.id);
+  }
+});
+
+test("a ready-made team drops as a pack under a chosen position, or into a group, and moves nothing else", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const org = orgs.create("Pack Co", "", "custom");
+  try {
+    market.addTeam("finance-team");
+    const head = orgs.active().members.find((m) => m.manager === null)!;
+    const before = structuredClone(orgs.active().members);
+    // Under a position: the pack's lead reports to it, its members come with their lines, each in its own department's group.
+    market.addPack(org.id, "marketing-team", { under: head.bot });
+    let now = orgs.active();
+    assert.equal(now.members.find((m) => m.bot === "head-of-marketing")!.manager, head.bot);
+    assert.equal(now.members.find((m) => m.bot === "content-writer")!.manager, "head-of-marketing");
+    for (const m of before) assert.deepEqual(now.members.find((x) => x.bot === m.bot), m, `${m.bot} did not move`);
+    assert.ok(!now.groups.some((g) => !now.members.some((m) => m.department === g.name)), "no empty group");
+    assert.throws(() => market.addPack(org.id, "sales-team", { under: "no-such-position" }), /not on the chart/);
+    // Into a group: everyone joins it.
+    market.addPack(org.id, "support-team", { group: head.department });
+    now = orgs.active();
+    const support = market.loadTeams().find((t) => t.id === "support-team")!.bots;
+    assert.ok(support.every((b) => now.members.find((m) => m.bot === b)!.department === head.department));
+    assert.equal(now.members.find((m) => m.bot === support[0])!.manager, null);
+  } finally {
+    orgs.remove(org.id);
+  }
+});
+
+test("an organization exports as one readable file and imports into a new one identically, bringing its own agents", async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const crew = await import("../../src/local/crew.ts");
+  const portable = await import("../../src/local/portable.ts");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const org = orgs.create("Export Co", "Sell bread.", "custom");
+  const made: string[] = [];
+  try {
+    market.addTeam("sales-team");
+    orgs.update(org.id, { philosophy: "Small and careful.", approvalLimit: 50 });
+    // An agent of the owner's own, on the chart with a dotted line and responsibilities.
+    crew.saveBot("bread-taster", { name: "Bread Taster", type: "researcher", character: "pip", instructions: "Taste the bread and say what to change.", powers: ["memory"], approvals: "ask" });
+    made.push("bread-taster");
+    orgs.setMember(org.id, { bot: "bread-taster", title: "Taster", department: "Quality", manager: "head-of-sales", also: "account-executive", responsibilities: "Every new loaf." });
+    const g = orgs.active().groups.find((x) => x.name === "Quality")!;
+    orgs.updateGroup(org.id, g.id, { goal: "No bad loaf ships.", budget: 12 });
+    const file = portable.exportOrg(org.id);
+    assert.equal(file.name, "Export Co.talqava.yaml");
+    assert.match(file.text, /format: talqava-organization/);
+    assert.match(file.text, /bread-taster:/);
+    assert.doesNotMatch(file.text, /sk-ant|apiKey|anthropicKey/i);
+
+    // In a fresh app the owner's agent would not exist: remove it, then import.
+    fs.rmSync(path.join(crew.personalDir(), "bread-taster.yaml"));
+    const got = portable.importOrg(file.text);
+    made.push(got.org.id);
+    assert.equal(got.org.name, "Export Co (2)");
+    assert.deepEqual(got.added, ["bread-taster"]);
+    assert.equal(crew.findBot("bread-taster")!.name, "Bread Taster");
+    const strip = (o: typeof got.org) => ({
+      mission: o.mission, philosophy: o.philosophy, approvalLimit: o.approvalLimit,
+      members: o.members.map((m) => [m.bot, m.title, m.department, m.manager, m.also ?? null, m.responsibilities ?? null]).sort(),
+      groups: o.groups.map((x) => [x.name, x.lead, x.goal ?? null, x.budget ?? null]).sort(),
+    });
+    assert.deepEqual(strip(got.org), strip(orgs.list().orgs.find((o) => o.id === org.id)!));
+
+    // Importing again keeps the owner's own agent as it is, and says so.
+    crew.saveBot("bread-taster", { name: "My Taster", type: "researcher", character: "pip", instructions: "Mine.", powers: ["memory"], approvals: "ask" });
+    const again = portable.importOrg(file.text);
+    made.push(again.org.id);
+    assert.deepEqual(again.kept, ["bread-taster"]);
+    assert.equal(crew.findBot("bread-taster")!.name, "My Taster");
+
+    // A file that is not an export, or whose chart does not hold together, changes nothing.
+    const count = orgs.list().orgs.length;
+    assert.throws(() => portable.importOrg("hello: world"), /not an exported Talqava organization/);
+    assert.throws(() => portable.importOrg(file.text.replace(/agent: head-of-sales/, "agent: nobody-at-all")), /needs the agent "nobody-at-all"/);
+    const looped = file.text.replace(/(agent: head-of-sales\n(?:.*\n)*?\s+reportsTo:) null/, "$1 account-executive");
+    assert.throws(() => portable.importOrg(looped), /loop/);
+    assert.equal(orgs.list().orgs.length, count);
+  } finally {
+    for (const id of made) id === "bread-taster" ? crew.removeBot(id) : orgs.remove(id);
+    orgs.remove(org.id);
+  }
+});

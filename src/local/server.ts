@@ -29,7 +29,7 @@ import { CAUTION_TOOLS, localRunSpec } from "./tools.ts";
 import { closeConnectors } from "./connectors.ts";
 import { resolveModel, splitRef } from "./models.ts";
 import { botId, loadCrew, removeBot, saveBot } from "./crew.ts";
-import { addMarketBot, addTeam, buildStructure, loadMarketplace, loadTeams, onTeam } from "./marketplace.ts";
+import { addMarketBot, addPack, addTeam, buildStructure, loadMarketplace, loadTeams, onTeam } from "./marketplace.ts";
 import { assignRule, requestRule, orgs } from "./orgs.ts";
 import { orgMemory } from "./orgmemory.ts";
 import { mcpIntegration, setClaudeDesktop } from "./mcpintegration.ts";
@@ -41,9 +41,11 @@ import { audit, readAudit, redact } from "./audit.ts";
 import { finishOpenRouterSignIn, openrouterIntegration, openrouterModels, removeOpenRouter, saveOpenRouterKey, startOpenRouterSignIn, useOpenRouterModel } from "./openrouter.ts";
 import { autoSetupGit, cloneRepository, disconnectRepository, gitIntegration, githubAccounts, githubRepos, installGit, listIntegrations, pollGithubSignIn, removeGitIntegration, startGithubSignIn, testGithub } from "./integrations.ts";
 import { ASSIGN_RULES, INDUSTRIES, REQUEST_RULES, STRUCTURES, seatsFor } from "./structures.ts";
-import { budgetBlock, monthlyBudgets } from "./spend.ts";
+import { budgetBlock, groupSpend, monthlyBudgets } from "./spend.ts";
+import { decide, listProposals } from "./proposals.ts";
+import { exportOrg, importOrg } from "./portable.ts";
 import { findTemplate, loadTemplates } from "./templates.ts";
-import { chainBudget, chainCost, chainOf, chainSize, journal, questStore, quests, rootOf } from "./quests.ts";
+import { chainBudget, chainCost, chainOf, chainSize, journal, questStore, quests, rootOf, whyOf } from "./quests.ts";
 import type { Quest } from "./quests.ts";
 import { currentBranch, repoRoot } from "./git.ts";
 
@@ -130,6 +132,9 @@ function describeRequest(method: string, parts: string[], body: any, url: URL): 
     return { kind: "library", action: map[id] ?? (method === "PATCH" ? "Changed who can use a file" : method === "DELETE" ? "Deleted a file" : `${method} library ${id ?? ""}`.trim()), detail: name ? `into ${url.searchParams.get("folder") ?? ""}` : words(body) };
   }
   if (area === "integrations") return { kind: "integration", action: `${id ? id[0].toUpperCase() + id.slice(1) : "Integration"}: ${(action ?? method.toLowerCase()).replace(/-/g, " ")}`, detail: words(body) };
+  // These routes write their own, clearer entries.
+  if (area === "orgs" && (id === "import" || action === "proposals")) return null;
+  if (area === "orgs" && action === "pack") return { kind: "organization", action: `Added the ready-made team ${body.team ?? ""}${body.under ? ` under ${body.under}` : body.group ? ` into ${body.group}` : ""}` };
   if (area === "orgs" || area === "marketplace") return { kind: "organization", action: area === "marketplace" ? "Added from the marketplace" : `Changed the organization${action ? ` (${action})` : ""}`, detail: words(body) };
   if (area === "inbox") return { kind: "inbox", action: id === "names" ? `Renamed an agent to “${body.name || "its default"}”` : "Updated messages", detail: id === "names" ? parts[2] : words(body) };
   return { kind: "other", action: `${method} ${parts.join(" / ")}`, detail: words(body) };
@@ -530,6 +535,8 @@ function questSummary(quest: Quest) {
     // A question or an escalated decision rather than a task, and how many hand-offs deep it is.
     kind: quest.kind ?? null,
     depth: quest.depth ?? 0,
+    // Why the task exists: the mission, the group's goal, and each task above it.
+    why: whyOf(quest),
     resumedAt: quest.resumedAt ?? null,
     createdAt: quest.createdAt,
     updatedAt: quest.updatedAt,
@@ -1025,7 +1032,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (route === "GET orgs" && !orgId) {
       const listed = orgs.list();
       // Each organization comes with the rule its structure sets; the structures themselves are sent once.
-      return send(res, 200, { ...listed, orgs: listed.orgs.map((o) => ({ ...o, assignRule: assignRule(o), requestRule: requestRule(o) })),
+      return send(res, 200, { ...listed, orgs: listed.orgs.map((o) => ({ ...o, assignRule: assignRule(o), requestRule: requestRule(o), groupSpend: groupSpend(o.id), proposals: listProposals(o.id).filter((p) => p.status === "open") })),
         structures: STRUCTURES,
         assignRules: ASSIGN_RULES,
         requestRules: REQUEST_RULES,
@@ -1033,6 +1040,9 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
         industries: INDUSTRIES.map((i) => ({ id: i.id, name: i.name, examples: i.examples, recommended: i.recommended, why: i.why, seats: Object.fromEntries(STRUCTURES.map((x) => [x.id, seatsFor(x.id, i).map((seat) => seat.bot)])), sizes: Object.fromEntries(STRUCTURES.map((x) => [x.id, chartSize(seatsFor(x.id, i))])) })),
       });
     }
+    // An organization as one readable file, and a file imported as a new organization.
+    if (route === "POST orgs" && orgId === "import") return send(res, 200, await attempt(() => importOrg(body.text)));
+    if (route === "GET orgs" && sub === "export") return send(res, 200, await attempt(() => exportOrg(orgId)));
     if (route === "POST orgs" && !orgId) return send(res, 200, await attempt(() => orgs.create(body.name, body.mission, body.structure)));
     if (route === "POST orgs" && sub === "build") return send(res, 200, await attempt(() => buildStructure(orgId, String(body.structure ?? ""), body.industry === undefined ? undefined : String(body.industry), body.exact !== false)));
     if (route === "POST orgs" && sub === "reset") {
@@ -1049,6 +1059,11 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (route === "POST orgs" && sub === "arrange") throw new HttpError(410, "The chart is no longer redrawn from a structure. Drag positions to set who reports to whom.");
     if (route === "POST orgs" && sub === "suggest") return send(res, 200, await attempt(() => suggestPositions(orgId, body.mission, Number(body.limit) || 6)));
     if (route === "POST orgs" && sub === "accept") return send(res, 200, await attempt(() => acceptSuggestion(orgId, body)));
+    // A ready-made team dropped where the owner put it: under a position, into a group, or under the owner.
+    if (route === "POST orgs" && sub === "pack") return send(res, 200, await attempt(() => addPack(orgId, String(body.team ?? ""), { under: body.under, group: body.group })));
+    // Positions the agents proposed, and the owner's answer to one.
+    if (route === "GET orgs" && sub === "proposals") return send(res, 200, listProposals(orgId));
+    if (route === "POST orgs" && sub === "proposals" && parts[3]) return send(res, 200, await attempt(() => decide(orgId, parts[3], body.decision, body.answer)));
     if (route === "PUT orgs" && sub === "chart") return send(res, 200, await attempt(() => orgs.replaceChart(orgId, body)));
     if (route === "POST orgs" && sub === "groups") return send(res, 200, await attempt(() => orgs.addGroup(orgId, body)));
     if (route === "PATCH orgs" && sub === "groups" && memberId) return send(res, 200, await attempt(() => orgs.updateGroup(orgId, memberId, body)));
