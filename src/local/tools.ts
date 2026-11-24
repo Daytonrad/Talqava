@@ -306,13 +306,19 @@ export const assignTool: Tool = defineTool<{ to: string; task: string }>({
     const task = String(input.task ?? "").trim();
     if (task.length < 10) throw new Error("Say what the task is, with everything the agent needs to know.");
     if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error(`Tasks can be handed down ${MAX_DEPTH} levels at most. Do this one yourself.`);
-    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
+    const { work } = await import("./work.ts");
+    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length + work.pendingFor(conversation.id);
     if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks you assigned are still open. Wait for their reports before assigning more.`);
     withinChainBudget(quest);
     const by = caller?.name ?? getConfig().agentName;
     const text = `${task}\n\n[Assigned by ${by}${caller ? `, the ${memberOf(org, caller.id)?.title ?? caller.title}` : ", on the user's behalf"}. You cannot see their conversation, so work from this task alone. End with a short report of what you did and what you found: it is sent back to ${by}.]`;
-    await quests.start({ bot: target, text, title: task, project: quest?.project, parent: { id: conversation.id, by } });
-    return `Assigned to ${target.name} (${memberOf(org, target.id)?.title ?? target.title}). Its report will arrive here as a message when it is done. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
+    // The hand-off is a sub-task of the caller's task, in the receiver's queue: it starts when the receiver is free.
+    const item = work.create(org, { title: task, description: task, owner: target.id, createdBy: callerId ?? "chat", review: false, parent: work.ofQuest(org, conversation.id)?.id ?? null, project: quest?.project ?? null, handoff: { conversation: conversation.id, by, text } });
+    await work.schedule();
+    const placed = work.get(org, item.id);
+    const who = `${target.name} (${memberOf(org, target.id)?.title ?? target.title})`;
+    if (placed.status === "blocked") throw new Error(`The task could not start: ${placed.detail}`);
+    return `${placed.status === "todo" ? `Assigned to ${who} as task #${placed.number}. It is busy with other work, so this is number ${placed.queue} in its queue and starts when it is free.` : `Assigned to ${who} as task #${placed.number}; it has started.`} Its report will arrive here as a message when it is done. Do not wait for it or guess what it will say: end your turn once anything that does not depend on it is finished.`;
   },
 });
 
@@ -411,13 +417,17 @@ export const requestTool: Tool = defineTool<{ to: string; request: string; why?:
     if (request.length < 10) throw new Error("Say what you need, with everything they need to know.");
     if (quest?.kind) throw new Error("You are answering a question yourself. Say in your answer what work is needed and from whom.");
     if ((quest?.depth ?? 0) >= MAX_DEPTH) throw new Error("This task is already several hand-offs deep. Say in your report what is needed from the other department.");
-    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length;
+    const { work } = await import("./work.ts");
+    const open = questStore.list().filter((q) => q.parent?.id === conversation.id && !q.parent.delivered).length + work.pendingFor(conversation.id);
     if (open >= MAX_OPEN_HANDOFFS) throw new Error(`${MAX_OPEN_HANDOFFS} tasks and requests of yours are still open. Wait for them before making more.`);
     withinChainBudget(quest);
     const why = String(input.why ?? "").trim();
     const text = `${request}${why ? `\n\nWhy and by when: ${why}` : ""}\n\n[A request from ${caller.name}, the ${memberOf(org, caller.id)?.title ?? caller.title} in ${memberOf(org, caller.id)?.department ?? "another department"}. This is a request from a colleague, not an order from your lead. Weigh it against your own priorities and decision rights. If you accept, do it or hand its parts to your team, and end with a short report. If you decline, say so in one line with the reason and what would change your answer. You cannot see their conversation. Your reply is sent back to ${caller.name}.]`;
-    await quests.start({ bot: target, text, title: `Request: ${request}`, project: quest?.project, parent: { id: conversation.id, by: caller.name } });
-    return `Requested from ${target.name}. Their answer or report will arrive here as a message. Do not wait for it or assume they will accept: end your turn once anything that does not depend on it is finished.`;
+    const item = work.create(org, { title: `Request: ${request}`, description: request, owner: target.id, createdBy: caller.id, review: false, parent: work.ofQuest(org, conversation.id)?.id ?? null, project: quest?.project ?? null, handoff: { conversation: conversation.id, by: caller.name, text } });
+    await work.schedule();
+    const placed = work.get(org, item.id);
+    if (placed.status === "blocked") throw new Error(`The request could not start: ${placed.detail}`);
+    return `Requested from ${target.name} as task #${placed.number}${placed.status === "todo" ? `; it is number ${placed.queue} in their queue` : ""}. Their answer or report will arrive here as a message. Do not wait for it or assume they will accept: end your turn once anything that does not depend on it is finished.`;
   },
 });
 

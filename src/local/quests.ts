@@ -233,7 +233,23 @@ export class QuestRunner {
     return questStore.list().filter((q) => q.status === "running" || q.status === "waiting");
   }
 
-  async start({ bot, text, project, title, template, parent, kind }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string }; kind?: "question" | "decision" }): Promise<Quest> {
+  /** Set by the work layer: hand-offs still waiting in an agent's queue for a conversation, so its reports wait for them. */
+  pendingHandoffs: (conversationId: string) => number = () => 0;
+  /** Set by the work layer: called when a run stops, so the agent's next task can start. */
+  onRunEnded: (questId: string) => void = () => {};
+  /** Set by the work layer: records a run started outside the queues as a task. */
+  onStartedOutsideQueue: (quest: Quest) => void = () => {};
+
+  isRunning(id: string): boolean {
+    return this.#engine.isRunning(id);
+  }
+
+  /** Continues a run with a message (the owner's comment, or "carry on"). */
+  async resume(id: string, message: string) {
+    await this.#engine.startRun(id, message, { keepTitle: true });
+  }
+
+  async start({ bot, text, project, title, template, parent, kind, item }: { bot: Bot; text: string; project?: string; title?: string; template?: Quest["template"]; parent?: { id: string; by: string }; kind?: "question" | "decision"; item?: string }): Promise<Quest> {
     if (this.running().length >= MAX_RUNNING) throw new Error(`${MAX_RUNNING} quests are already under way. Wait for one to finish, or stop one.`);
     // A bot that has used its month's budget starts nothing new.
     const blocked = budgetBlock(bot);
@@ -263,6 +279,8 @@ export class QuestRunner {
       if (!kind && bot.powers.some((p) => p === "files" || p === "shell")) quest.copy = await prepareCopy(project, quest.id, WORKTREE_DIR());
     }
     questStore.save(quest);
+    // Every task shows on the board: one that did not come from a queue is recorded there now.
+    if (!item && !kind) this.onStartedOutsideQueue(quest);
     journal.append(quest.id, { type: "quest_start", bot: bot.id, title: quest.title, project: project ?? null, branch: quest.copy?.branch ?? null });
     audit({ actor: bot.id, actorName: bot.title || bot.name, kind: "task", action: parent ? `Started a task handed on by ${parent.by}` : kind ? `Received a ${kind}` : "Started a task", detail: quest.title, task: quest.id });
     // A task the owner gave (not a hand-off or a question between agents) is checked first: does the agent have what it needs?
@@ -405,9 +423,11 @@ export class QuestRunner {
     const all = questStore.list();
     const children = all.filter((q) => q.parent?.id === parentId && !q.parent.delivered);
     if (!children.length || children.some((q) => q.status === "running" || q.status === "waiting")) return;
+    // Hand-offs still waiting in an agent's queue are part of the same answer: the reports go together once they have run.
+    if (this.pendingHandoffs(parentId) > 0) return;
     // A child that is still waiting for its own hand-offs has only said "I have asked, I am waiting": that is not
     // its report. Its report goes up when its own reports have come in and it has finished again.
-    if (children.some((child) => all.some((q) => q.parent?.id === child.id && (!q.parent.delivered || q.status === "running" || q.status === "waiting")))) return;
+    if (children.some((child) => this.pendingHandoffs(child.id) > 0 || all.some((q) => q.parent?.id === child.id && (!q.parent.delivered || q.status === "running" || q.status === "waiting")))) return;
     for (const child of children) this.#set(child.id, { parent: { ...child.parent!, delivered: true } });
     const reports = children.reverse().map((child) => {
       const said = [...(conversations.get(child.id)?.messages ?? [])].reverse().find((m) => m.role === "assistant" && Array.isArray(m.content) && m.content.some((b) => b.type === "text" && b.text.trim()));
@@ -428,7 +448,11 @@ export class QuestRunner {
 
   onEvent(id: string, event: RunEvent) {
     // When any conversation stops, reports that were waiting for it can go in.
-    if (event.type === "status" && !event.running) setTimeout(() => this.deliverReports(id).catch(() => {}), 50);
+    if (event.type === "status" && !event.running) {
+      setTimeout(() => this.deliverReports(id).catch(() => {}), 50);
+      // The agent may be free for its next task, and the owner's comments on this one can go in.
+      setTimeout(() => this.onRunEnded(id), 60);
+    }
     const quest = questStore.get(id);
     if (!quest) return;
     journal.append(id, event);

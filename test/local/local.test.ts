@@ -1731,3 +1731,115 @@ test("templates add ready-made pages; agents get the workspace tool, matching pa
     orgs.remove(org0.id);
   }
 });
+
+/** Waits until a condition holds, checking every 50 ms, for up to `ms`. */
+async function until(check: () => boolean, ms = 8000) {
+  for (let waited = 0; waited < ms && !check(); waited += 50) await new Promise((r) => setTimeout(r, 50));
+  return check();
+}
+
+test("tasks wait in their agent's queue and run one at a time, highest priority first; the owner reviews, comments and cancels", { timeout: 40_000 }, async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const { work } = await import("../../src/local/work.ts");
+  const quests = await import("../../src/local/quests.ts");
+  const crew = await import("../../src/local/crew.ts");
+  const org0 = orgs.create("Queue Co", "Answer questions well.", "custom");
+  const busyId = "b".repeat(16);
+  try {
+    const org = orgs.active();
+    const pip = crew.findBot("pip");
+    script.length = 0;
+    // The analyst is busy with another run, so new tasks wait in its queue.
+    const stamp = new Date().toISOString();
+    quests.questStore.save({ id: busyId, title: "Something else", bot: pip, status: "running", steps: 0, createdAt: stamp, updatedAt: stamp });
+    const normal = work.create(org, { title: "Normal task", description: "Do the normal thing.", owner: "pip", createdBy: "owner" });
+    const low = work.create(org, { title: "Low task", description: "Do the low thing.", owner: "pip", priority: "low", createdBy: "owner" });
+    const urgent = work.create(org, { title: "Urgent task", description: "Do the urgent thing.", owner: "pip", priority: "urgent", createdBy: "owner" });
+    await work.schedule();
+    assert.deepEqual([urgent, normal, low].map((t) => [work.get(org, t.id).status, work.get(org, t.id).queue]), [["todo", 1], ["todo", 2], ["todo", 3]]);
+
+    // Once it is free, it works through them in priority order, one at a time; each ends in To review.
+    script.push(say("Urgent done."), say("Normal done."), say("Low done."));
+    quests.questStore.save({ ...quests.questStore.get(busyId)!, status: "done" });
+    await work.schedule();
+    assert.ok(await until(() => [urgent, normal, low].every((t) => work.get(org, t.id).status === "review")), [urgent, normal, low].map((t) => work.get(org, t.id).status).join(","));
+    const started = [urgent, normal, low].map((t) => quests.questStore.get(work.get(org, t.id).quest!)!.createdAt);
+    assert.deepEqual([...started].sort(), started, "started in priority order");
+    assert.equal(work.get(org, urgent.id).ownerName, "Research Analyst");
+
+    // Accepting finishes it; a comment on finished work sends it back to the agent, who acts on it.
+    assert.equal(work.accept(org, urgent.id).status, "done");
+    script.push(say("Fixed as you asked."));
+    await work.comment(org, normal.id, "Please add the sources.");
+    assert.ok(await until(() => work.get(org, normal.id).status === "review"));
+    assert.ok(conversationText(work.get(org, normal.id).quest!).includes("Please add the sources."));
+    assert.equal(work.comments(org, normal.id)[0].delivered, true);
+
+    // Cancelling a task cancels what is under it.
+    const parent = work.create(org, { title: "Parent", owner: "pip", createdBy: "owner" });
+    quests.questStore.save({ ...quests.questStore.get(busyId)!, status: "running" });
+    const child = work.create(org, { title: "Child", owner: "pip", parent: parent.id, createdBy: "owner" });
+    work.cancel(org, parent.id);
+    assert.deepEqual([work.get(org, parent.id).status, work.get(org, child.id).status], ["cancelled", "cancelled"]);
+    assert.equal(work.get(org, child.id).priority, "normal");
+
+    // A run started outside the queues (a core task, a schedule, another AI app) shows on the board too.
+    quests.questStore.save({ ...quests.questStore.get(busyId)!, status: "done" });
+    script.push(say("Outside done."));
+    const outside = await quests.quests.start({ bot: pip, text: "An outside task" });
+    assert.ok(await until(() => work.list(org).some((t) => t.quest === outside.id && t.status === "review")));
+  } finally {
+    quests.questStore.remove(busyId);
+    orgs.remove(org0.id);
+  }
+});
+
+test("a hand-off to a busy agent waits in its queue as a sub-task; the lead's reports wait for it", { timeout: 40_000 }, async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const { work } = await import("../../src/local/work.ts");
+  const quests = await import("../../src/local/quests.ts");
+  const crew = await import("../../src/local/crew.ts");
+  const org0 = orgs.create("Handoff Co", "", "custom");
+  const busyId = "c".repeat(16);
+  try {
+    market.addTeam("finance-team");
+    const org = orgs.active();
+    const lead = org.members.find((m) => m.manager === null)!.bot;
+    const report = org.members.find((m) => m.manager === lead)!.bot;
+    script.length = 0;
+    // The lead is on a task of its own (a real conversation, so reports can be delivered to it).
+    const leadTask = work.create(org, { title: "Close the month", description: "Close the month.", owner: lead, createdBy: "owner" });
+    script.push(say("Starting."));
+    await work.schedule();
+    const leadQuest = work.get(org, leadTask.id).quest!;
+    assert.ok(await until(() => !quests.quests.isRunning(leadQuest)));
+    // Its report is busy with something else.
+    const stamp = new Date().toISOString();
+    quests.questStore.save({ id: busyId, title: "Other work", bot: crew.findBot(report), status: "running", steps: 0, createdAt: stamp, updatedAt: stamp });
+    const assign = (tools as unknown as { assignTool: { run: (i: unknown, c: unknown) => Promise<string> } }).assignTool;
+    const said = await assign.run({ to: crew.findBot(report).name, task: "Reconcile the bank account for November." }, { conversation: { id: leadQuest } });
+    assert.match(said, /number 1 in its queue/);
+    const sub = work.list(org).find((t) => t.parent === leadTask.id)!;
+    assert.equal(sub.status, "todo");
+    assert.equal(sub.owner, report);
+    assert.equal(work.pendingFor(leadQuest), 1);
+    // The lead's task waits on its sub-task, rather than going to review.
+    assert.equal(work.get(org, leadTask.id).status, "working");
+    // When the report is free it does the sub-task; then the lead gets the report and finishes.
+    script.push(say("Reconciled: all matches."), say("Month closed; the bank reconciles."));
+    quests.questStore.save({ ...quests.questStore.get(busyId)!, status: "done" });
+    await work.schedule();
+    assert.ok(await until(() => conversationText(leadQuest).includes("[Report from")), "the report reached the lead");
+    assert.ok(await until(() => work.get(org, leadTask.id).status === "review"), work.get(org, leadTask.id).status);
+    assert.equal(work.get(org, sub.id).status, "done");
+  } finally {
+    quests.questStore.remove(busyId);
+    orgs.remove(org0.id);
+  }
+});
+
+/** All the text in a conversation, for checking what an agent was told. */
+function conversationText(id: string): string {
+  return JSON.stringify(store.conversations.get(id)?.messages ?? []);
+}

@@ -219,6 +219,7 @@ async function tick() {
     if (state.view === "inbox") renderInbox();
   }
   if (state.view === "chat" && ticks % 3 === 0) renderChatList();
+  if (state.view === "tasks") refreshTasks();
 }
 
 const questSignature = () =>
@@ -273,6 +274,7 @@ const ICONS = {
   integrations: "M7.5 3.5v4M12.5 3.5v4M5.5 7.5h9v2.5a4.5 4.5 0 0 1-9 0zM10 14.5v2.5",
   audit: "M6 3.5h6l3 3v10H6A1.5 1.5 0 0 1 4.5 15V5A1.5 1.5 0 0 1 6 3.5zM7.5 9h5M7.5 11.5h5M7.5 14h3",
   workspace: "M5.5 3.5h6l3 3v10h-9zM11.5 3.5v3h3M7.5 10h5M7.5 12.5h5M7.5 7.5h2",
+  tasks: "M4 4.5h3v11H4zM8.5 4.5h3v7h-3zM13 4.5h3v4h-3z",
   library: "M3.5 6A1.5 1.5 0 0 1 5 4.5h3l1.5 2H15A1.5 1.5 0 0 1 16.5 8v6A1.5 1.5 0 0 1 15 15.5H5A1.5 1.5 0 0 1 3.5 14zM7 10.5h6M7 12.8h4",
 };
 const icon = (name) => {
@@ -293,7 +295,7 @@ function renderRail() {
     h("button", { class: "plain brand", onclick: () => go("chat"), title: "Chat", "aria-label": "Talqava, chat" }, brandLogo()),
     h("div", { class: "railgroup" }, item("chat", "Chat", v === "chat"), inbox),
     h("div", { class: "raillabel" }, "Team"),
-    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Assign tasks to agents and follow their work"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department"), item("audit", "Audit log", v === "audit", "Every operation, by you and by each agent")),
+    h("div", { class: "railgroup" }, item("team", "Organization", v === "team", "The org chart, departments and budgets"), item("tasks", "Tasks", v === "tasks", "Every task: queued, working, needing you, to review and done"), item("home", "Work in progress", ["home", "quest", "bot"].includes(v), "Your agents and what each is doing right now"), item("market", "Marketplace", v === "market" || v === "marketbot", "Ready-made agents and teams for every department"), item("audit", "Audit log", v === "audit", "Every operation, by you and by each agent")),
     h("div", { class: "raillabel" }, "Knowledge"),
     h("div", { class: "railgroup" }, item("workspace", "Workspace", v === "workspace", "Pages your agents work from: procedures, checklists and decisions"), item("library", "Library", v === "library", "Documents you share with your agents"), item("memory", "Memory", v === "memory"), item("skills", "Skills", v === "skills"), item("jobs", "Schedules", v === "jobs")),
     h("div", { class: "raillabel" }, "Connect"),
@@ -335,7 +337,7 @@ function renderBody() {
   state.source = null;
   ui.log = null;
   ui.body.className = "body";
-  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView, integrations: integrationsView, library: libraryView, audit: auditView, workspace: workspaceView };
+  const views = { home: homeView, quest: questView, bot: botView, chat: chatView, memory: memoryView, skills: skillsView, jobs: jobsView, settings: settingsView, market: marketView, marketbot: marketBotView, inbox: inboxView, team: teamView, integrations: integrationsView, library: libraryView, audit: auditView, workspace: workspaceView, tasks: tasksView };
   (views[state.view] || homeView)();
 }
 
@@ -496,13 +498,10 @@ function startChatWith(text) {
  * Resolves to the new task, or null when it was not started.
  */
 async function startTask(payload) {
-  const reply = await api("POST", "quests", payload);
-  if (!reply.needs) return reply;
-  const choice = await needsDialog(reply.needs, reply.repositories ?? []);
-  if (!choice) return null;
-  if (choice.project) return startTask({ ...payload, project: choice.project });
-  if (choice.anyway) return startTask({ ...payload, anyway: true });
-  return null;
+  const reply = await createTask({ owner: payload.bot, title: payload.title, description: payload.text, project: payload.project, anyway: payload.anyway });
+  if (!reply) return null;
+  // Started: the run, to follow. Waiting its turn: the task, marked as queued.
+  return reply.quest ?? { id: null, queued: reply.item };
 }
 
 function needsDialog(needs, repositories) {
@@ -547,7 +546,7 @@ async function sendQuest(bot, text) {
     ui.palette.value = "";
     ui.palette.blur();
     await loadQuests();
-    go("quest", quest.id);
+    quest.id ? go("quest", quest.id) : openTask(quest.queued.id);
   });
 }
 
@@ -2020,7 +2019,8 @@ async function composeMail() {
     ui.mailNote = null;
     await loadQuests();
     ui.mailFolder = "inbox";
-    ui.mailOpen = `task:${started.id}`;
+    ui.mailOpen = started.id ? `task:${started.id}` : null;
+    if (!started.id) ui.mailNote = `Task #${started.queued.number} is waiting its turn in the ${started.queued.ownerName}'s queue.`;
     renderInbox();
     syncInboxCount();
   }, ui.mailList);
@@ -5854,6 +5854,7 @@ async function renderWsPage(col, id) {
       const what = giveWhat.value.trim() || `Follow the page “${page.title}”.`;
       const quest = await startTask({ bot: giveTo.value, text: `${what}\n\nWork from the workspace page “${page.title}” (page ${id}): read it first with the workspace tool, follow it, and say in your report how you used it.`, title: what.slice(0, 80) });
       if (quest?.id) go("quest", quest.id);
+      else if (quest?.queued) openTask(quest.queued.id);
     }, col);
 
   const tasksBox = h("div", { class: "wstasks" });
@@ -5957,4 +5958,203 @@ async function pageHistory(page) {
     ),
   );
   libDialog(`History of “${page.title}”`, h("div", { class: "wshistory" }, versions.length ? list : h("p", { class: "note" }, "No earlier versions yet."), view), []);
+}
+
+// ---------- tasks: the board ----------
+// Every task of the organization, as lasting work: To do (waiting its turn in its agent's queue), Working, Needs you,
+// To review and Done. Each agent works its queue one task at a time, most important first. A task opens in a panel
+// with what was asked, the latest report, sub-tasks and comments; the owner accepts work or sends it back.
+const TASK_COLUMNS = [
+  ["todo", "To do", "Waiting their turn"],
+  ["working", "Working", "Being done now"],
+  ["needs", "Needs you", "Waiting for your answer, or stuck"],
+  ["review", "To review", "Finished: accept it, or send it back"],
+  ["done", "Done", "The last two weeks"],
+];
+const PRIORITY_WORDS = { urgent: "Urgent", high: "High", normal: "Normal", low: "Low" };
+const TASK_STATUS_WORDS = { todo: "To do", working: "Working", waiting: "Needs you", blocked: "Stuck", review: "To review", done: "Done", cancelled: "Cancelled" };
+const columnOf = (t) => (t.status === "waiting" || t.status === "blocked" ? "needs" : t.status);
+const ordinal = (n) => (n === 1 ? "Next" : `${n}${n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"} in queue`);
+
+/** Opens the board at one task. */
+function openTask(id) {
+  ui.taskOpen = id;
+  if (state.view !== "tasks") go("tasks");
+  else tasksView();
+}
+
+async function tasksView() {
+  ui.body.className = "body";
+  ui.log = null;
+  ui.tasksCol ??= null;
+  const col = h("div", { class: "tasks" });
+  ui.tasksCol = col;
+  const panel = h("aside", { class: "taskpanel", hidden: true, "aria-label": "Task" });
+  ui.taskPanel = panel;
+  fill(ui.body, h("main", { class: "center wide" }, col), panel);
+  await refreshTasks(true);
+}
+
+/** Loads the tasks and draws the board; `full` also redraws an open task's panel. */
+async function refreshTasks(full = false) {
+  let data;
+  try {
+    data = await api("GET", "work");
+  } catch (err) {
+    return ui.tasksCol && fill(ui.tasksCol, h("div", { class: "banner error" }, err.message));
+  }
+  if (state.view !== "tasks" || !ui.tasksCol) return;
+  const signature = JSON.stringify(data.items.map((t) => [t.id, t.status, t.detail, t.queue, t.priority, t.title, t.comments, t.owner, t.subtasks.open]));
+  if (!full && signature === ui.tasksSignature) return;
+  ui.tasksSignature = signature;
+  ui.tasks = data.items;
+  drawBoard();
+  // The open task's panel follows along, unless the owner is typing in it.
+  if (ui.taskOpen && (full || !ui.taskPanel.contains(document.activeElement))) drawTaskPanel(ui.taskOpen);
+  else if (!ui.taskOpen) ui.taskPanel.hidden = true;
+}
+
+function drawBoard() {
+  const col = ui.tasksCol;
+  const org = activeOrg();
+  const crew = new Map((state.crew?.bots ?? []).map((b) => [b.id, b]));
+  ui.taskFilter ??= { who: "", q: "", cancelled: false };
+  const f = ui.taskFilter;
+  const twoWeeks = Date.now() - 14 * 86400_000;
+  const shown = ui.tasks.filter((t) => (!f.who || t.owner === f.who) && (!f.q || `${t.number} ${t.title} ${t.ownerName}`.toLowerCase().includes(f.q.toLowerCase())) && (t.status !== "done" || Date.parse(t.updatedAt) > twoWeeks));
+  const search = h("input", { type: "search", value: f.q, placeholder: "Find a task", "aria-label": "Find a task" });
+  search.addEventListener("input", () => ((f.q = search.value), drawBoard(), document.querySelector(".tasks input[type=search]")?.focus()));
+  const who = h("select", { "aria-label": "Whose tasks", onchange: (e) => ((f.who = e.target.value), drawBoard()) }, h("option", { value: "" }, "Everyone"), org.members.map((m) => h("option", { value: m.bot, selected: f.who === m.bot }, m.title)));
+  const counts = Object.fromEntries(TASK_COLUMNS.map(([key]) => [key, shown.filter((t) => columnOf(t) === key).length]));
+  const card = (t) => {
+    const bot = crew.get(t.owner);
+    return h(
+      "button",
+      { class: `taskcard pri-${t.priority} ${ui.taskOpen === t.id ? "on" : ""}`, style: bot ? botStyle(bot) : "", onclick: () => ((ui.taskOpen = t.id), drawBoard(), drawTaskPanel(t.id)) },
+      h("div", { class: "taskcardtop" }, h("span", { class: "tasknum" }, `#${t.number}`), t.priority !== "normal" ? h("span", { class: `taskpri ${t.priority}` }, PRIORITY_WORDS[t.priority]) : null, t.status === "todo" && t.queue ? h("span", { class: "taskqueue" }, ordinal(t.queue)) : null),
+      h("b", { class: "tasktitle" }, t.title),
+      t.detail ? h("span", { class: `taskdetail ${t.status === "blocked" ? "bad" : ""}` }, t.detail) : null,
+      h("div", { class: "taskmeta" }, bot ? keycap(bot.character, 18, t.status === "working" ? "working" : "", bot.type) : null, h("span", { class: "grow" }, t.ownerName), t.subtasks.total ? h("span", { title: "Sub-tasks still open" }, `◫ ${t.subtasks.open}/${t.subtasks.total}`) : null, t.comments ? h("span", { title: "Comments" }, `💬 ${t.comments}`) : null, t.cost >= 0.01 ? h("span", {}, money(t.cost)) : null),
+    );
+  };
+  fill(
+    col,
+    h(
+      "div",
+      { class: "tasks-head" },
+      h("div", { class: "grow" }, h("h1", {}, "Tasks"), h("p", { class: "lead" }, "Every task in your organization. Each agent works through its own queue, one task at a time, most important first. Finished work comes back to you to accept or send back.")),
+      h("button", { class: "primary", onclick: () => newTaskDialog() }, "+ New task"),
+    ),
+    h("div", { class: "row tasks-tools" }, search, who, h("label", { class: "power" }, h("input", { type: "checkbox", checked: f.cancelled, onchange: (e) => ((f.cancelled = e.target.checked), drawBoard()) }), "Show cancelled")),
+    h(
+      "div",
+      { class: "taskboard" },
+      TASK_COLUMNS.map(([key, label, hint]) => {
+        const items = shown.filter((t) => columnOf(t) === key).sort((a, b) => (key === "todo" ? ["urgent", "high", "normal", "low"].indexOf(a.priority) - ["urgent", "high", "normal", "low"].indexOf(b.priority) || a.number - b.number : b.updatedAt.localeCompare(a.updatedAt)));
+        return h("section", { class: `taskcol col-${key}` }, h("header", {}, h("b", {}, label), h("span", { class: "count" }, counts[key]), h("span", { class: "note small taskcolhint" }, hint)), items.length ? items.map(card) : h("p", { class: "note small taskempty" }, key === "todo" ? "Nothing waiting." : key === "needs" ? "Nothing needs you." : "None."));
+      }),
+    ),
+    f.cancelled ? h("div", { class: "taskcancelled" }, h("h3", {}, "Cancelled"), ui.tasks.filter((t) => t.status === "cancelled").map(card)) : null,
+  );
+}
+
+async function drawTaskPanel(id) {
+  const panel = ui.taskPanel;
+  if (!panel) return;
+  let data;
+  try {
+    data = await api("GET", `work/${id}`);
+  } catch (err) {
+    ui.taskOpen = null;
+    panel.hidden = true;
+    return;
+  }
+  if (ui.taskOpen !== id) return;
+  const { item: t, comments, subtasks, quest } = data;
+  const org = activeOrg();
+  const crew = new Map((state.crew?.bots ?? []).map((b) => [b.id, b]));
+  const act = (fn) => attempt(async () => (await fn(), await refreshTasks(true)), panel);
+  const patch = (body) => act(() => api("PATCH", `work/${id}`, body));
+  const title = h("input", { class: "tasktitlebox", value: t.title, maxlength: 140, "aria-label": "Task title" });
+  title.addEventListener("change", () => title.value.trim() && title.value.trim() !== t.title && patch({ title: title.value.trim() }));
+  const priority = h("select", { "aria-label": "Priority", onchange: (e) => patch({ priority: e.target.value }) }, ["urgent", "high", "normal", "low"].map((p) => h("option", { value: p, selected: t.priority === p }, PRIORITY_WORDS[p])));
+  const ownerBot = crew.get(t.owner);
+  const owner = t.status === "todo" ? h("select", { "aria-label": "Assigned to", onchange: (e) => patch({ owner: e.target.value }) }, org.members.map((m) => h("option", { value: m.bot, selected: m.bot === t.owner }, m.title))) : h("span", { class: "row" }, ownerBot ? keycap(ownerBot.character, 20, "", ownerBot.type) : null, t.ownerName);
+  const parent = t.parent ? ui.tasks?.find((x) => x.id === t.parent) : null;
+  const comment = h("textarea", { rows: 3, placeholder: t.status === "review" ? "What should change? Sending it back wakes the agent." : "Write a note for the agent…", "aria-label": "Comment" });
+  const sendComment = () => comment.value.trim() && act(async () => (await api("POST", `work/${id}/comment`, { text: comment.value }), (comment.value = "")));
+  comment.addEventListener("keydown", (e) => (e.metaKey || e.ctrlKey) && e.key === "Enter" && sendComment());
+  const reportText = quest?.said;
+  fill(
+    panel,
+    h("div", { class: "taskpanelhead" }, h("span", { class: "tasknum" }, `#${t.number}`), h("span", { class: `taskstatus st-${t.status}` }, TASK_STATUS_WORDS[t.status]), h("span", { class: "grow" }), h("button", { class: "plain small", "aria-label": "Close", onclick: () => ((ui.taskOpen = null), (panel.hidden = true), drawBoard()) }, "✕")),
+    title,
+    t.detail ? h("div", { class: `banner ${t.status === "blocked" ? "error" : ""}` }, t.detail) : null,
+    h(
+      "div",
+      { class: "taskactions row wrap" },
+      t.status === "review" ? h("button", { class: "primary small", onclick: () => act(() => api("POST", `work/${id}/accept`)) }, "Accept") : null,
+      t.status === "blocked" ? h("button", { class: "primary small", onclick: () => act(() => api("POST", `work/${id}/retry`)) }, "Try again") : null,
+      t.status === "waiting" && t.quest ? h("button", { class: "primary small", onclick: () => go("quest", t.quest) }, "Answer it") : null,
+      t.quest ? h("button", { class: "small", onclick: () => go("quest", t.quest) }, "Open the work") : null,
+      t.status !== "done" && t.status !== "cancelled" ? h("button", { class: "small", onclick: () => newTaskDialog({ parent: t }) }, "+ Sub-task") : null,
+    ),
+    h(
+      "dl",
+      { class: "taskfacts" },
+      h("dt", {}, "Assigned to"),
+      h("dd", {}, owner),
+      h("dt", {}, "Priority"),
+      h("dd", {}, t.status === "done" || t.status === "cancelled" ? PRIORITY_WORDS[t.priority] : priority),
+      t.status === "todo" && t.queue ? [h("dt", {}, "Queue"), h("dd", {}, t.queue === 1 ? "Next, when the agent is free" : `${ordinal(t.queue)} for the ${t.ownerName}`)] : null,
+      parent ? [h("dt", {}, "Part of"), h("dd", {}, h("button", { class: "plain link", onclick: () => openTask(parent.id) }, `#${parent.number} ${parent.title}`))] : null,
+      h("dt", {}, "Created"),
+      h("dd", {}, `${shortWhen(t.createdAt)} by ${t.createdByName}`),
+      t.cost >= 0.001 ? [h("dt", {}, "Cost so far"), h("dd", {}, money(t.cost))] : null,
+    ),
+    t.description && t.description !== t.title ? [h("div", { class: "label" }, "What was asked"), h("div", { class: "md taskdesc" }, renderMarkdown(t.description))] : null,
+    reportText ? [h("div", { class: "label" }, t.status === "working" ? "Latest from the agent" : "Its report"), h("div", { class: "md taskreport" }, renderMarkdown(reportText))] : null,
+    subtasks.length
+      ? [
+          h("div", { class: "label" }, `Sub-tasks (${subtasks.filter((s) => s.status !== "done" && s.status !== "cancelled").length} open)`),
+          h("div", { class: "tasksubs" }, subtasks.map((s) => h("button", { class: "plain tasksub", onclick: () => openTask(s.id) }, h("span", { class: `taskdot st-${s.status}`, title: TASK_STATUS_WORDS[s.status] }), h("span", { class: "grow" }, `#${s.number} ${s.title}`), h("span", { class: "note small" }, s.ownerName)))),
+        ]
+      : null,
+    h("div", { class: "label" }, `Comments${comments.length ? ` (${comments.length})` : ""}`),
+    h("div", { class: "taskcomments" }, comments.map((c) => h("div", { class: `taskcomment ${c.author === "owner" ? "mine" : ""}` }, h("div", { class: "note small" }, `${c.authorName} · ${shortWhen(c.at)}${c.author === "owner" && !c.delivered ? " · goes to the agent when its current step ends" : ""}`), h("div", {}, c.text)))),
+    t.status !== "cancelled" ? [comment, h("div", { class: "row" }, h("button", { class: t.status === "review" ? "small" : "small primary", onclick: sendComment }, t.status === "review" ? "Send back with this comment" : "Comment"), h("span", { class: "note small" }, "⌘↵ to send"))] : null,
+    t.status !== "done" && t.status !== "cancelled" ? h("div", { class: "taskdanger" }, h("button", { class: "plain small danger", onclick: () => confirm(`Cancel task #${t.number}${t.subtasks.open ? ` and its ${t.subtasks.open} open sub-task${t.subtasks.open === 1 ? "" : "s"}` : ""}? Work done so far is kept.`) && act(() => api("POST", `work/${id}/cancel`)) }, "Cancel task")) : null,
+  );
+  panel.hidden = false;
+}
+
+/** A new task: what is wanted, who does it, how important it is. Under `parent` when given. */
+async function newTaskDialog({ parent = null, owner = "", text = "" } = {}) {
+  const org = activeOrg();
+  if (!org.members.length) return go("team");
+  const title = h("input", { maxlength: 140, placeholder: "e.g. Find ten wholesale bakeries near us", "aria-label": "Task" });
+  const details = h("textarea", { rows: 5, placeholder: "What should be done, what good looks like, anything they need to know (optional)", "aria-label": "Details" }, text);
+  const who = h("select", { "aria-label": "Assign to" }, org.members.map((m) => h("option", { value: m.bot, selected: m.bot === (owner || parent?.owner) }, `${m.title} · ${m.department}`)));
+  const priority = h("select", { "aria-label": "Priority" }, ["urgent", "high", "normal", "low"].map((p) => h("option", { value: p, selected: p === (parent?.priority ?? "normal") }, PRIORITY_WORDS[p])));
+  const got = await libDialog(
+    parent ? `New sub-task of #${parent.number}` : "New task",
+    h("div", { class: "composeform" }, h("label", {}, "Task", title), h("label", {}, "Details", details), h("div", { class: "row" }, h("label", { class: "grow" }, "Assign to", who), h("label", {}, "Priority", priority)), h("p", { class: "note small" }, "It goes into the agent's queue and starts when the agent is free, most important first. You'll review the result.")),
+    [["Create task", () => ({ title: title.value.trim(), description: details.value.trim(), owner: who.value, priority: priority.value }), true]],
+  );
+  if (!got || !(got.title || got.description)) return;
+  await attempt(async () => {
+    const reply = await createTask({ ...got, parent: parent?.id, project: state.project || undefined });
+    if (reply?.item) openTask(reply.item.id);
+  });
+}
+
+/** Creates a task, with the same up-front checks as before; returns { item, quest } or null when the owner backed out. */
+async function createTask(payload) {
+  const reply = await api("POST", "work", payload);
+  if (!reply.needs) return reply;
+  const choice = await needsDialog(reply.needs, reply.repositories ?? []);
+  if (!choice) return null;
+  if (choice.project) return createTask({ ...payload, project: choice.project });
+  if (choice.anyway) return createTask({ ...payload, anyway: true });
+  return null;
 }
