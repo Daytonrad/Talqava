@@ -985,14 +985,15 @@ const TINTS = {
 };
 /** Which colour a department takes, by the words in its name. */
 const TINT_WORDS = [
-  [/exec|leader|chief|board|founder|management|general|strategy/i, "executive"],
+  [/exec|leader|chief|board|founder|management|general|strategy|oversight|audit/i, "executive"],
   [/financ|account|book|payroll|billing|tax/i, "finance"],
   [/sales|business dev|revenue|partnership/i, "sales"],
   [/market|brand|communic|content|social|pr\b|creative|design|writing/i, "marketing"],
   [/oper|supply|logistic|procure|facilit|kitchen|production|admin/i, "operations"],
   [/tech|engineer|it\b|develop|software|security|data|devops/i, "technology"],
   [/people|human|hr\b|talent|recruit/i, "people"],
-  [/legal|complian|risk|contract/i, "legal"],
+  [/legal|complian|risk|contract|professional|practice/i, "legal"],
+  [/nonprofit|non-profit|charit|fundrais|donor|volunteer|grant/i, "people"],
   [/customer|support|service|success|guest|client/i, "customers"],
   [/research|insight|intelligence|analy/i, "research"],
   [/product|project/i, "product"],

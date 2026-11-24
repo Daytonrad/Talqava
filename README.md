@@ -21,7 +21,7 @@ Talqava gives you a team of AI agents, each in a role on an org chart that **you
 
 ## What it does
 
-- **An organization you build.** Start with only you. Add positions one at a time, from 62 ready-made roles or your own, or accept positions suggested from your mission. Draw solid "reports to" lines and dotted "also works with" lines by dragging. Group positions into teams with a lead, a goal and a monthly budget. Drop a ready-made team under any position. Undo anything.
+- **An organization you build.** Start with only you. Add positions one at a time, from 81 ready-made roles or your own, or accept positions suggested from your mission. Draw solid "reports to" lines and dotted "also works with" lines by dragging. Group positions into teams with a lead, a goal and a monthly budget. Drop a ready-made team under any position. Undo anything.
 - **Work that follows your chart.** Give a task to anyone. Leads hand parts to the people below them, request work from other groups' leads, ask colleagues quick questions and escalate what is not theirs to decide. Every task knows why it exists: your mission, its group's goal, and the tasks above it.
 - **Checks before spending.** Before a task starts, the agent checks it has what it needs (a repository, a file, an answer from you) and asks first instead of spending your budget guessing. Every task has a budget it shares with everything handed on from it; every agent and every group has a monthly budget that stops new work when it is used up.
 - **An inbox like email.** Agents report to you as messages you can read, save, archive, search and sort. Give agents names of your own. Approve or decline steps, and positions agents propose, right from the message.
@@ -198,7 +198,7 @@ For pages that need clicking or typing, install the optional browser (`npm insta
 | `src/local` | This edition: file storage, organizations (`orgs.ts`), tasks and their journal (`quests.ts`), the library (`library.ts`), budgets (`spend.ts`), the audit log, integrations, the MCP server, and the web server (`server.ts`). |
 | `public` | The page: plain JavaScript (`app.js`), the stylesheets, the brand video and fonts. |
 | `crew` | The six starter agents, one YAML file each. |
-| `marketplace` | The 62 ready-made roles and the ready-made teams (`teams.yaml`). |
+| `marketplace` | The 81 ready-made roles and the ready-made teams (`teams.yaml`). |
 | `quests` | The five ready-made checked tasks. |
 | `desktop` | The Electron Mac app. |
 | `evals` | The task test suite and its saved baselines. |
