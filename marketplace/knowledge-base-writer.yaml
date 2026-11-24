@@ -1,6 +1,8 @@
 listing:
   category: Customer Support
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Knowledge Base Writer
   reports_to: head-of-support
   summary: "Turns solved support questions into clear help articles, and keeps the existing ones correct and easy to find."

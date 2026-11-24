@@ -1,6 +1,8 @@
 listing:
   category: Product
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Product Manager
   reports_to: general-manager
   summary: "Decides what to build or offer next and why: the problem, who has it, the evidence, the priority and how success is measured."

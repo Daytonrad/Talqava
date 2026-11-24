@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Quality Reviewer
   reports_to: head-of-operations
   summary: "Checks a piece of finished work against what was asked for and the evidence, and says pass or not yet, with reasons."

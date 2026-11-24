@@ -1,6 +1,8 @@
 listing:
   category: Nonprofit
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Head of Fundraising
   reports_to: general-manager
   summary: "Leads a nonprofit's fundraising: grants, donors, volunteers and impact reporting, with a plan and a pipeline."

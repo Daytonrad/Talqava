@@ -1,6 +1,8 @@
 listing:
   category: Engineering
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Back-End Developer
   reports_to: lead-developer
   summary: "Builds the services, data and APIs behind a product, with tests, and says exactly what changed in the interface others depend on."

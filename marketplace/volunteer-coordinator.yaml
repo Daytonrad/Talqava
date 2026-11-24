@@ -1,6 +1,8 @@
 listing:
   category: Nonprofit
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Volunteer Coordinator
   reports_to: head-of-fundraising
   summary: "Recruits and organises volunteers: role descriptions, sign-ups, rotas, reminders and thank-yous."

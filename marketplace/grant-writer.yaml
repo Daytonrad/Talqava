@@ -1,6 +1,8 @@
 listing:
   category: Nonprofit
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Grant Writer
   reports_to: head-of-fundraising
   summary: "Finds grants that fit, and drafts applications to each funder's rules from your programme facts and figures."

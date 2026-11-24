@@ -1,6 +1,8 @@
 listing:
   category: Legal
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Conflicts and Risk Checker
   reports_to: compliance-manager
   summary: "Checks a new client or engagement against the lists you share for possible conflicts of interest, and reports every match for a person to judge."

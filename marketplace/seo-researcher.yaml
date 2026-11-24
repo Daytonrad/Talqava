@@ -1,6 +1,8 @@
 listing:
   category: Marketing
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: SEO Specialist
   reports_to: head-of-marketing
   summary: "Finds what people search for around a topic and what already ranks, and turns it into a writer-ready brief."

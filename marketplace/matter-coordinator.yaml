@@ -1,6 +1,8 @@
 listing:
   category: Professional Services
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Matter Coordinator
   reports_to: practice-manager
   summary: "Keeps each client matter on track: deadlines, documents, tasks and who is responsible, with reminders before anything is due."

@@ -4017,8 +4017,85 @@ async function loadMarket() {
   return market;
 }
 
+const TRUST_WORDS = { talqava: "Made by Talqava", verified: "Verified", community: "Community" };
+
+/** On a marketplace agent's page: whether a newer version exists, what changed, and Update / Keep mine / Undo update. */
+function updateBox(bot, col) {
+  const st = bot.install;
+  if (!st || st.state === "available") return null;
+  const act = (path, note) =>
+    attempt(async () => {
+      const r = await api("POST", `marketplace/${bot.id}/${path}`);
+      await Promise.all([loadMarket(), loadCrew()]);
+      toast(note(r));
+      renderBody();
+    }, col);
+  const changes = (bot.listing.changes ?? []).slice(0, 5);
+  if (st.state === "update" || st.state === "differs")
+    return h(
+      "div",
+      { class: "card updatebox" },
+      h("b", {}, st.state === "update" ? `Version ${bot.listing.version} is available. You have ${st.installed}.` : `Your copy is different from the marketplace version ${bot.listing.version}.`),
+      changes.length ? h("ul", { class: "note small" }, changes.map((c) => h("li", {}, c))) : null,
+      st.edited ? h("p", { class: "note small warnline" }, "You changed your copy. Updating replaces its instructions, powers and limits with the new version's. Its name, look, model and budget stay yours, and you can undo the update.") : h("p", { class: "note small" }, "Its name, look, model and budget stay as you set them. You can undo the update."),
+      h(
+        "div",
+        { class: "row" },
+        h("button", { class: "primary", onclick: () => (!st.edited || confirm(`Replace your changes to the ${bot.name} with version ${bot.listing.version}?\n\nYou can undo this.`)) && act("update", (r) => `The ${bot.name} is now version ${r.version}.`) }, `Update to ${bot.listing.version}`),
+        h("button", { class: "plain", onclick: () => go("bot", bot.id) }, "Keep mine"),
+      ),
+    );
+  return st.canUndo ? h("div", { class: "row" }, h("span", { class: "note small" }, `You have version ${st.installed}.`), h("button", { class: "plain small", onclick: () => act("undo-update", (r) => `The ${bot.name} is back to version ${r.version}.`) }, "Undo update")) : h("div", { class: "note small" }, `You have version ${st.installed ?? bot.listing.version}${st.edited ? ", with your own changes" : ""}.`);
+}
+
+/**
+ * Before you install: what adding an agent or a team would do, in plain words, with Add and Cancel. Nothing changes
+ * until the owner presses Add. Resolves true when they do.
+ */
+async function installPreview(kind, id) {
+  const p = await api("GET", kind === "team" ? `marketplace/teams/${encodeURIComponent(id)}/preview` : `marketplace/${encodeURIComponent(id)}/preview`);
+  const fresh = p.items.filter((i) => i.state === "new");
+  const crew = new Map((state.market ?? []).map((b) => [b.id, b]));
+  return new Promise((resolve) => {
+    const done = (yes) => (dialog.close(), dialog.remove(), resolve(yes));
+    const row = (i) =>
+      h(
+        "div",
+        { class: `pvrow ${i.state}` },
+        keycap(crew.get(i.id) ?? { id: i.id, title: i.title, listing: { category: i.department }, character: {} }, 36, ""),
+        h(
+          "div",
+          { class: "grow" },
+          h("div", {}, h("b", {}, i.title), h("span", { class: "note small" }, ` · ${i.department}`), i.state === "have" ? h("span", { class: "tag" }, "Already on your team: kept as it is") : null),
+          h("div", { class: "note small" }, `Reports to ${i.reportsTo ? `the ${i.reportsTo}` : "you"} · up to ${i.spendPerTask != null ? money(i.spendPerTask) : "your default limit"} a task`),
+          h("div", { class: "note small" }, `Can use: ${i.powers.map((x) => POWER_NAMES[x] || x).join(", ") || "only the conversation"}. ${i.asksFirst ? "Asks you before changing anything." : "Runs without asking."}`),
+        ),
+      );
+    const dialog = h(
+      "dialog",
+      { class: "needs pvdialog" },
+      h("h2", {}, kind === "team" ? `Add the ${p.name}?` : `Add the ${p.name} to your team?`),
+      h("p", { class: "note" }, `Version ${p.version} · ${TRUST_WORDS[p.trust]} · ${p.licence} licence · free`),
+      h("div", { class: "pvlist" }, p.items.map(row)),
+      h(
+        "p",
+        { class: "pvsum" },
+        fresh.length
+          ? `Adds ${fresh.length} agent${fresh.length === 1 ? "" : "s"}${p.items.length > fresh.length ? `; ${p.items.length - fresh.length} you already have stay as they are` : ""}. If each new agent did one task, it would cost at most ${money(p.newSpendPerTask)}. They only work when you or another agent gives them a task.`
+          : "You already have every agent in it. Adding it puts them in place on your chart; their own settings stay as they are.",
+      ),
+      p.wont.length ? h("div", { class: "willbox wont" }, h("div", { class: "label" }, "It will never"), h("ul", {}, p.wont.map((w) => h("li", {}, w)))) : null,
+      h("div", { class: "row", style: "justify-content: flex-end" }, h("button", { class: "plain", onclick: () => done(false) }, "Cancel"), h("button", { class: "primary", onclick: () => done(true) }, fresh.length > 1 ? `Add ${fresh.length} agents` : "Add to my team")),
+    );
+    dialog.addEventListener("cancel", () => resolve(false));
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
 async function addFromMarket(bot, where) {
   await attempt(async () => {
+    if (!(await installPreview("agent", bot.id))) return;
     await api("POST", `marketplace/${bot.id}/add`);
     await Promise.all([loadMarket(), loadCrew(), loadOrgs()]);
     state.selectedBot = bot.id;
@@ -4044,7 +4121,7 @@ function marketCard(bot) {
     { class: "mcard", style: botStyle(bot), tabindex: "0", onclick: () => go("marketbot", bot.id), onkeydown: (e) => e.key === "Enter" && e.target === e.currentTarget && go("marketbot", bot.id) },
     h("div", { class: "mhead" }, keycap(bot, 40, "", bot.type), h("div", {}, h("b", {}, bot.name), h("div", { class: "by" }, bot.listing.title.toLowerCase() === bot.name.toLowerCase() ? `by ${bot.listing.by}` : `${bot.listing.title} · by ${bot.listing.by}`))),
     h("p", { class: "mdesc" }, bot.listing.summary),
-    h("div", { class: "mfoot" }, h("span", { class: "mono small muted" }, bot.added ? "✓ On your team" : `Free · ${bot.approvals === "ask" ? "asks before changes" : "runs everything"}`), add),
+    h("div", { class: "mfoot" }, h("span", { class: "mono small muted" }, bot.install?.state === "update" ? `Update ${bot.listing.version} available` : bot.added ? "✓ On your team" : `Free · ${bot.approvals === "ask" ? "asks before changes" : "runs everything"}`), add),
   );
 }
 
@@ -4083,6 +4160,7 @@ async function marketView() {
       const add = h("button", { class: have === list.length ? "madd" : "madd primary", disabled: have === list.length }, have === list.length ? "✓ On your chart" : have ? `Add the other ${list.length - have}` : `Add all ${list.length}`);
       add.addEventListener("click", () =>
         attempt(async () => {
+          if (!(await installPreview("team", t.id))) return;
           add.disabled = true;
           await api("POST", `marketplace/teams/${t.id}/add`);
           await Promise.all([loadCrew(), loadOrgs()]);
@@ -4123,6 +4201,7 @@ async function marketView() {
   col.append(
     h("h1", {}, "Marketplace"),
     h("p", { class: "lead" }, "Agents for every department, each built for one role. Read exactly what an agent is instructed to do before you add it to your organization."),
+    market.updates ? h("div", { class: "banner" }, `${market.updates} agent${market.updates === 1 ? "" : "s"} on your team ${market.updates === 1 ? "has" : "have"} a newer version. Open ${market.updates === 1 ? "it" : "one"} to see what changed and update, or keep yours.`, " ", h("button", { class: "plain link", onclick: () => ((ui.marketCat = "+mine"), marketView()) }, "Show them")) : null,
     pills,
     search,
     ...(market.problems?.length ? [h("div", { class: "banner error small" }, market.problems.map((p) => h("div", {}, p)))] : []),
@@ -4164,6 +4243,8 @@ async function marketBotView() {
         keycap(bot, 88, "", bot.type),
         h("h1", {}, bot.name),
         h("div", { class: "by" }, `${bot.listing.title} · ${bot.listing.category} · by ${bot.listing.by}${bot.listing.reportsTo && market.bots.find((b) => b.id === bot.listing.reportsTo) ? ` · reports to the ${market.bots.find((b) => b.id === bot.listing.reportsTo).listing.title}` : ""}`),
+        h("div", { class: "by" }, `Version ${bot.listing.version} · ${TRUST_WORDS[bot.listing.trust] ?? "Community"} · ${bot.listing.licence} licence`),
+        updateBox(bot, col),
         h("p", { class: "lead" }, bot.listing.summary),
         h(
           "div",

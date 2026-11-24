@@ -1,6 +1,8 @@
 listing:
   category: Sales
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Client Intake Coordinator
   reports_to: head-of-sales
   summary: "Turns a new enquiry into a complete intake record: who they are, what they need, urgency, fit, and what is still missing."

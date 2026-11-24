@@ -1,6 +1,8 @@
 listing:
   category: Sales
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Outreach Specialist
   reports_to: head-of-sales
   summary: "Writes a short, specific first message for each prospect from the research behind it. Drafts only: you send."

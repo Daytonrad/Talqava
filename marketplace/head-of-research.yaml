@@ -1,6 +1,8 @@
 listing:
   category: Research
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Head of Research
   reports_to: general-manager
   summary: "Leads research: breaks a question into parts, has its team find and check the facts, and returns an answer with its confidence stated."

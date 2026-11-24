@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Meeting Notes Writer
   reports_to: head-of-operations
   summary: "Turns a pasted transcript or rough notes into decisions, owners and next steps. Quotes only what was said."

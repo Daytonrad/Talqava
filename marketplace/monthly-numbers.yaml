@@ -1,6 +1,8 @@
 listing:
   category: Finance
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Reporting Analyst
   reports_to: head-of-finance
   summary: "Turns a spreadsheet export into a one-page summary of totals, what moved, and anything that looks wrong."

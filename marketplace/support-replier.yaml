@@ -1,6 +1,8 @@
 listing:
   category: Customer Support
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Customer Support Specialist
   reports_to: head-of-support
   summary: "Drafts a clear, kind reply to a customer question from what you have told it about the product. Drafts only."

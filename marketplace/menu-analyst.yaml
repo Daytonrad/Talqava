@@ -1,6 +1,8 @@
 listing:
   category: Finance
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Menu and Costing Analyst
   reports_to: head-of-finance
   summary: "Costs each dish from your recipes and supplier prices, and shows which items earn their place on the menu."

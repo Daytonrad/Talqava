@@ -1,6 +1,8 @@
 listing:
   category: Leadership
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Chief of Staff
   featured: true
   summary: "The owner's right hand: prepares decisions, follows up on what was agreed across departments, and brings back one clear picture. A staff role, not a line manager."

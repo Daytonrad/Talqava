@@ -1,6 +1,8 @@
 listing:
   category: Finance
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Bookkeeper
   reports_to: head-of-finance
   summary: "Categorises the transactions you share, reconciles them against statements, and lists what does not match."

@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: IT and Security Administrator
   reports_to: head-of-operations
   summary: "Keeps a register of the accounts, devices and software the business uses, and checks them against basic security practice."

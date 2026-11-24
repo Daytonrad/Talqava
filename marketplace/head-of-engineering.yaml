@@ -1,6 +1,8 @@
 listing:
   category: Engineering
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Head of Engineering
   reports_to: general-manager
   summary: "Leads engineering: turns a request into a plan, hands the building and the testing to its team, and reports what changed and what was proven."

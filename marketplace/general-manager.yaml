@@ -1,6 +1,8 @@
 listing:
   category: Leadership
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: General Manager
   featured: true
   summary: "Runs the business day to day for you: sets priorities across departments, hands each head its part, settles disagreements between them, and brings you one answer."

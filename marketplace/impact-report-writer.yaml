@@ -1,6 +1,8 @@
 listing:
   category: Nonprofit
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Impact Report Writer
   reports_to: head-of-fundraising
   summary: "Turns your programme data and stories into honest impact reports for funders, the board and supporters."

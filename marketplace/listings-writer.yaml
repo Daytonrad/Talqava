@@ -1,6 +1,8 @@
 listing:
   category: Marketing
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Product Listings Writer
   reports_to: head-of-marketing
   summary: "Writes product titles, descriptions and specifications from the facts you give, in your brand's voice, for your store and marketplaces."

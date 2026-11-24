@@ -1,6 +1,8 @@
 listing:
   category: Marketing
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Brand Designer
   reports_to: head-of-marketing
   summary: "Writes the design brief and the brand rules: layout, wording on the page, colours and what an image should show."

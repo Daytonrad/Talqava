@@ -29,7 +29,7 @@ import { CAUTION_TOOLS, localRunSpec } from "./tools.ts";
 import { closeConnectors } from "./connectors.ts";
 import { resolveModel, splitRef } from "./models.ts";
 import { botId, loadCrew, removeBot, saveBot } from "./crew.ts";
-import { addMarketBot, addPack, addTeam, buildStructure, loadMarketplace, loadTeams, onTeam } from "./marketplace.ts";
+import { addMarketBot, addPack, addTeam, buildStructure, installStatus, loadMarketplace, loadTeams, onTeam, previewMarketBot, previewTeam, undoMarketUpdate, updateMarketBot } from "./marketplace.ts";
 import { assignRule, requestRule, orgs } from "./orgs.ts";
 import { orgMemory } from "./orgmemory.ts";
 import { mcpIntegration, setClaudeDesktop } from "./mcpintegration.ts";
@@ -186,6 +186,8 @@ function describeRequest(method: string, parts: string[], body: any, url: URL): 
   // These routes write their own, clearer entries.
   if (area === "orgs" && (id === "import" || action === "proposals")) return null;
   if (area === "orgs" && action === "pack") return { kind: "organization", action: `Added the ready-made team ${body.team ?? ""}${body.under ? ` under ${body.under}` : body.group ? ` into ${body.group}` : ""}` };
+  if (area === "marketplace" && parts[2] === "update") return { kind: "organization", action: `Updated the ${id} agent from the marketplace` };
+  if (area === "marketplace" && parts[2] === "undo-update") return { kind: "organization", action: `Undid the marketplace update of the ${id} agent` };
   if (area === "orgs" || area === "marketplace") return { kind: "organization", action: area === "marketplace" ? "Added from the marketplace" : `Changed the organization${action ? ` (${action})` : ""}`, detail: words(body) };
   if (area === "inbox") return { kind: "inbox", action: id === "names" ? `Renamed an agent to “${body.name || "its default"}”` : "Updated messages", detail: id === "names" ? parts[2] : words(body) };
   return { kind: "other", action: `${method} ${parts.join(" / ")}`, detail: words(body) };
@@ -787,8 +789,25 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
     // Ready-made bots to add to the team. The instructions of each are shown in full before it is added.
     if (req.method === "GET" && !parts[1]) {
       const market = loadMarketplace();
-      return send(res, 200, { bots: market.bots.map(({ bot, listing }) => ({ ...bot, listing, added: onTeam(bot.id) })), teams: loadTeams(), problems: market.problems });
+      const crew = loadCrew().bots;
+      const bots = market.bots.map((entry) => {
+        const install = installStatus(entry, crew.find((b) => b.id === entry.bot.id));
+        return { ...entry.bot, listing: entry.listing, added: install.state !== "available", install };
+      });
+      return send(res, 200, { bots, teams: loadTeams(), problems: market.problems, updates: bots.filter((b) => b.install.state === "update").length });
     }
+    const plainly = <T>(fn: () => T): T => {
+      try {
+        return fn();
+      } catch (err) {
+        throw new HttpError(400, (err as Error).message);
+      }
+    };
+    // Before you install: what adding an agent or a team would do, in plain terms. Nothing changes.
+    if (req.method === "GET" && parts[1] === "teams" && parts[3] === "preview") return send(res, 200, plainly(() => previewTeam(parts[2])));
+    if (req.method === "GET" && parts[2] === "preview") return send(res, 200, plainly(() => previewMarketBot(parts[1])));
+    if (req.method === "POST" && parts[2] === "update") return send(res, 200, plainly(() => updateMarketBot(parts[1])));
+    if (req.method === "POST" && parts[2] === "undo-update") return send(res, 200, plainly(() => undoMarketUpdate(parts[1])));
     if (req.method === "POST" && parts[1] === "teams" && parts[3] === "add") {
       try {
         return send(res, 200, { added: addTeam(parts[2]).map((b) => b.id) });

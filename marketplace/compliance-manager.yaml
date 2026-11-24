@@ -1,6 +1,8 @@
 listing:
   category: Legal
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Contracts and Compliance Manager
   reports_to: general-manager
   summary: "Reads contracts and policies for what you are agreeing to, keeps a register of obligations and deadlines, and says what a lawyer must look at."

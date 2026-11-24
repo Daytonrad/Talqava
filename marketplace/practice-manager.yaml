@@ -1,6 +1,8 @@
 listing:
   category: Professional Services
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Practice Manager
   reports_to: general-manager
   summary: "Runs a professional practice (a law firm, agency or consultancy): intake, conflicts, matters, proposals and billing, in one flow."

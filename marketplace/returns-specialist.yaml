@@ -1,6 +1,8 @@
 listing:
   category: Customer Support
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Returns and Refunds Specialist
   reports_to: head-of-support
   summary: "Checks each return request against your policy, drafts the reply, and reports why products come back."

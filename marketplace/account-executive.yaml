@@ -1,6 +1,8 @@
 listing:
   category: Sales
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Account Executive
   reports_to: head-of-sales
   summary: "Takes a qualified prospect to a decision: discovery questions, a proposal, objections and next steps. You do the talking."

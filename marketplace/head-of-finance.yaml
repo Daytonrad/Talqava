@@ -1,6 +1,8 @@
 listing:
   category: Finance
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Head of Finance
   reports_to: general-manager
   summary: "Leads finance: has its team chase what is owed and summarise the numbers, then tells you where the money stands."

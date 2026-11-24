@@ -1,6 +1,8 @@
 listing:
   category: Research
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Data Analyst
   reports_to: head-of-research
   summary: "Cleans spreadsheets and answers questions with numbers: how many, which ones, what changed and why, with simple charts."

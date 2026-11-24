@@ -1,6 +1,8 @@
 listing:
   category: Sales
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Prospect Researcher
   reports_to: head-of-sales
   summary: "Finds companies that match your ideal customer on the public web and explains why each one fits, with links."

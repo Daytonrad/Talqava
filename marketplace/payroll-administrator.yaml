@@ -1,6 +1,8 @@
 listing:
   category: People
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Payroll and Benefits Administrator
   reports_to: head-of-people
   summary: "Prepares the pay run from the hours and changes you share, checks it twice, and lists what needs a person to confirm."

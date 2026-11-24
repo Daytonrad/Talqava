@@ -1,6 +1,8 @@
 listing:
   category: Marketing
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Social Media Writer
   reports_to: head-of-marketing
   summary: "Turns an article, launch or idea into posts sized for each network. Drafts only: you post them."
