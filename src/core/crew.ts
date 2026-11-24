@@ -43,6 +43,12 @@ export function defaultColor(type: string, name: string): Color {
 export const SHAPES = ["key", "round", "tall", "wide", "soft"] as const;
 export const EYES = ["dots", "wide", "sleepy", "visor", "specs"] as const;
 export const TOPS = ["none", "antenna", "ears", "horns", "tuft", "halo"] as const;
+/** The white symbol on an agent's tile; "auto" picks it from the role. Names match SYMBOLS in public/app.js. */
+export const SYMBOLS = ["auto", "flag", "chart", "ledger", "receipt", "code", "shield", "pen", "megaphone", "envelope", "target", "chat", "people", "scales", "search", "check", "layers", "calendar", "flow", "initials"] as const;
+/** The colour of an agent's cursor block; "auto" takes its department's. Names match TINTS in public/app.js. */
+export const TINTS = ["auto", "executive", "finance", "sales", "marketing", "operations", "technology", "people", "legal", "customers", "research", "product", "neutral"] as const;
+export type Symbol = (typeof SYMBOLS)[number];
+export type Tint = (typeof TINTS)[number];
 export type Shape = (typeof SHAPES)[number];
 export type Eyes = (typeof EYES)[number];
 export type Top = (typeof TOPS)[number];
@@ -73,7 +79,7 @@ export interface Bot {
   /** Its job title, e.g. "Head of Sales". A file that names none gets its type, capitalised. */
   title: string;
   /** How the bot looks: a keycap with this legend printed on it and this texture on its base. */
-  character: { legend: string; texture: Texture; color: Color; shape: Shape; eyes: Eyes; top: Top };
+  character: { legend: string; texture: Texture; color: Color; shape: Shape; eyes: Eyes; top: Top; symbol?: Symbol; tint?: Tint };
   instructions: string;
   /** "provider/model", or undefined to use the default model in Settings. */
   model?: string;
@@ -131,6 +137,8 @@ export function parseBot(id: string, text: string, source: BotSource): Bot {
   const shape = SHAPES.includes(character.shape as Shape) ? (character.shape as Shape) : looks.shape;
   const eyes = EYES.includes(character.eyes as Eyes) ? (character.eyes as Eyes) : looks.eyes;
   const top = TOPS.includes(character.top as Top) ? (character.top as Top) : looks.top;
+  const symbol = SYMBOLS.includes(character.symbol as Symbol) && character.symbol !== "auto" ? (character.symbol as Symbol) : undefined;
+  const tint = TINTS.includes(character.tint as Tint) && character.tint !== "auto" ? (character.tint as Tint) : undefined;
 
   const powers = Array.isArray(data.powers) ? data.powers : [];
   for (const power of powers) {
@@ -173,7 +181,7 @@ export function parseBot(id: string, text: string, source: BotSource): Bot {
   const governance = { kpis: list(rules.kpis), decides: list(rules.decides), escalates: list(rules.escalates) };
   const lead = data.lead === true;
 
-  return { id, name, type, title, lead, governance, character: { legend, texture, color, shape, eyes, top }, instructions, model, powers: [...new Set(powers as Power[])], approvals, budget, ...(monthly !== undefined ? { monthly } : {}), group, source };
+  return { id, name, type, title, lead, governance, character: { legend, texture, color, shape, eyes, top, ...(symbol ? { symbol } : {}), ...(tint ? { tint } : {}) }, instructions, model, powers: [...new Set(powers as Power[])], approvals, budget, ...(monthly !== undefined ? { monthly } : {}), group, source };
 }
 
 /**

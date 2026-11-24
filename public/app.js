@@ -500,7 +500,7 @@ function openPalette(box) {
       h(
         "li",
         { class: i === ui.paletteAt ? "on" : "", role: "option", onmousedown: (e) => (e.preventDefault(), item.run()) },
-        item.bot ? keycap(item.bot.character, 22, "", item.bot.type) : null,
+        item.bot ? keycap(item.bot, 22, "", item.bot.type) : null,
         h("span", {}, item.label),
         item.what ? h("span", { class: "what" }, item.what) : null,
       ),
@@ -661,7 +661,7 @@ function renderConversation(conv, live) {
       h(
         "div",
         { class: "empty", style: botStyle(withBot) },
-        keycap(withBot.character, 88, "", withBot.type),
+        keycap(withBot, 88, "", withBot.type),
         h("h2", {}, `You're chatting with ${withBot.name}.`),
         h("p", {}, `${role ? `${role.title}, ${role.department}. ` : ""}${withBot.instructions.split(/(?<=[.!?])\s/)[0]}`),
         reports.length ? h("p", { class: "note" }, `${withBot.name} leads ${reports.join(", ")} and can hand them tasks. Their reports come back into this chat.`) : null,
@@ -710,7 +710,7 @@ function addUser(text) {
       h(
         "div",
         { class: "report", style: bot ? botStyle(bot) : "" },
-        h("div", { class: "rhead" }, bot ? keycap(bot.character, 28, "", bot.type) : null, h("b", {}, `${who} reported back`), h("span", { class: "mono small muted" }, head ? `${head[2].trim().slice(0, 70)} · ${head[3].trim()}` : "")),
+        h("div", { class: "rhead" }, bot ? keycap(bot, 28, "", bot.type) : null, h("b", {}, `${who} reported back`), h("span", { class: "mono small muted" }, head ? `${head[2].trim().slice(0, 70)} · ${head[3].trim()}` : "")),
         h("div", { class: "md" }, renderMarkdown(head ? part.slice(head[0].length) : part)),
       ),
     );
@@ -902,17 +902,10 @@ function addApproval(approval) {
   );
 }
 
-// ---------- characters ----------
-// Each agent is a keycap drawn in one white line. The legend printed on it is
-// its job; the texture on its base tells it from the others. Status is carried
-// by motion and a glyph, never by colour. Follows the Mono design boards.
+// ---------- agents' tiles (drawn further down) and the app's accent ----------
+// Initials an agent shows when its tile uses them, by the kind of work, when none are set.
 const LEGENDS = { scout: "?", scribe: "Aa", maker: "</>", keeper: "zz", counter: "#", spark: "!" };
-const TEXTURES = { dots: "Dots", lines: "Ruled lines", hatch: "Diagonal hatch", solid: "Solid", grid: "Grid", zigzag: "Zigzag", plain: "Plain" };
-const TYPE_TEXTURES = { scout: "dots", scribe: "lines", maker: "hatch", keeper: "solid", counter: "grid", spark: "zigzag" };
-const WHITE = "#f2f2f2";
-const BLACK = "#0a0a0a";
-// Neon colours: each bot glows in one, and the app has an accent of its own.
-// The names match COLORS in src/core/crew.ts.
+// The colours offered for the app's own accent, a per-viewer choice.
 const NEON = {
   green: ["Green", "#00d26a"],
   cyan: ["Cyan", "#2ef2ff"],
@@ -924,11 +917,11 @@ const NEON = {
   yellow: ["Yellow", "#f5ff3b"],
   mint: ["Mint", "#3dffc0"],
 };
-const TYPE_COLORS = { scout: "cyan", scribe: "violet", maker: "lime", keeper: "mint", counter: "yellow", spark: "magenta" };
-const colorName = (character, type) => (NEON[character?.color] ? character.color : TYPE_COLORS[type] || "cyan");
-const colorOf = (character, type) => NEON[colorName(character, type)][1];
 /** Inline style that hands a bot's colour to its row or card (used as var(--bot) in style.css). */
-const botStyle = (bot) => `--bot: ${colorOf(bot?.character, bot?.type)}`;
+const botStyle = (bot) => {
+  const [, onDark, onLight] = tintOf(bot);
+  return `--bot: ${onDark}; --bot-l: ${onLight}`;
+};
 
 // The app's own accent, a per-viewer choice kept in this browser.
 // Dark neon green unless the person picks another.
@@ -964,129 +957,135 @@ function swatches(current, onpick, label) {
 }
 const escapeXml = (text) => String(text).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 const legendOf = (character, type) => [...String(character?.legend || LEGENDS[type] || "?")].slice(0, 3).join("");
-const textureOf = (character, type) => (TEXTURES[character?.texture] ? character.texture : TYPE_TEXTURES[type] || "plain");
 /** How an agent's name and role read in two lines: the name, then its title, or its department when the name is the title. */
 const roleLine = (bot, title) => {
   const t = title || bot?.title || "";
   return t && t.toLowerCase() !== String(bot?.name ?? "").toLowerCase() ? t : bot?.group || t;
 };
 
-// Each agent is a character: a keycap with its initials printed on it, its own
-// body shape, eyes and something on top, in its own colour. It moves a little
-// at rest, and its face and motion show what it is doing.
-let patternIds = 0;
+// Each agent is a tile drawn from the logo: a black rounded tile, its role as a
+// white line symbol, and a cursor block in its department's colour. The cursor
+// turns signal green while the agent works, amber while it waits on you, and red
+// when it is stuck, as the logo's cursor shows work in progress.
 
-/** A neon-on-black texture as an SVG pattern, or null for solid and plain. */
-function texturePattern(kind, id, ink = WHITE) {
-  const body = {
-    dots: `<circle cx="1.5" cy="1.5" r="0.75" fill="${ink}"/>`,
-    lines: `<path d="M0 1.5h3" stroke="${ink}" stroke-width="0.7"/>`,
-    hatch: `<path d="M-0.5 3.5l4-4M-0.5 0.5l1-1M2.5 3.5l1-1" stroke="${ink}" stroke-width="0.6"/>`,
-    grid: `<path d="M0 0.3h3M0.3 0v3" stroke="${ink}" stroke-width="0.55"/>`,
-    zigzag: `<path d="M0 2.2l0.75-1.4 0.75 1.4 0.75-1.4 0.75 1.4" fill="none" stroke="${ink}" stroke-width="0.6"/>`,
-  }[kind];
-  return body ? `<pattern id="${id}" width="3" height="3" patternUnits="userSpaceOnUse">${body}</pattern>` : null;
+/** Department colours: [name, on the black tile and in dark theme, as text in light theme]. Calm, told apart by lightness too; green, amber and red stay for status. */
+const TINTS = {
+  executive: ["Executive", "#E6E6E6", "#2B2B2B"],
+  finance: ["Finance", "#2CC5B5", "#0E7A70"],
+  sales: ["Sales", "#6AA6FF", "#1F5BC7"],
+  marketing: ["Marketing", "#B39BFF", "#6446D0"],
+  operations: ["Operations", "#9DB8C8", "#3E6680"],
+  technology: ["Technology", "#5CD6EA", "#0B7488"],
+  people: ["People", "#F2A0C2", "#A8396A"],
+  legal: ["Legal", "#D6C39B", "#7A6536"],
+  customers: ["Customers", "#F5B38A", "#9A4E1C"],
+  research: ["Research", "#C9D46A", "#5F6A12"],
+  product: ["Product", "#D69BEA", "#84389E"],
+  neutral: ["Other", "#B8B8B8", "#5E625E"],
+};
+/** Which colour a department takes, by the words in its name. */
+const TINT_WORDS = [
+  [/exec|leader|chief|board|founder|management|general|strategy/i, "executive"],
+  [/financ|account|book|payroll|billing|tax/i, "finance"],
+  [/sales|business dev|revenue|partnership/i, "sales"],
+  [/market|brand|communic|content|social|pr\b|creative|design|writing/i, "marketing"],
+  [/oper|supply|logistic|procure|facilit|kitchen|production|admin/i, "operations"],
+  [/tech|engineer|it\b|develop|software|security|data|devops/i, "technology"],
+  [/people|human|hr\b|talent|recruit/i, "people"],
+  [/legal|complian|risk|contract/i, "legal"],
+  [/customer|support|service|success|guest|client/i, "customers"],
+  [/research|insight|intelligence|analy/i, "research"],
+  [/product|project/i, "product"],
+];
+const tintOfDepartment = (department) => TINT_WORDS.find(([re]) => re.test(String(department ?? "")))?.[1] ?? "neutral";
+
+/** The white symbols, drawn on a 24-unit grid with 1.7-unit strokes. */
+const SYMBOLS = {
+  flag: ["Leadership", "M6 21V4M6 4h11l-2 4 2 4H6"],
+  chart: ["Numbers", "M4 20h16M7 16v-4M12 16V8M17 16V9"],
+  ledger: ["Books", "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11M9 8h6"],
+  receipt: ["Invoices", "M6 3h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 21zM9 8h6M9 12h6M9 16h3"],
+  code: ["Code", "M8.5 8l-4 4 4 4M15.5 8l4 4-4 4M13.2 5.5l-2.4 13"],
+  shield: ["Security", "M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"],
+  pen: ["Writing", "M15 5l4 4L8 20H4v-4zM13 7l4 4"],
+  megaphone: ["Promotion", "M4 10v4h3l8 4V6l-8 4H4zM18 9.5a3.5 3.5 0 0 1 0 5M7 14l1.2 5h2.4L9.6 15"],
+  envelope: ["Email", "M4 6h16v12H4zM4 7l8 6 8-6"],
+  target: ["Sales", "M12 21a9 9 0 1 1 9-9M12 16a4 4 0 1 1 4-4M12 12l7-7M15 5h4v4"],
+  chat: ["Customers", "M5 5h14v10H10l-4 4v-4H5zM9 10h6"],
+  people: ["People", "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5M16 5.2a3 3 0 0 1 0 5.6M17.5 14c2 .6 3 2.4 3 5"],
+  scales: ["Legal", "M12 4v16M8 20h8M5 7h14M5 7l-2.6 6a2.8 2.8 0 0 0 5.2 0L5 7zM19 7l-2.6 6a2.8 2.8 0 0 0 5.2 0L19 7z"],
+  search: ["Research", "M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM15.2 15.2L20 20"],
+  check: ["Quality", "M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM9 12l2 2 4-4"],
+  layers: ["Product", "M12 4l8 4-8 4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4"],
+  calendar: ["Planning", "M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"],
+  flow: ["Operations", "M4 5h5v5H4zM15 14h5v5h-5zM9 7.5h3.5A2.5 2.5 0 0 1 15 10v4"],
+  initials: ["Initials", ""],
+};
+/** A symbol from the words in the role, most specific first; then the department's. */
+const SYMBOL_WORDS = [
+  [/chief|general manager|ceo|founder|director|executive assistant/i, "flag"],
+  [/book|ledger|reconcil/i, "ledger"],
+  [/payable|receivable|billing|invoice|payroll|time and billing/i, "receipt"],
+  [/security|it and/i, "shield"],
+  [/quality|safety|health|qa\b|fact check|risk check|conflict/i, "check"],
+  [/developer|engineer|release|devops|programm/i, "code"],
+  [/email/i, "envelope"],
+  [/writer|editor|content|copy|notes|design/i, "pen"],
+  [/seo|advertis|social|marketing|merchandis|listing|outreach|brand|communic/i, "megaphone"],
+  [/sales|account exec|prospect|lead finder|business dev|deal/i, "target"],
+  [/support|customer|guest|returns|refund|intake|success|client/i, "chat"],
+  [/recruit|people|human|hr\b|benefit|talent/i, "people"],
+  [/legal|contract|complian|counsel/i, "scales"],
+  [/research|analyst|intelligence|briefing|reporting|requirements|data/i, "search"],
+  [/financ|controller|costing|cash|budget|counter/i, "chart"],
+  [/product manager|product owner/i, "layers"],
+  [/project|schedul|planner|production|calendar/i, "calendar"],
+  [/oper|coordinat|procure|inventory|fulfil|supply|logistic/i, "flow"],
+];
+const symbolFor = (text) => SYMBOL_WORDS.find(([re]) => re.test(String(text ?? "")))?.[1];
+
+/** What a tile shows for one agent: its symbol, its colour and its initials. Accepts an agent, or just its look. */
+function tileOf(subject) {
+  const bot = subject?.character ? subject : { character: subject ?? {} };
+  const character = bot.character ?? {};
+  const role = (bot.id && roleOf(bot.id)) || null;
+  const title = role?.title ?? bot.title ?? bot.listing?.title ?? bot.name ?? "";
+  // On the chart, the agent's department; in the marketplace, its listed category; else the kind of work it does.
+  const department = role?.department ?? bot.listing?.category ?? bot.group ?? "";
+  const tint = TINTS[character.tint] ? character.tint : tintOfDepartment(department || title);
+  const symbol = SYMBOLS[character.symbol] ? character.symbol : symbolFor(title) ?? symbolFor(bot.name) ?? symbolFor(department) ?? "initials";
+  return { tint, symbol, legend: legendOf(character, bot.type) };
 }
-
-/** The eyes of a bot at rest. Each kind is drawn its own way, and blinks or looks about (see style.css). */
-function restingEyes(kind, ink) {
-  const stroke = `fill="${BLACK}" stroke="${ink}" stroke-width="1.1"`;
-  if (kind === "wide") return [19, 29].map((x) => `<g class="k-eye"><circle cx="${x}" cy="24.3" r="2.6" ${stroke}/><circle class="k-pupil" cx="${x}" cy="24.3" r="1.05" fill="${ink}"/></g>`).join("");
-  if (kind === "sleepy") return `<path class="k-eye" d="M16.8 24.2q2.2 2 4.4 0M26.8 24.2q2.2 2 4.4 0" fill="none" stroke="${ink}" stroke-width="1.4" stroke-linecap="round"/>`;
-  if (kind === "visor") return `<rect x="15.2" y="21.6" width="17.6" height="5.6" rx="2.8" ${stroke}/><g class="k-scanner"><circle cx="20.4" cy="24.4" r="1.05" fill="${ink}"/><circle cx="27.6" cy="24.4" r="1.05" fill="${ink}"/></g>`;
-  if (kind === "specs")
-    return (
-      `<path d="M21.7 24.3h4.6" stroke="${ink}" stroke-width="1"/>` +
-      [19, 29].map((x) => `<circle cx="${x}" cy="24.3" r="2.7" ${stroke}/><circle class="k-eye" cx="${x}" cy="24.3" r="0.95" fill="${ink}"/>`).join("")
-    );
-  return `<circle class="k-eye" cx="19" cy="24.5" r="1.7" fill="${ink}"/><circle class="k-eye" cx="29" cy="24.5" r="1.7" fill="${ink}"/>`;
-}
-
-/** The face, set by the mood. At rest, the bot's own kind of eyes show. */
-function keyFace(mood, ink = WHITE, eyes = "dots") {
-  const line = (d, w = 1.3) => `<path d="${d}" fill="none" stroke="${ink}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
-  if (mood === "working") return line("M16.8 24.5h4.4M26.8 24.5h4.4", 1.5) + line("M22 29.6h4", 1.2);
-  if (mood === "waiting") return `<circle cx="19" cy="24.5" r="2.3" fill="${ink}"/><circle cx="29" cy="24.5" r="2.3" fill="${ink}"/><circle cx="24" cy="30.2" r="1.3" fill="${ink}"/>`;
-  if (mood === "done") return line("M16.8 25.2q2.2-2.6 4.4 0M26.8 25.2q2.2-2.6 4.4 0", 1.4) + line("M21 28.8q3 3.4 6 0");
-  if (mood === "stuck") return line("M17.4 23l3.2 3.2M20.6 23l-3.2 3.2M27.4 23l3.2 3.2M30.6 23l-3.2 3.2") + line("M21 30.4l1.5-1 1.5 1 1.5-1 1.5 1", 1.1);
-  if (mood === "asleep") return line("M17 24.8h4M27 24.8h4") + line("M22.6 29.8h2.8", 1.1);
-  return restingEyes(eyes, ink) + line("M21.8 29.6q2.2 2.2 4.4 0", 1.15);
-}
-
-// What makes each bot look like itself. The names match SHAPES, EYES and TOPS in src/core/crew.ts.
-const SHAPES = { key: "Key", round: "Round", tall: "Tall", wide: "Wide", soft: "Soft" };
-const EYES = { dots: "Dots", wide: "Wide", sleepy: "Sleepy", visor: "Visor", specs: "Specs" };
-const TOPS = { none: "Nothing", antenna: "Antenna", ears: "Ears", horns: "Horns", tuft: "Tuft", halo: "Halo" };
-// Corner radii of the base and the cap, and how the body is stretched.
-const SHAPE_FORM = { key: [8, 6, 1, 1], round: [15, 12.5, 1, 1], tall: [8, 6, 0.84, 1.08], wide: [9, 7, 1.1, 0.88], soft: [12, 9.5, 1, 0.95] };
-const looksOf = (character) => ({ shape: SHAPE_FORM[character?.shape] ? character.shape : "key", eyes: EYES[character?.eyes] ? character.eyes : "dots", top: TOPS[character?.top] ? character.top : "none" });
-
-/** What a bot wears on top, drawn from the top edge of its body. */
-function topFeature(kind, ink, topY, left, right) {
-  const p = (d, extra = "") => `<path d="${d}" fill="none" stroke="${ink}" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" ${extra}/>`;
-  const y = topY.toFixed(1);
-  if (kind === "antenna") return `<g class="k-antenna">${p(`M24 ${y}v-4.4`)}<circle cx="24" cy="${(topY - 5.6).toFixed(1)}" r="1.55" fill="${ink}"/></g>`;
-  if (kind === "ears") return `<path class="k-ear" d="M${(left + 3.5).toFixed(1)} ${(topY + 1).toFixed(1)}l1.6-5 4.2 3.2z" fill="${BLACK}" stroke="${ink}" stroke-width="1.2" stroke-linejoin="round"/><path class="k-ear k-ear-r" d="M${(right - 3.5).toFixed(1)} ${(topY + 1).toFixed(1)}l-1.6-5-4.2 3.2z" fill="${BLACK}" stroke="${ink}" stroke-width="1.2" stroke-linejoin="round"/>`;
-  if (kind === "horns") return p(`M${(left + 6).toFixed(1)} ${y}q-3-2-1.6-5.4`) + p(`M${(right - 6).toFixed(1)} ${y}q3-2 1.6-5.4`);
-  if (kind === "tuft") return `<g class="k-tuft">${p(`M24 ${y}v-4M21.2 ${y}l-1.8-3.2M26.8 ${y}l1.8-3.2`)}</g>`;
-  if (kind === "halo") return `<ellipse class="k-halo" cx="24" cy="${(topY - 3.6).toFixed(1)}" rx="7.5" ry="2" fill="none" stroke="${ink}" stroke-width="1.2"/>`;
-  return "";
-}
+const tintOf = (subject) => TINTS[tileOf(subject).tint];
 
 /**
- * An agent, drawn as a keycap character. Each has its own body shape, eyes and
- * top feature, in its own colour. Moods: "" (at rest), working, waiting, done,
- * stuck, asleep; each moves in its own way (see style.css). Below 24 px only
- * the body and a bigger legend are drawn.
+ * An agent's tile. Moods: "" (at rest), working (green cursor, blinking), waiting (amber cursor and a dashed
+ * frame), done (a green tick), stuck (red cursor and a cross), asleep (dimmed). The name `keycap` is kept
+ * because the whole app calls it; pass the agent itself, so its role and department pick the tile.
  */
-function keycap(character, size = 40, mood = "", type = "") {
-  const legend = legendOf(character, type);
-  const text = escapeXml(legend);
-  const texture = textureOf(character, type);
-  const ink = colorOf(character, type);
-  const looks = looksOf(character);
-  const [rx, irx, sx, sy] = SHAPE_FORM[looks.shape];
-  const id = `tx${++patternIds}`;
-  const pattern = texturePattern(texture, id, ink);
-  const baseFill = texture === "solid" ? ink : pattern ? `url(#${id})` : BLACK;
-  let svg;
-  if (size < 24) {
-    const n = [...legend].length;
-    const fs = n === 1 ? 14 : n === 2 ? 10.5 : 8;
-    const w = 21 * Math.min(sx, 1.04);
-    const hgt = 20.5 * Math.min(sy, 1.04);
-    const x = 12 - w / 2;
-    const y = 22.5 - hgt;
-    svg =
-      `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24"><defs>${pattern ?? ""}</defs>` +
-      `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${hgt.toFixed(1)}" rx="${(rx * 0.56).toFixed(1)}" fill="${baseFill}" stroke="${ink}" stroke-width="1"/>` +
-      `<rect x="${(x + 1.7).toFixed(1)}" y="${(y + 0.4).toFixed(1)}" width="${(w - 3.4).toFixed(1)}" height="${(hgt - 4.9).toFixed(1)}" rx="${(irx * 0.56).toFixed(1)}" fill="${BLACK}" stroke="${ink}" stroke-width="1"/>` +
-      `<text x="12" y="${(y + (hgt - 4.9) / 2 + fs * 0.36 + 0.4).toFixed(1)}" text-anchor="middle" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="${fs}" font-weight="700" fill="${ink}">${text}</text></svg>`;
-  } else {
-    const big = size >= 64;
-    const legendText = big
-      ? `<text x="12" y="18.4" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="7.2" font-weight="700" fill="${ink}">${text}</text>`
-      : `<text x="11" y="19.4" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="9.6" font-weight="800" fill="${ink}">${text}</text>`;
-    const cursorX = (big ? 12 : 11) + (big ? 4.4 : 5.8) * [...legend].length + 0.6;
-    const cursor = mood === "working" ? `<rect class="k-blink" x="${cursorX.toFixed(1)}" y="${big ? 12.4 : 12}" width="${big ? 3.2 : 3.6}" height="${big ? 6.4 : 8}" fill="${ink}"/>` : "";
-    const extras =
-      (mood === "waiting" ? `<rect class="k-march" x="2.5" y="5.5" width="43" height="38" rx="10.5" fill="none" stroke="${ink}" stroke-width="1.1" stroke-dasharray="3 3"/>` : "") +
-      (mood === "done" ? `<circle cx="42" cy="8" r="5.2" fill="${ink}"/><path class="k-tick" d="M39.6 8.2l1.7 1.7 3.2-3.4" fill="none" stroke="${BLACK}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8" stroke-dashoffset="8"/>` : "") +
-      (mood === "asleep" ? `<text class="k-z" x="39" y="9" font-family="ui-monospace, monospace" font-size="7" fill="#b8b8b8">z</text>` : "");
-    // The body is stretched from the middle of its bottom edge, so it always stands on its legs.
-    const topY = 41 - 33 * sy;
-    const stretch = sx === 1 && sy === 1 ? "" : ` transform="translate(24 41) scale(${sx} ${sy}) translate(-24 -41)"`;
-    svg =
-      `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 48 48"><defs>${pattern ?? ""}</defs>` +
-      `<path class="k-legs" d="M${(24 - 6.5 * sx).toFixed(1)} 41v5M${(24 + 6.5 * sx).toFixed(1)} 41v5" stroke="${ink}" stroke-width="1.6" stroke-linecap="round"/>` +
-      `<g class="cap">${topFeature(looks.top, ink, topY, 24 - 19 * sx, 24 + 19 * sx)}<g${stretch}><rect x="5" y="8" width="38" height="33" rx="${rx}" fill="${baseFill}" stroke="${ink}" stroke-width="1.2"/>` +
-      `<rect x="8.5" y="8.5" width="31" height="26" rx="${irx}" fill="${BLACK}" stroke="${ink}" stroke-width="1.2"/>` +
-      `${legendText}${cursor}${keyFace(mood, ink, looks.eyes)}</g></g>${extras}</svg>`;
-  }
-  // Each bot starts its movement at a different moment and rests in its own way, so a row of them does not move in step.
-  const delay = -((patternIds * 0.83) % 5).toFixed(2);
-  const way = ([...legend].reduce((n, ch) => n + ch.codePointAt(0), 0) + looks.shape.length + looks.top.length) % 3;
-  const node = h("span", { class: `keychar ${mood ? `k-${mood}` : `k-idle k-rest-${way}`}`, style: `--bot: ${ink}; --k-delay: ${delay}s` });
+function keycap(subject, size = 40, mood = "") {
+  const t = tileOf(subject);
+  const [, tileColour] = TINTS[t.tint];
+  const cursor = mood === "working" ? "#00D26A" : mood === "waiting" ? "#FFB020" : mood === "stuck" ? "#FF6B6B" : tileColour;
+  const small = size < 28;
+  const path = SYMBOLS[t.symbol]?.[1];
+  const legend = escapeXml(t.legend);
+  const n = [...t.legend].length;
+  const mark = path
+    ? `<g class="t-symbol" transform="translate(12 8.5)" fill="none" stroke="#F2F2F2" stroke-width="${small ? 2.4 : size < 48 ? 1.9 : 1.7}" stroke-linecap="round" stroke-linejoin="round"><path d="${path}"/></g>`
+    : `<text class="t-symbol" x="24" y="27.5" text-anchor="middle" font-family="JetBrains Mono, ui-monospace, Menlo, monospace" font-weight="700" font-size="${n === 1 ? 17 : n === 2 ? 14 : 11}" fill="#F2F2F2">${legend}</text>`;
+  const badge =
+    mood === "done" && !small
+      ? `<circle cx="41" cy="7" r="6" fill="#00D26A" stroke="var(--panel, #fff)" stroke-width="1.5"/><path class="k-tick" d="M38.4 7.2l1.8 1.8 3.4-3.6" fill="none" stroke="#04210F" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8"/>`
+      : mood === "stuck" && !small
+        ? `<circle cx="41" cy="7" r="6" fill="#FF6B6B" stroke="var(--panel, #fff)" stroke-width="1.5"/><path d="M38.8 4.8l4.4 4.4M43.2 4.8l-4.4 4.4" stroke="#2B0505" stroke-width="1.6" stroke-linecap="round"/>`
+        : "";
+  const frame = mood === "waiting" ? `<rect class="k-march" x="0.5" y="0.5" width="47" height="47" rx="12.5" fill="none" stroke="#FFB020" stroke-width="1.4" stroke-dasharray="3 2.6"/>` : "";
+  const svg =
+    `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 48 48">${frame}` +
+    `<rect class="t-tile" x="2" y="2" width="44" height="44" rx="11" fill="#0A0A0A" stroke="#2A2A2A" stroke-width="${small ? 2 : 1}"/>${mark}` +
+    `<rect class="t-cursor" x="${small ? 16 : 18}" y="${small ? 33.5 : 34.5}" width="${small ? 16 : 12}" height="${small ? 6 : 5}" rx="1" fill="${cursor}"/>${badge}</svg>`;
+  const node = h("span", { class: `keychar tile ${mood ? `k-${mood}` : "k-idle"}`, style: `--bot: ${tileColour}` });
   node.innerHTML = svg;
   return node;
 }
@@ -1197,7 +1196,7 @@ function renderCrewColumn() {
         },
         ondblclick: () => go("bot", bot.id),
       },
-      keycap(bot.character, 36, mood(q), bot.type),
+      keycap(bot, 36, mood(q), bot.type),
       h("span", { class: "who" }, h("b", {}, bot.name), ((t) => (t && t.toLowerCase() !== bot.name.toLowerCase() ? h("span", { class: "type" }, t) : null))(roleOf(bot.id)?.title ?? bot.title), h("span", { class: `status ${q?.status === "waiting" ? "wait" : ""}` }, ((n) => (n && !q ? `${status} · ${n} done this week` : status))(state.quests.filter((x) => x.bot.id === bot.id && !isLive(x) && within(x.updatedAt, WEEK)).length))),
       // The model is only worth a mention here when the bot has none it can use.
       bot.modelInfo?.kind ? null : modelChip(bot.modelInfo),
@@ -1324,7 +1323,7 @@ function renderBoard() {
   const composer = h(
     "section",
     { class: "card assignbox", style: selected ? botStyle(selected) : "" },
-    h("div", { class: "assignrow" }, selected ? keycap(selected.character, 40, "", selected.type) : null, h("div", { class: "grow" }, h("div", { class: "row" }, h("span", { class: "label", style: "margin: 0" }, "Assign a task to"), who, team ? h("span", { class: "note small" }, `A whole team: the ${selected.name} shares the work out across ${team.size - 1} agent${team.size === 2 ? "" : "s"} and brings back one result`) : selected ? h("span", { class: "note small" }, `One agent · ${departmentOf(selected.id)}${leads ? " · can hand parts to its team" : ""}`) : null), what)),
+    h("div", { class: "assignrow" }, selected ? keycap(selected, 40, "", selected.type) : null, h("div", { class: "grow" }, h("div", { class: "row" }, h("span", { class: "label", style: "margin: 0" }, "Assign a task to"), who, team ? h("span", { class: "note small" }, `A whole team: the ${selected.name} shares the work out across ${team.size - 1} agent${team.size === 2 ? "" : "s"} and brings back one result`) : selected ? h("span", { class: "note small" }, `One agent · ${departmentOf(selected.id)}${leads ? " · can hand parts to its team" : ""}`) : null), what)),
     repoPick ? h("div", { class: "assignmeta" }, repoPick, h("span", { class: "note small" }, repos.length === 1 && !state.project ? "Your connected repository is used automatically." : state.project ? "Agents that change files work in their own copy; you review before anything is kept." : "Choose one if the task is about your code.")) : null,
     h("div", { class: "assignfoot" }, h("div", { class: "ideachips" }, ideas.map((idea) => h("button", { type: "button", class: "ideachip", title: "Use this as a starting point", onclick: () => ((what.value = idea), (state.draftTask = idea), what.focus()) }, idea))), assign),
   );
@@ -1342,7 +1341,7 @@ function renderBoard() {
         "button",
         { class: `flowrow ${approval ? "wait" : ""}`, style: `${botStyle(q.bot)}; --depth: ${depth}`, onclick: () => go("quest", q.id) },
         depth ? h("span", { class: "flowelbow", "aria-hidden": "true" }) : null,
-        keycap(q.bot.character, 30, mood(q), q.bot.type),
+        keycap(q.bot, 30, mood(q), q.bot.type),
         h("span", { class: "flowmain" }, h("b", {}, kindWord ? h("span", { class: "chip" }, kindWord) : null, q.title.replace(/^(Question|Request|Decision needed): /, "")), h("span", { class: "flowsub" }, `${q.bot.name} · ${departmentOf(q.bot.id)}${q.parent ? ` · from ${q.parent.by}` : ""} · ${doing}`), q.said ? h("span", { class: "flowsaid" }, q.said.replace(/\s+/g, " ").slice(0, 200)) : null),
         h("span", { class: "flowmeta" }, pct != null ? h("span", { class: "track", title: `Step ${q.steps || 0} of up to ${q.budget.steps}` }, h("span", { style: `width: ${pct}%; background: var(--bot)` })) : null, h("span", { title: q.chain && q.chain.tasks > 1 ? `This task alone: ${money(q.cost || 0)}. With the ${q.chain.tasks - 1} it handed on: ${money(q.chain.cost)}, of a shared budget of ${money(q.chain.budget)}.` : "" }, q.chain && q.chain.tasks > 1 ? `${elapsed(q.createdAt)} · ${money(q.chain.cost)} with ${q.chain.tasks - 1} handed on` : `${elapsed(q.createdAt)} · ${money(q.cost || 0)}`)),
       ),
@@ -1414,7 +1413,7 @@ function needRow(n) {
     return h("button", { class: "needrow", onclick: words[2] }, h("span", { class: "flowmain" }, h("b", {}, words[0]), h("span", { class: "flowsub" }, words[1])), h("span", { class: "pill loud" }, "Open"));
   }
   const why = { review: "Changes ready for your review", check: "Finished, but its check failed", failed: n.q.note ? `Failed: ${n.q.note}` : "Failed", budget: "Stopped at its budget: say “continue” to keep going" }[n.kind] ?? "";
-  return h("button", { class: "needrow", style: botStyle(n.q.bot), onclick: () => go("quest", n.q.id) }, keycap(n.q.bot.character, 30, mood(n.q), n.q.bot.type), h("span", { class: "flowmain" }, h("b", {}, n.q.title), h("span", { class: "flowsub" }, `${n.q.bot.name} · ${departmentOf(n.q.bot.id)} · ${why}`)), h("span", { class: "pill loud" }, n.kind === "review" ? "Review" : "Open"));
+  return h("button", { class: "needrow", style: botStyle(n.q.bot), onclick: () => go("quest", n.q.id) }, keycap(n.q.bot, 30, mood(n.q), n.q.bot.type), h("span", { class: "flowmain" }, h("b", {}, n.q.title), h("span", { class: "flowsub" }, `${n.q.bot.name} · ${departmentOf(n.q.bot.id)} · ${why}`)), h("span", { class: "pill loud" }, n.kind === "review" ? "Review" : "Open"));
 }
 
 /** The ready-made quests, each with the bot that goes and how its result is checked. */
@@ -1436,7 +1435,7 @@ function coreQuests() {
         return h(
           "button",
           { class: `core-card ${state.coreOpen === t.id ? "on" : ""}`, onclick: () => openCoreQuest(state.coreOpen === t.id ? null : t.id) },
-          h("span", { class: "row" }, bot ? keycap(bot.character, 28, "", bot.type) : null, h("b", {}, t.name)),
+          h("span", { class: "row" }, bot ? keycap(bot, 28, "", bot.type) : null, h("b", {}, t.name)),
           h("span", { class: "note small" }, t.summary),
           h("span", { class: "mono small muted" }, `${bot ? bot.name : t.bot} · check: ${checkWords(t.check) || "your review"}`),
         );
@@ -1506,7 +1505,7 @@ function questCard(q) {
     "article",
     { class: `qcard ${q.status}`, style: botStyle(q.bot), onclick: () => go("quest", q.id), tabindex: "0", onkeydown: (e) => e.key === "Enter" && go("quest", q.id) },
     q.status === "running" ? h("div", { class: "scanline", "aria-hidden": "true" }, h("span")) : null,
-    h("div", { class: "head" }, h("b", {}, q.title), keycap(q.bot.character, 28, mood(q), q.bot.type)),
+    h("div", { class: "head" }, h("b", {}, q.title), keycap(q.bot, 28, mood(q), q.bot.type)),
     approval
       ? h("div", { class: "now wait" }, `◌ ${q.bot.name} wants to use ${NAMES[approval.name] || approval.name}`)
       : h("div", { class: "now" }, `● ${q.bot.name} · step ${q.steps || 1}${q.budget?.steps ? ` of up to ${q.budget.steps}` : ""} · ${doing}`),
@@ -1601,7 +1600,7 @@ function updateCard(q, { compact = false } = {}) {
   return h(
     "article",
     { class: `update ${live ? "live" : ""} ${failed ? "bad" : ""} ${unread ? "unread" : ""}`, style: botStyle(q.bot), onclick: () => go("quest", q.id), tabindex: "0", onkeydown: (e) => e.key === "Enter" && go("quest", q.id) },
-    keycap(q.bot.character, compact ? 30 : 40, mood(q), q.bot.type),
+    keycap(q.bot, compact ? 30 : 40, mood(q), q.bot.type),
     h(
       "div",
       { class: "grow" },
@@ -1828,7 +1827,7 @@ function renderInbox() {
       { class: `mailrow ${unread ? "unread" : ""} ${ui.mailOpen === m.id ? "open" : ""} ${ui.mailSel.has(m.id) ? "sel" : ""}`, role: "listitem", tabindex: "0", style: m.bot ? botStyle(m.bot) : "", onclick: () => openMail(m), onkeydown: (e) => e.key === "Enter" && e.target === node && openMail(m) },
       h("input", { type: "checkbox", class: "pick", "aria-label": `Select ${m.subject}`, checked: ui.mailSel.has(m.id), onclick: (e) => e.stopPropagation(), onchange: (e) => (e.target.checked ? ui.mailSel.add(m.id) : ui.mailSel.delete(m.id), renderInbox()) }),
       h("button", { class: `star ${mark.starred ? "on" : ""}`, "aria-label": mark.starred ? "Unsave" : "Save", "aria-pressed": String(Boolean(mark.starred)), title: mark.starred ? "Saved" : "Save", onclick: (e) => (e.stopPropagation(), mailMark([m.id], { starred: !mark.starred })) }, mark.starred ? "★" : "☆"),
-      m.bot ? keycap(m.bot.character, 28, "", m.bot.type) : h("span", { class: "sysavatar", "aria-hidden": "true" }, "T"),
+      m.bot ? keycap(m.bot, 28, "", m.bot.type) : h("span", { class: "sysavatar", "aria-hidden": "true" }, "T"),
       h("span", { class: "msender" }, agentName(m.bot)),
       h("span", { class: "msubject" }, h("b", {}, m.subject), h("span", { class: "msnippet" }, ` — ${String(m.snippet).replace(/\s+/g, " ").slice(0, 160)}`)),
       h("span", { class: `mlabel ${m.label === "done" ? "empty" : m.label}` }, m.label === "done" ? "" : LABEL_WORDS[m.label]),
@@ -1933,7 +1932,7 @@ function readMail(m) {
         : null,
     );
   showName();
-  const from = h("div", { class: "readfrom", style: m.bot ? botStyle(m.bot) : "" }, m.bot ? keycap(m.bot.character, 44, isLive(q ?? {}) ? "working" : "", m.bot.type) : h("span", { class: "sysavatar big", "aria-hidden": "true" }, "T"), h("div", { class: "grow" }, nameBox, h("div", { class: "note small" }, `${agentRole(m.bot)}${m.bot ? ` · ${departmentOf(m.bot.id)}` : ""} · to me`)), h("span", { class: "mtime" }, new Date(m.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })));
+  const from = h("div", { class: "readfrom", style: m.bot ? botStyle(m.bot) : "" }, m.bot ? keycap(m.bot, 44, isLive(q ?? {}) ? "working" : "", m.bot.type) : h("span", { class: "sysavatar big", "aria-hidden": "true" }, "T"), h("div", { class: "grow" }, nameBox, h("div", { class: "note small" }, `${agentRole(m.bot)}${m.bot ? ` · ${departmentOf(m.bot.id)}` : ""} · to me`)), h("span", { class: "mtime" }, new Date(m.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })));
 
   const body = h("div", { class: "readbody" });
   const act = (fn) => attempt(async () => (await fn(), await Promise.all([loadQuests(), refreshList(), loadCrew()]), renderInbox(), syncInboxCount()), body);
@@ -2254,7 +2253,7 @@ function renderOrg() {
     return h(
       "div",
       { class: `poscard ${o.sel?.kind === "position" && o.sel.id === m.bot ? "on" : ""} ${leads ? "lead" : ""}`, style: `${botStyle(bot)}; margin-left: ${depth * 22}px`, role: "button", tabindex: "0", title: "Click to edit. Drag onto someone to report to them; hold Option for a dotted line.", onclick: () => select({ kind: "position", id: m.bot }), onkeydown: (e) => e.key === "Enter" && select({ kind: "position", id: m.bot }), ...drag({ kind: "position", id: m.bot }), ...drop({ kind: "position", id: m.bot }) },
-      keycap(bot.character, 30, mood(q), bot.type),
+      keycap(bot, 30, mood(q), bot.type),
       h(
         "span",
         { class: "posmain" },
@@ -2327,7 +2326,7 @@ function renderOrg() {
           return h(
             "div",
             { class: "posrow" },
-            h("button", { class: "plain poslink", onclick: () => select({ kind: "position", id: m.bot }) }, keycap(bot.character, 22, "", bot.type), h("span", {}, h("b", {}, m.title), bot.name !== m.title ? h("span", { class: "note small" }, ` · ${bot.name}`) : null)),
+            h("button", { class: "plain poslink", onclick: () => select({ kind: "position", id: m.bot }) }, keycap(bot, 22, "", bot.type), h("span", {}, h("b", {}, m.title), bot.name !== m.title ? h("span", { class: "note small" }, ` · ${bot.name}`) : null)),
             h("select", { "aria-label": `${m.title}'s group`, onchange: (e) => set(m.bot, { department: e.target.value }, `${m.title} joins ${e.target.value}`) }, groups.map((g) => h("option", { value: g.name, selected: g.name === m.department }, g.name))),
             h("select", { "aria-label": `Who ${m.title} reports to`, onchange: (e) => set(m.bot, { manager: e.target.value || null }, `${m.title} reports to ${nameOf(e.target.value || null)}`) }, h("option", { value: "", selected: !m.manager }, "You"), members.filter((x) => !above.has(x.bot)).map((x) => h("option", { value: x.bot, selected: x.bot === m.manager }, x.title))),
             h("select", { "aria-label": `Who ${m.title} also works with`, onchange: (e) => set(m.bot, { also: e.target.value || null }, e.target.value ? `${m.title} also works with ${nameOf(e.target.value)}` : `${m.title} has no dotted line`) }, h("option", { value: "", selected: !m.also }, "Nobody"), members.filter((x) => x.bot !== m.bot && x.bot !== m.manager).map((x) => h("option", { value: x.bot, selected: x.bot === m.also }, x.title))),
@@ -2378,7 +2377,7 @@ function renderOrg() {
       });
     });
     return [
-      h("div", { class: "panelhead", style: botStyle(bot) }, keycap(bot.character, 44, mood(live.get(m.bot)), bot.type), h("div", { class: "grow" }, h("b", {}, m.title), h("div", { class: "note small" }, `Filled by ${bot.name}`)), h("button", { class: "plain small", "aria-label": "Close", onclick: () => select(null) }, "✕")),
+      h("div", { class: "panelhead", style: botStyle(bot) }, keycap(bot, 44, mood(live.get(m.bot)), bot.type), h("div", { class: "grow" }, h("b", {}, m.title), h("div", { class: "note small" }, `Filled by ${bot.name}`)), h("button", { class: "plain small", "aria-label": "Close", onclick: () => select(null) }, "✕")),
       h("label", {}, "Title", title),
       h("label", {}, "Responsible for", resp),
       h("label", {}, "Group", h("select", { onchange: (e) => set(m.bot, { department: e.target.value }, `${m.title} joins ${e.target.value}`) }, groups.map((gg) => h("option", { value: gg.name, selected: gg.name === m.department }, gg.name)))),
@@ -2442,7 +2441,7 @@ function renderOrg() {
     const needle = addFind.value.trim().toLowerCase();
     o.find = addFind.value;
     const match = (t) => !needle || t.toLowerCase().includes(needle);
-    const item = (bot, payload, sub) => h("div", { class: "additem", style: botStyle(bot), ...drag(payload), role: "button", tabindex: "0", title: "Drag onto the chart, or click to add it reporting to you", onclick: () => ((o.drag = payload), dropOn({ kind: "you" })) }, keycap(bot.character, 24, "", bot.type), h("span", { class: "posmain" }, h("b", {}, bot.name), h("span", { class: "possub" }, sub)));
+    const item = (bot, payload, sub) => h("div", { class: "additem", style: botStyle(bot), ...drag(payload), role: "button", tabindex: "0", title: "Drag onto the chart, or click to add it reporting to you", onclick: () => ((o.drag = payload), dropOn({ kind: "you" })) }, keycap(bot, 24, "", bot.type), h("span", { class: "posmain" }, h("b", {}, bot.name), h("span", { class: "possub" }, sub)));
     const teams = (state.marketTeams ?? []).filter((t) => match(`${t.name} ${t.summary}`));
     const market = (state.market ?? []).filter((b) => !byId.has(b.id) && match(`${b.name} ${b.listing.category} ${b.listing.summary}`));
     const marketById = new Map((state.market ?? []).map((b) => [b.id, b]));
@@ -2454,7 +2453,7 @@ function renderOrg() {
             h("div", { class: "label" }, "Ready-made teams"),
             teams.map((t) => {
               const lead = marketById.get(t.bots[0]);
-              return h("div", { class: "additem team", ...drag({ kind: "team", id: t.id, lead: t.bots[0], name: t.name }), role: "button", tabindex: "0", title: "Drag onto the position it should report to, or into a group, or click to add it under you", onclick: () => ((o.drag = { kind: "team", id: t.id, lead: t.bots[0], name: t.name }), dropOn({ kind: "you" })) }, lead ? keycap(lead.character, 24, "", lead.type) : null, h("span", { class: "posmain" }, h("b", {}, t.name), h("span", { class: "possub" }, `${t.bots.length} positions, led by ${lead?.name ?? "its lead"}`)));
+              return h("div", { class: "additem team", ...drag({ kind: "team", id: t.id, lead: t.bots[0], name: t.name }), role: "button", tabindex: "0", title: "Drag onto the position it should report to, or into a group, or click to add it under you", onclick: () => ((o.drag = { kind: "team", id: t.id, lead: t.bots[0], name: t.name }), dropOn({ kind: "you" })) }, lead ? keycap(lead, 24, "", lead.type) : null, h("span", { class: "posmain" }, h("b", {}, t.name), h("span", { class: "possub" }, `${t.bots.length} positions, led by ${lead?.name ?? "its lead"}`)));
             }),
           ]
         : null,
@@ -2521,7 +2520,7 @@ function renderOrg() {
                         return h(
                           "div",
                           { class: "suggestcard", style: bot ? botStyle(bot) : "" },
-                          bot ? keycap(bot.character, 30, "", bot.type) : null,
+                          bot ? keycap(bot, 30, "", bot.type) : null,
                           h("span", { class: "posmain" }, h("b", {}, p.title), h("span", { class: "possub" }, [p.group, p.reportsTo ? `reports to ${sg.positions.find((x) => x.bot === p.reportsTo)?.title ?? nameOf(p.reportsTo)}` : "reports to you"].join(" · ")), h("span", { class: "suggestwhy" }, p.why)),
                           h("div", { class: "suggestacts" }, h("button", { class: "primary small", onclick: () => accept(p) }, "Accept"), h("button", { class: "plain small", onclick: () => skip(p) }, "Skip")),
                         );
@@ -2561,7 +2560,7 @@ function renderOrg() {
               const box = h(
                 "div",
                 { class: "suggestcard", style: bot ? botStyle(bot) : "" },
-                bot ? keycap(bot.character, 30, "", bot.type) : null,
+                bot ? keycap(bot, 30, "", bot.type) : null,
                 h("span", { class: "posmain" }, h("b", {}, p.title), h("span", { class: "possub" }, `${p.group} · reports to ${p.reportsTo ? nameOf(p.reportsTo) : "you"} · proposed by ${nameOf(p.by)}`), h("span", { class: "suggestwhy" }, p.why)),
                 h("div", { class: "suggestacts" }, h("button", { class: "primary small", onclick: () => answerProposal(org, p, "approve", box).then(renderOrg) }, "Approve"), h("button", { class: "plain small", onclick: () => answerProposal(org, p, "decline", box).then(renderOrg) }, "Decline")),
               );
@@ -3220,7 +3219,7 @@ async function auditView() {
         "summary",
         {},
         h("span", { class: "atime" }, new Date(e.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })),
-        h("span", { class: "awho", style: bot ? botStyle(bot) : "" }, bot ? keycap(bot.character, 20, "", bot.type) : h("span", { class: "sysavatar small", "aria-hidden": "true" }, e.actor === "owner" ? "Y" : "T"), h("span", {}, e.actorName)),
+        h("span", { class: "awho", style: bot ? botStyle(bot) : "" }, bot ? keycap(bot, 20, "", bot.type) : h("span", { class: "sysavatar small", "aria-hidden": "true" }, e.actor === "owner" ? "Y" : "T"), h("span", {}, e.actorName)),
         h("span", { class: `akind ${e.kind}` }, (AUDIT_KINDS.find(([k]) => k === e.kind) ?? [e.kind, e.kind])[1]),
         h("span", { class: "awhat" }, h("b", {}, e.action), e.detail ? h("span", { class: "adetail" }, ` — ${e.detail}`) : null),
         h("span", { class: "acost" }, e.cost ? money(e.cost) : e.ok === false ? "✕" : ""),
@@ -3929,7 +3928,7 @@ function marketCard(bot) {
   return h(
     "article",
     { class: "mcard", style: botStyle(bot), tabindex: "0", onclick: () => go("marketbot", bot.id), onkeydown: (e) => e.key === "Enter" && e.target === e.currentTarget && go("marketbot", bot.id) },
-    h("div", { class: "mhead" }, keycap(bot.character, 40, "", bot.type), h("div", {}, h("b", {}, bot.name), h("div", { class: "by" }, bot.listing.title.toLowerCase() === bot.name.toLowerCase() ? `by ${bot.listing.by}` : `${bot.listing.title} · by ${bot.listing.by}`))),
+    h("div", { class: "mhead" }, keycap(bot, 40, "", bot.type), h("div", {}, h("b", {}, bot.name), h("div", { class: "by" }, bot.listing.title.toLowerCase() === bot.name.toLowerCase() ? `by ${bot.listing.by}` : `${bot.listing.title} · by ${bot.listing.by}`))),
     h("p", { class: "mdesc" }, bot.listing.summary),
     h("div", { class: "mfoot" }, h("span", { class: "mono small muted" }, bot.added ? "✓ On your team" : `Free · ${bot.approvals === "ask" ? "asks before changes" : "runs everything"}`), add),
   );
@@ -3980,7 +3979,7 @@ async function marketView() {
         "article",
         { class: "mcard tcard" },
         h("div", { class: "mhead" }, h("div", {}, h("b", {}, t.name), h("div", { class: "by" }, `${list.length} agents · lead: ${list[0]?.listing.title ?? ""}`))),
-        h("div", { class: "tbots" }, list.map((b) => h("button", { class: "plain", title: `${b.name}: ${b.listing.title}`, "aria-label": b.name, style: botStyle(b), onclick: () => go("marketbot", b.id) }, keycap(b.character, 36, "", b.type)))),
+        h("div", { class: "tbots" }, list.map((b) => h("button", { class: "plain", title: `${b.name}: ${b.listing.title}`, "aria-label": b.name, style: botStyle(b), onclick: () => go("marketbot", b.id) }, keycap(b, 36, "", b.type)))),
         h("p", { class: "mdesc" }, t.summary),
         h("div", { class: "mfoot" }, h("span", { class: "mono small muted" }, "Free · added with their reporting lines"), add),
       );
@@ -3996,7 +3995,7 @@ async function marketView() {
               "div",
               { class: "mfeatured" },
               featured.map((b) =>
-                h("button", { class: "mfeat", style: botStyle(b), onclick: () => go("marketbot", b.id) }, keycap(b.character, 64, "", b.type), h("b", {}, b.name), h("span", { class: "by" }, `by ${b.listing.by}`)),
+                h("button", { class: "mfeat", style: botStyle(b), onclick: () => go("marketbot", b.id) }, keycap(b, 64, "", b.type), h("b", {}, b.name), h("span", { class: "by" }, `by ${b.listing.by}`)),
               ),
             ),
           )
@@ -4048,7 +4047,7 @@ async function marketBotView() {
       h(
         "div",
         { class: "grow" },
-        keycap(bot.character, 88, "", bot.type),
+        keycap(bot, 88, "", bot.type),
         h("h1", {}, bot.name),
         h("div", { class: "by" }, `${bot.listing.title} · ${bot.listing.category} · by ${bot.listing.by}${bot.listing.reportsTo && market.bots.find((b) => b.id === bot.listing.reportsTo) ? ` · reports to the ${market.bots.find((b) => b.id === bot.listing.reportsTo).listing.title}` : ""}`),
         h("p", { class: "lead" }, bot.listing.summary),
@@ -4122,7 +4121,7 @@ async function refreshQuest(first = false) {
   const where = q.branch ? ["on branch ", h("code", {}, q.branch), " · your own branch is untouched"] : q.project ? [`in ${basename(q.project)}`] : ["in the workspace folder"];
   fill(ui.qhead, 
     h("button", { onclick: () => go("home") }, "Back to agents"),
-    keycap(q.bot.character, 40, mood(q), q.bot.type),
+    keycap(q.bot, 40, mood(q), q.bot.type),
     h(
       "div",
       { class: "titles" },
@@ -4464,7 +4463,7 @@ async function renderReceipt(q) {
           h(
             "div",
             { class: "ragent" },
-            keycap(a.character, 26, "", a.type),
+            keycap(a, 26, "", a.type),
             h("div", { class: "grow" }, h("div", { class: "rname" }, h("b", {}, a.agent), h("span", {}, `${a.tasks} part${a.tasks === 1 ? "" : "s"} · ${a.actions} action${a.actions === 1 ? "" : "s"}${a.failed ? ` · ${a.failed} did not work` : ""} · ${tokens(a.input + a.output)} tokens`)), h("div", { class: "rbar" }, h("i", { style: `width:${Math.max(2, (a.cost / most) * 100)}%` }))),
             h("div", { class: "rcost" }, h("b", {}, money(a.cost)), h("span", {}, r.total ? `${Math.round((a.cost / r.total) * 100)}%` : "")),
           ),
@@ -4483,7 +4482,7 @@ async function renderReceipt(q) {
           h(
             "summary",
             {},
-            keycap(l.character, 22, "", l.type),
+            keycap(l, 22, "", l.type),
             h("div", { class: "grow" }, h("div", { class: "rname" }, h("b", {}, l.agent), h("span", {}, `${KINDS[l.kind] || l.kind}${l.from ? ` from ${l.from}` : ""} · ${STATUS_WORDS[l.status] || l.status} · ${l.actions.length} action${l.actions.length === 1 ? "" : "s"} · ${l.model}`)), h("div", { class: "rtitle" }, l.title.replace(/\s+/g, " "))),
             h("div", { class: "rcost" }, h("b", {}, money(l.cost)), h("span", {}, `${tokens(l.input + l.output)} tokens`)),
           ),
@@ -4578,58 +4577,51 @@ function botView() {
       if (chars) {
         ownLegend = true;
         draft.character.legend = chars;
-        portrait.querySelector(".keychar")?.replaceWith(keycap(draft.character, 150, "", draft.type));
+        drawPortrait();
       }
     },
   });
   const drawPortrait = () => {
-    draft.character.texture = textureOf(draft.character, draft.type);
-    draft.character.color = colorName(draft.character, draft.type);
+    const auto = tileOf({ ...draft, character: { ...draft.character, symbol: undefined, tint: undefined } });
+    const chosenSymbol = SYMBOLS[draft.character.symbol] ? draft.character.symbol : "auto";
+    const chosenTint = TINTS[draft.character.tint] ? draft.character.tint : "auto";
+    const pick = (key, value) => ((draft.character[key] = value === "auto" ? undefined : value), drawPortrait());
     fill(portrait,
-      keycap(draft.character, 150, "", draft.type),
+      keycap(draft, 150, ""),
       h("h2", {}, draft.name || "New agent"),
       h("div", { class: "type" }, roleLine({ name: draft.name, group: draft.group }, draft.title) || "Role not set"),
-      h("p", { class: "label", style: "margin-top: 22px" }, `Colour · ${NEON[draft.character.color][0]}`),
-      swatches(draft.character.color, (name) => ((draft.character.color = name), drawPortrait()), "Colour"),
-      ...[
-        ["shape", "Body", SHAPES],
-        ["eyes", "Eyes", EYES],
-        ["top", "On top", TOPS],
-      ].flatMap(([key, label, options]) => [
-        h("p", { class: "label", style: "margin-top: 14px" }, `${label} · ${options[looksOf(draft.character)[key]]}`),
-        h(
-          "div",
-          { class: "lookrow", role: "group", "aria-label": label },
-          Object.entries(options).map(([value, name]) =>
-            h(
-              "button",
-              { class: `look ${looksOf(draft.character)[key] === value ? "on" : ""}`, title: name, "aria-label": name, "aria-pressed": String(looksOf(draft.character)[key] === value), onclick: () => ((draft.character[key] = value), drawPortrait()) },
-              keycap({ ...draft.character, [key]: value }, 30, "", draft.type),
-            ),
-          ),
-        ),
-      ]),
-      h("label", { class: "label", for: "legend", style: "display: block; margin-top: 22px" }, "Initials"),
-      legendInput,
-      h("p", { class: "note small" }, "One to three characters printed on its key, such as HS for Head of Sales."),
-      h("p", { class: "label", style: "margin-top: 16px" }, "Texture on its base"),
+      h("p", { class: "label", style: "margin-top: 22px" }, `Symbol · ${chosenSymbol === "auto" ? `Automatic (${SYMBOLS[auto.symbol][0]})` : SYMBOLS[chosenSymbol][0]}`),
       h(
         "div",
-        { class: "textures" },
-        Object.entries(TEXTURES).map(([key, name]) =>
+        { class: "lookrow", role: "group", "aria-label": "Symbol" },
+        ["auto", ...Object.keys(SYMBOLS)].map((key) =>
           h(
             "button",
-            {
-              class: `texture ${key === draft.character.texture ? "on" : ""}`,
-              "aria-pressed": String(key === draft.character.texture),
-              title: name,
-              onclick: () => ((draft.character.texture = key), drawPortrait()),
-            },
-            keycap({ legend: draft.character.legend, texture: key, color: draft.character.color }, 30, "", draft.type),
-            h("span", {}, name),
+            { type: "button", class: `look ${chosenSymbol === key ? "on" : ""}`, title: key === "auto" ? "Automatic, from the role" : SYMBOLS[key][0], "aria-label": key === "auto" ? "Automatic" : SYMBOLS[key][0], "aria-pressed": String(chosenSymbol === key), onclick: () => pick("symbol", key) },
+            keycap({ ...draft, character: { ...draft.character, symbol: key === "auto" ? auto.symbol : key } }, 30, ""),
           ),
         ),
       ),
+      h("p", { class: "label", style: "margin-top: 14px" }, `Colour · ${chosenTint === "auto" ? `Its department's (${TINTS[auto.tint][0]})` : TINTS[chosenTint][0]}`),
+      h(
+        "div",
+        { class: "swatches", role: "group", "aria-label": "Colour" },
+        ["auto", ...Object.keys(TINTS)].map((key) =>
+          h("button", {
+            type: "button",
+            class: `swatch ${chosenTint === key ? "on" : ""}`,
+            title: key === "auto" ? "Its department's colour" : TINTS[key][0],
+            "aria-label": key === "auto" ? "Its department's colour" : TINTS[key][0],
+            "aria-pressed": String(chosenTint === key),
+            style: `--swatch: ${TINTS[key === "auto" ? auto.tint : key][1]}${key === "auto" ? "; outline: 1px dashed var(--soft); outline-offset: 2px" : ""}`,
+            onclick: () => pick("tint", key),
+          }),
+        ),
+      ),
+      h("p", { class: "note small" }, "The colour shows the agent's department. Green, amber and red are kept for what the agent is doing: working, waiting on you, or stuck."),
+      h("label", { class: "label", for: "legend", style: "display: block; margin-top: 22px" }, "Initials"),
+      legendInput,
+      h("p", { class: "note small" }, "One to three characters, such as HS for Head of Sales. They show on the tile when it uses the Initials symbol, and in short lists."),
     );
   };
   drawPortrait();
@@ -4643,8 +4635,6 @@ function botView() {
     "select",
     {
       onchange: (e) => {
-        if (draft.character.texture === TYPE_TEXTURES[draft.type]) draft.character.texture = TYPE_TEXTURES[e.target.value] ?? draft.character.texture;
-        if (draft.character.color === TYPE_COLORS[draft.type]) draft.character.color = TYPE_COLORS[e.target.value] ?? draft.character.color;
         draft.type = e.target.value;
         drawPortrait();
       },
@@ -4809,7 +4799,7 @@ function chatView() {
   ui.pin = h("button", { class: "plain", hidden: true, onclick: () => pinChat({ id: state.convId }, !state.convs.find((c) => c.id === state.convId)?.pinned) }, "Pin");
   syncPin();
   const pane = conversationPane();
-  fill(ui.body, ui.chatSide, h("main", { class: "center flush" }, h("div", { class: "chathead", style: withBot ? botStyle(withBot) : "" }, withBot ? keycap(withBot.character, 28, "", withBot.type) : null, ui.title, withBot ? h("span", { class: "small muted", title: "This chat is with one agent, in its role. It uses that agent's instructions, powers, model and limits." }, roleLine(withBot, roleOf(withBot.id)?.title)) : null, ui.meta, ui.move, withBot ? null : modelPicker(), ui.pin, ui.remove), pane));
+  fill(ui.body, ui.chatSide, h("main", { class: "center flush" }, h("div", { class: "chathead", style: withBot ? botStyle(withBot) : "" }, withBot ? keycap(withBot, 28, "", withBot.type) : null, ui.title, withBot ? h("span", { class: "small muted", title: "This chat is with one agent, in its role. It uses that agent's instructions, powers, model and limits." }, roleLine(withBot, roleOf(withBot.id)?.title)) : null, ui.meta, ui.move, withBot ? null : modelPicker(), ui.pin, ui.remove), pane));
   renderChatList();
   setRunning(false);
   if (state.convId) connect(state.convId);
@@ -4985,7 +4975,7 @@ function renderChatList(force = false) {
         "button",
         { class: `navlink ${c.id === state.convId ? "on" : ""}`, title: c.title, onclick: () => go("chat", c.id) },
         c.pinned ? h("span", { class: "pinmark", "aria-hidden": "true" }, "★") : null,
-        chatBotOf(c.id) ? keycap(chatBotOf(c.id).character, 18, "", chatBotOf(c.id).type) : null,
+        chatBotOf(c.id) ? keycap(chatBotOf(c.id), 18, "", chatBotOf(c.id).type) : null,
         h("span", { class: "title" }, c.title),
         c.needsApproval ? h("i", { class: "dot wait", title: "Waiting for your approval" }) : c.running ? h("i", { class: "dot", title: "Working" }) : null,
       ),
@@ -5015,7 +5005,7 @@ function renderChatList(force = false) {
                 h(
                   "div",
                   { class: "chatrow" },
-                  h("button", { class: "navlink", title: `${q.bot.name}: ${q.title}`, onclick: () => go("quest", q.id) }, keycap(q.bot.character, 18, "", q.bot.type), h("span", { class: "title" }, q.title), q.approvals?.length ? h("i", { class: "dot wait", title: "Waiting for your approval" }) : isLive(q) ? h("i", { class: "dot", title: "Working" }) : String(q.updatedAt) > seenUpdates() ? h("i", { class: "dot new", title: "New result" }) : null),
+                  h("button", { class: "navlink", title: `${q.bot.name}: ${q.title}`, onclick: () => go("quest", q.id) }, keycap(q.bot, 18, "", q.bot.type), h("span", { class: "title" }, q.title), q.approvals?.length ? h("i", { class: "dot wait", title: "Waiting for your approval" }) : isLive(q) ? h("i", { class: "dot", title: "Working" }) : String(q.updatedAt) > seenUpdates() ? h("i", { class: "dot new", title: "New result" }) : null),
                 ),
               ),
             ]
@@ -5730,7 +5720,7 @@ function settingsView() {
     h("h3", {}, "Look"),
     h("p", { class: "note" }, "Appearance. Light is the standard look; Match my computer switches between light and dark with it."),
     themeRow,
-    h("p", { class: "note" }, "Accent colour: ", accentLabel, ". Used for buttons and highlights. Each agent has a colour and a look of its own, which you can change when you edit the agent."),
+    h("p", { class: "note" }, "Accent colour: ", accentLabel, ". Used for buttons and highlights. Each agent is shown as a tile in its department's colour, with a symbol for its role; you can change both when you edit the agent."),
     accentRow,
   );
 
@@ -6500,7 +6490,7 @@ function drawBoard() {
       h("b", { class: "tasktitle" }, t.title),
       t.detail ? h("span", { class: `taskdetail ${t.status === "blocked" ? "bad" : ""}` }, t.detail) : null,
       t.projectName || t.goalTitle ? h("span", { class: "taskplan", title: t.goalTitle ? `Serves the goal: ${t.goalTitle}` : "" }, t.projectName ? `◇ ${t.projectName}` : `◎ ${t.goalTitle}`) : null,
-      h("div", { class: "taskmeta" }, bot ? keycap(bot.character, 18, t.status === "working" ? "working" : "", bot.type) : null, h("span", { class: "grow" }, t.ownerName), t.subtasks.total ? h("span", { title: "Sub-tasks still open" }, `◫ ${t.subtasks.open}/${t.subtasks.total}`) : null, t.comments ? h("span", { title: "Comments" }, `💬 ${t.comments}`) : null, t.cost >= 0.01 ? h("span", {}, money(t.cost)) : null),
+      h("div", { class: "taskmeta" }, bot ? keycap(bot, 18, t.status === "working" ? "working" : "", bot.type) : null, h("span", { class: "grow" }, t.ownerName), t.subtasks.total ? h("span", { title: "Sub-tasks still open" }, `◫ ${t.subtasks.open}/${t.subtasks.total}`) : null, t.comments ? h("span", { title: "Comments" }, `💬 ${t.comments}`) : null, t.cost >= 0.01 ? h("span", {}, money(t.cost)) : null),
     );
   };
   fill(
@@ -6540,7 +6530,7 @@ async function drawTaskPanel(id) {
   title.addEventListener("change", () => title.value.trim() && title.value.trim() !== t.title && patch({ title: title.value.trim() }));
   const priority = h("select", { "aria-label": "Priority", onchange: (e) => patch({ priority: e.target.value }) }, ["urgent", "high", "normal", "low"].map((p) => h("option", { value: p, selected: t.priority === p }, PRIORITY_WORDS[p])));
   const ownerBot = crew.get(t.owner);
-  const owner = t.status === "todo" ? h("select", { "aria-label": "Assigned to", onchange: (e) => patch({ owner: e.target.value }) }, org.members.map((m) => h("option", { value: m.bot, selected: m.bot === t.owner }, m.title))) : h("span", { class: "row" }, ownerBot ? keycap(ownerBot.character, 20, "", ownerBot.type) : null, t.ownerName);
+  const owner = t.status === "todo" ? h("select", { "aria-label": "Assigned to", onchange: (e) => patch({ owner: e.target.value }) }, org.members.map((m) => h("option", { value: m.bot, selected: m.bot === t.owner }, m.title))) : h("span", { class: "row" }, ownerBot ? keycap(ownerBot, 20, "", ownerBot.type) : null, t.ownerName);
   const parent = t.parent ? ui.tasks?.find((x) => x.id === t.parent) : null;
   const comment = h("textarea", { rows: 3, placeholder: t.status === "review" ? "What should change? Sending it back wakes the agent." : "Write a note for the agent…", "aria-label": "Comment" });
   const sendComment = () => comment.value.trim() && act(async () => (await api("POST", `work/${id}/comment`, { text: comment.value }), (comment.value = "")));
