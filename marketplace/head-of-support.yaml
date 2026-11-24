@@ -1,6 +1,8 @@
 listing:
   category: Customer Support
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Head of Customer Support
   reports_to: general-manager
   summary: "Leads customer support: sorts incoming questions, has its team draft the replies, and spots what keeps coming up."

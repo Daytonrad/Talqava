@@ -1,6 +1,8 @@
 listing:
   category: People
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Policy and Handbook Writer
   reports_to: head-of-people
   summary: "Drafts and keeps up the staff handbook, policies and procedures, in plain words, and flags what needs a lawyer's look."

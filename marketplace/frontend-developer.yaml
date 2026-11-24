@@ -1,6 +1,8 @@
 listing:
   category: Engineering
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Front-End Developer
   reports_to: lead-developer
   summary: "Builds what people see and click: pages, components and styles, checked in the way the project already checks them."

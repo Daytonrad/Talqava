@@ -21,7 +21,8 @@ Click any agent card to open its own page. There you will see:
 ## Key ideas
 
 - **Nothing is hidden.** You see every word an agent is told before you add it. This lets you decide if you trust it with your business.
-- **Your copy is yours.** Adding an agent saves a copy on your computer. Later updates to the Marketplace never overwrite it, so your edits are safe.
+- **Your copy is yours.** Adding an agent saves a copy on your computer, and remembers which version it was. A newer version is offered, never forced: you choose **Update** or **Keep mine**, and an update can be undone. Its name, look, model and budget always stay as you set them.
+- **Every listing is checked and labelled.** Each one shows its version, who made it (**Made by Talqava**, **Verified** or **Community**) and its licence. Before a listing is offered, Talqava checks it automatically: it must ask before changing anything, only engineering roles may run commands, and its instructions must not try to override its rules or hide what it does.
 - **Agents arrive in the right place.** An added agent joins a group named after its department, and takes its place on your org chart under the role it normally reports to, if you have that role.
 - **"Asks first" protects you.** An agent marked **asks before changes** stops and asks you before running a command, changing a file or writing to another service. One marked **runs everything** does not. You can change this on the agent's page after you add it.
 - **Teams save time.** Adding a team adds the lead and everyone below it, with their reporting lines already drawn. Agents you already have keep their place.
@@ -44,13 +45,22 @@ Click any agent card to open its own page. There you will see:
 ### Add one agent
 
 1. On the agent's card, press **Add**. Or open its page and press **Add to my team · Free**.
-2. The agent joins your organization. Its page now shows **✓ On your team**.
+2. A preview opens. Nothing has changed yet. It shows who the agent reports to, what it can use, that it asks before changing anything, its spending limit per task, and what it will never do.
+3. Press **Add to my team**, or **Cancel**. The agent joins your organization, and its page shows **✓ On your team**.
 
 ### Add a whole team
 
 1. Find the team under **Teams**.
 2. Press **Add all** (or **Add the other** if you already have some of its agents).
-3. Talqava takes you to your **Organization** page so you can see where the team landed.
+3. A preview lists every agent: who each reports to, what each can use and may cost a task, and which you already have (those stay as they are). It also gives the most one task from every new agent would cost. Nothing has changed yet.
+4. Press **Add**, or **Cancel**. Talqava takes you to your **Organization** page so you can see where the team landed.
+
+### Update an agent, or undo an update
+
+1. When agents on your team have a newer version, a note at the top of the Marketplace says so. Press **Show them**.
+2. Open an agent marked **Update … available**. Its page says which version you have, and lists what changed.
+3. Press **Update to …**, or **Keep mine** to leave your copy as it is. If you had changed its instructions, Talqava asks before replacing them.
+4. Changed your mind? Press **Undo update** on its page to put the previous version back.
 
 ### Use an agent you have added
 

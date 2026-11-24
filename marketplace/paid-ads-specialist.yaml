@@ -1,6 +1,8 @@
 listing:
   category: Marketing
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Paid Advertising Specialist
   reports_to: head-of-marketing
   summary: "Plans ad campaigns and reads the results: audiences, budgets, copy variations and what to stop or scale."

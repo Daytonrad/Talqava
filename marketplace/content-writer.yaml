@@ -1,6 +1,8 @@
 listing:
   category: Marketing
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Content Writer
   reports_to: head-of-marketing
   summary: "Writes articles, landing pages and newsletters from a brief, in your voice, with every factual claim sourced."

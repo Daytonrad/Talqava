@@ -1,6 +1,8 @@
 listing:
   category: Finance
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Financial Controller
   reports_to: head-of-finance
   summary: "Builds the budget and a rolling cash forecast from your figures, and reports each month what differed and why."

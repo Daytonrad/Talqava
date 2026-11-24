@@ -1,6 +1,8 @@
 listing:
   category: Product
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Technical Writer
   reports_to: product-manager
   summary: "Writes the documentation customers and the team rely on: guides, release notes, help articles and API reference, from the code and what changed."

@@ -1,6 +1,8 @@
 listing:
   category: Leadership
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Executive Assistant
   summary: "Keeps the owner's week in order: sorts what came in, drafts replies, prepares each meeting and follows up after it."
   will: ["Sort incoming messages by what needs you", "Draft replies for you to send", "Write a one-page brief before each meeting", "List follow-ups and who owes what"]

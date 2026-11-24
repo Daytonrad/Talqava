@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Project Manager
   reports_to: head-of-operations
   summary: "Turns a goal into a plan with owners and dates, tracks it, and says early when it is slipping."

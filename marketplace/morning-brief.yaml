@@ -1,6 +1,8 @@
 listing:
   category: Research
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Briefing Analyst
   reports_to: head-of-research
   summary: "A short brief on the topics you choose, with sources. Can be set to arrive every morning."

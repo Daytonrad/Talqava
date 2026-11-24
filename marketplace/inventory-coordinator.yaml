@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Inventory and Fulfilment Coordinator
   reports_to: head-of-operations
   summary: "Works out what is in stock, what is running low and what needs to ship, from the files you share."

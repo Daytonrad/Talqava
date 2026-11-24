@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Head of Operations
   reports_to: general-manager
   summary: "Runs how the work gets done: projects, scheduling, purchasing, stock and the tools the business runs on."

@@ -1,6 +1,8 @@
 listing:
   category: Product
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Requirements Analyst
   reports_to: product-manager
   summary: "Turns what the business wants into requirements a developer can build: user stories, acceptance criteria and the questions still open."

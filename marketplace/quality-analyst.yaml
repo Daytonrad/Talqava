@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Quality Control Analyst
   reports_to: head-of-operations
   summary: "Reads inspection and defect data for patterns, and drafts the corrective action report for each problem."

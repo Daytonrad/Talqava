@@ -1736,3 +1736,14 @@ dialog.guidedialog::backdrop { background: var(--scrim); }
 .jobactions { gap: 6px; justify-content: flex-end; max-width: 300px; }
 .warnline { color: var(--warn-ink, var(--warn)); }
 :root[data-theme="light"] .warnline { color: #8A5A00; }
+
+/* ---------- before you install ---------- */
+.pvdialog { width: min(640px, calc(100vw - 32px)); max-width: 640px; max-height: calc(100vh - 48px); overflow-y: auto; }
+.pvdialog h2 { margin: 0 0 4px; }
+.pvlist { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; margin: 12px 0; }
+.pvrow { display: flex; gap: 12px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-m, 8px); background: var(--panel); }
+.pvrow.have { opacity: 0.75; }
+.pvrow .tag { margin-left: 8px; }
+.pvsum { font-weight: 500; }
+.updatebox { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.updatebox ul { margin: 0; padding-left: 18px; }

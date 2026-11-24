@@ -1,6 +1,8 @@
 listing:
   category: Research
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Competitive Intelligence Analyst
   reports_to: head-of-research
   summary: "Reports what changed on the competitor pages you name, such as prices, features and announcements. Can be set to run every week."

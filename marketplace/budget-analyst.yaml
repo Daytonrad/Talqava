@@ -1,6 +1,8 @@
 listing:
   category: Finance
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Budget and Forecast Analyst
   reports_to: head-of-finance
   summary: "Builds the budget, compares it with what actually happened each month, and models cash runway and what-if scenarios."

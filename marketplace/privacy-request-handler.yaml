@@ -1,6 +1,8 @@
 listing:
   category: Legal
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Privacy and Data Request Handler
   reports_to: compliance-manager
   summary: "Handles customers' requests to see, correct or delete their personal data: logs each one, finds the data, drafts the reply and tracks the deadline."

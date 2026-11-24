@@ -1,6 +1,8 @@
 listing:
   category: Finance
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Time and Billing Specialist
   reports_to: head-of-finance
   summary: "Turns time entries into draft invoices: checks them against the engagement terms, tidies the descriptions and flags what looks wrong."

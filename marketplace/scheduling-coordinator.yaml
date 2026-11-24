@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Scheduling Coordinator
   reports_to: head-of-operations
   summary: "Builds rosters, bookings and appointment schedules from the rules and availability you share, and flags clashes."

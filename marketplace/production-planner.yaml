@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Production Planner
   reports_to: head-of-operations
   summary: "Builds the production schedule from orders, capacity and materials, and shows where it will not fit."

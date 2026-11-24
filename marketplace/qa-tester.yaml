@@ -1,6 +1,8 @@
 listing:
   category: Engineering
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: QA Engineer
   reports_to: lead-developer
   summary: "Checks a change against what was asked: runs the tests, tries the edge cases, and says pass or fail with evidence."

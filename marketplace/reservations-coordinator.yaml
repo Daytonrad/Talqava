@@ -1,6 +1,8 @@
 listing:
   category: Customer Support
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Guest Relations Coordinator
   reports_to: head-of-support
   summary: "Drafts replies to booking requests, guest questions and reviews, and keeps notes on regulars and special requests."

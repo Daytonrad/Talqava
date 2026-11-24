@@ -1,6 +1,8 @@
 listing:
   category: Customer Support
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Voice of Customer Analyst
   reports_to: head-of-support
   summary: "Reads reviews, surveys and support tickets, and reports the themes: what customers love, what annoys them, and what is changing."

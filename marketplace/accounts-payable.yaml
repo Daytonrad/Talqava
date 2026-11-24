@@ -1,6 +1,8 @@
 listing:
   category: Finance
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Accounts Payable Specialist
   reports_to: head-of-finance
   summary: "Checks supplier bills against what was ordered and received, and prepares a payment list for you to approve."

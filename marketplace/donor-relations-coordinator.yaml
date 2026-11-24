@@ -1,6 +1,8 @@
 listing:
   category: Nonprofit
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Donor Relations Coordinator
   reports_to: head-of-fundraising
   summary: "Thanks donors quickly and personally, keeps the donor records tidy, and plans renewals so supporters keep giving."

@@ -1,6 +1,8 @@
 listing:
   category: Marketing
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Email Marketing Specialist
   reports_to: head-of-marketing
   summary: "Plans and writes newsletters and automated email sequences: welcome, follow-up and win-back, with subject lines to test."

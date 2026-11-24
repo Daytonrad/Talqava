@@ -3,6 +3,8 @@
 listing:
   category: Communications
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Editor
   reports_to: head-of-operations
   featured: true

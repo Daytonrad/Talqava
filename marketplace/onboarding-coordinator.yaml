@@ -1,6 +1,8 @@
 listing:
   category: People
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Onboarding Coordinator
   reports_to: head-of-people
   summary: "Prepares each new starter's first weeks: the checklist, accounts to set up, a first-week plan and a welcome pack."

@@ -1,6 +1,8 @@
 listing:
   category: Marketing
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Merchandiser
   reports_to: head-of-marketing
   summary: "Decides what to feature, bundle, mark down or drop, from your sales and stock, with the working shown."

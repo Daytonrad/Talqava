@@ -1,6 +1,8 @@
 listing:
   category: Engineering
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Mobile Developer
   reports_to: lead-developer
   summary: "Builds and fixes the phone app: screens, navigation and the calls it makes, following the platform's conventions."

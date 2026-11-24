@@ -1,6 +1,8 @@
 listing:
   category: Communications
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Email Writer
   summary: "Turns a few notes into a ready-to-send email in your tone. Drafts only: you send it yourself."
   will: [Draft an email from your notes, Offer a shorter version, Remember how you sign off]

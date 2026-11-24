@@ -1,62 +1,74 @@
 # Ready-made teams: a lead and the agents that report to it, added to the organization together.
-# The first agent listed is the team's lead.
+# The first agent listed is the team's lead. A team's version goes up when its members change.
 - id: starter-company
   name: Starter company
+  version: 1.0.0
   department: Leadership
   summary: A general manager over marketing, sales, finance and customer support, each head with one specialist doing the work. Give the general manager a goal and it is split across them.
   bots: [general-manager, head-of-marketing, content-writer, head-of-sales, account-executive, head-of-finance, bookkeeper, head-of-support, support-replier]
 - id: marketing-team
   name: Marketing team
+  version: 1.0.0
   department: Marketing
   summary: A head of marketing with a content writer, an email marketing specialist, an SEO specialist, a social media writer, a paid advertising specialist and a brand designer.
   bots: [head-of-marketing, content-writer, email-marketer, seo-researcher, social-drafter, paid-ads-specialist, designer]
 - id: sales-team
   name: Sales team
+  version: 1.0.0
   department: Sales
   summary: A head of sales with a prospect researcher, an outreach specialist, an account executive and a sales operations administrator. From ideal customer to proposal, with a clean pipeline.
   bots: [head-of-sales, lead-finder, outreach-drafter, account-executive, sales-operations]
 - id: engineering-team
   name: Engineering team
+  version: 1.0.0
   department: Engineering
   summary: A head of engineering over a lead developer, who runs front-end, back-end and mobile developers and a QA engineer. One ladder, and nothing is called done without a test.
   bots: [head-of-engineering, lead-developer, frontend-developer, backend-developer, mobile-developer, qa-tester]
 - id: development-team
   name: Development team
+  version: 1.0.0
   department: Engineering
   summary: A lead developer with front-end, back-end and mobile developers, a requirements analyst and a QA engineer. The analyst writes the requirement, the lead splits the work, and nothing is called done untested.
   bots: [lead-developer, functional-analyst, frontend-developer, backend-developer, mobile-developer, qa-tester]
 - id: research-team
   name: Research team
+  version: 1.0.0
   department: Research
   summary: A head of research with a fact checker, a competitive intelligence analyst, a briefing analyst and a data analyst. Ask a question and get a checked answer, with the numbers and its confidence stated.
   bots: [head-of-research, fact-checker, competitor-watch, morning-brief, data-analyst]
 - id: finance-team
   name: Finance team
+  version: 1.0.0
   department: Finance
   summary: A head of finance with a bookkeeper, accounts payable, accounts receivable, a financial controller, a reporting analyst and a budget and forecast analyst. Books, bills, collections, budget, cash forecast and the monthly picture.
   bots: [head-of-finance, bookkeeper, accounts-payable, invoice-chaser, financial-controller, monthly-numbers, budget-analyst]
 - id: support-team
   name: Customer support team
+  version: 1.0.0
   department: Customer Support
   summary: A head of customer support with a support specialist, a customer success manager, a knowledge base writer and a voice of customer analyst. Answers today's questions, keeps customers, and learns from what they say.
   bots: [head-of-support, support-replier, customer-success-manager, knowledge-base-writer, voice-of-customer-analyst]
 - id: operations-team
   name: Operations team
+  version: 1.0.0
   department: Operations
   summary: A head of operations with a project manager, a scheduling coordinator, a procurement manager, a vendor manager, an inventory and fulfilment coordinator and an IT and security administrator.
   bots: [head-of-operations, project-manager, scheduling-coordinator, procurement-manager, vendor-manager, inventory-coordinator, it-administrator]
 - id: people-team
   name: People team
+  version: 1.0.0
   department: People
   summary: A head of people with a recruiter, an onboarding coordinator, a payroll and benefits administrator and a policy and handbook writer. Hiring, first weeks, pay runs and people policy, prepared for your decision.
   bots: [head-of-people, recruiter, onboarding-coordinator, payroll-administrator, policy-writer]
 - id: professional-services-team
   name: Professional services team
+  version: 1.0.0
   department: Professional Services
   summary: A practice manager for a law firm, agency or consultancy, with client intake, a conflicts checker, a matter coordinator, a proposal writer and a billing specialist. From first enquiry to invoice, with conflicts checked before any work starts.
   bots: [practice-manager, client-intake-coordinator, conflicts-checker, matter-coordinator, proposal-writer, billing-specialist]
 - id: nonprofit-team
   name: Nonprofit fundraising team
+  version: 1.0.0
   department: Nonprofit
   summary: A head of fundraising with a grant writer, a donor relations coordinator, a volunteer coordinator and an impact report writer. Grants, donors, volunteers and honest reports for funders.
   bots: [head-of-fundraising, grant-writer, donor-relations-coordinator, volunteer-coordinator, impact-report-writer]

@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Vendor Manager
   reports_to: head-of-operations
   summary: "Keeps track of every supplier: contracts, renewal dates, prices and performance, and warns you before anything renews or runs out."

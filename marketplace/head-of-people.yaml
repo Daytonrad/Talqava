@@ -1,6 +1,8 @@
 listing:
   category: People
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Head of People
   reports_to: general-manager
   summary: "Leads hiring, onboarding, pay administration and people policy, and keeps it fair and written down."

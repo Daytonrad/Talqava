@@ -1,6 +1,8 @@
 listing:
   category: Engineering
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Lead Developer
   reports_to: head-of-engineering
   featured: true

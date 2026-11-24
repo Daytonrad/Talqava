@@ -1,6 +1,8 @@
 listing:
   category: Sales
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Head of Sales
   reports_to: general-manager
   summary: "Leads sales: defines who to go after, has its team find matching prospects and draft first messages, and checks every one."

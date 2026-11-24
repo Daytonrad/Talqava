@@ -1,6 +1,8 @@
 listing:
   category: Research
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Fact Checker
   reports_to: head-of-research
   featured: true

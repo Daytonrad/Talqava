@@ -1,6 +1,8 @@
 listing:
   category: Operations
   by: Talqava
+  version: 1.0.0
+  licence: MIT
   title: Health and Safety Coordinator
   reports_to: head-of-operations
   summary: "Keeps the safety register: risk assessments, training records, incidents and the actions that follow, with nothing left open quietly."
