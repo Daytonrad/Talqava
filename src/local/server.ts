@@ -47,6 +47,7 @@ import { decide, listProposals } from "./proposals.ts";
 import { exportOrg, importOrg } from "./portable.ts";
 import { fileReport, workspace } from "./workspace.ts";
 import { PRIORITIES, work } from "./work.ts";
+import { goals } from "./goals.ts";
 import { findTemplate, loadTemplates } from "./templates.ts";
 import { chainBudget, chainCost, chainOf, chainSize, journal, questStore, quests, rootOf, whyOf } from "./quests.ts";
 import type { Quest } from "./quests.ts";
@@ -151,6 +152,8 @@ function describeRequest(method: string, parts: string[], body: any, url: URL): 
     return { kind: "library", action: map[id] ?? (method === "PATCH" ? "Changed who can use a file" : method === "DELETE" ? "Deleted a file" : `${method} library ${id ?? ""}`.trim()), detail: name ? `into ${url.searchParams.get("folder") ?? ""}` : words(body) };
   }
   if (area === "integrations") return { kind: "integration", action: `${id ? id[0].toUpperCase() + id.slice(1) : "Integration"}: ${(action ?? method.toLowerCase()).replace(/-/g, " ")}`, detail: words(body) };
+  // Goals and projects write their own entries; small edits (a title, a description) are not worth a line each.
+  if (area === "goals" || area === "projects") return method === "POST" || method === "DELETE" || (area === "goals" && method === "PATCH") ? null : { kind: "organization", action: "Changed a project", detail: words(body) };
   // Tasks write their own entries when they are created, cancelled, accepted or commented on.
   if (area === "work") return method === "PATCH" ? { kind: "task", action: "Changed a task", detail: words(body) } : action === "retry" ? { kind: "task", action: "Tried a task again" } : null;
   // Saving a page as the owner types would fill the log; the page's own history keeps every version.
@@ -570,7 +573,7 @@ function questSummary(quest: Quest) {
     // A question or an escalated decision rather than a task, and how many hand-offs deep it is.
     kind: quest.kind ?? null,
     depth: quest.depth ?? 0,
-    // Why the task exists: the mission, the group's goal, and each task above it.
+    // Why the task exists: the mission, the group's purpose, and each task above it.
     why: whyOf(quest),
     resumedAt: quest.resumedAt ?? null,
     createdAt: quest.createdAt,
@@ -904,6 +907,23 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (route === "DELETE memory") return send(res, 200, await attempt(() => memory.remove(parts[1])));
 
   // The library: documents the person shares with their agents, kept in the organization's database.
+  // ---------- goals and projects: what the work is for ----------
+  if (parts[0] === "goals" || parts[0] === "projects") {
+    const org = orgs.active();
+    const [kind, id] = parts;
+    if (req.method === "GET" && !id) return send(res, 200, { goals: goals.list(org), projects: goals.projects(org) });
+    if (kind === "goals") {
+      if (req.method === "POST" && !id) return send(res, 200, await attempt(() => goals.create(org, body)));
+      if (req.method === "PATCH" && id) return send(res, 200, await attempt(() => goals.update(org, id, body)));
+      if (req.method === "DELETE" && id) return send(res, 200, await attempt(() => goals.remove(org, id)));
+    } else {
+      if (req.method === "POST" && !id) return send(res, 200, await attempt(() => goals.createProject(org, body)));
+      if (req.method === "PATCH" && id) return send(res, 200, await attempt(() => goals.updateProject(org, id, body)));
+      if (req.method === "DELETE" && id) return send(res, 200, await attempt(() => goals.removeProject(org, id)));
+    }
+    throw new HttpError(404, "Not found.");
+  }
+
   // ---------- tasks as work items: the board, each agent's queue, review and comments ----------
   if (parts[0] === "work") {
     const org = orgs.active();
@@ -929,7 +949,7 @@ async function api(req: IncomingMessage, res: ServerResponse, url: URL) {
       const blocking = needs.filter((n) => !n.canSkip || body.anyway !== true);
       if (blocking.length) return send(res, 200, { needs: blocking, repositories: getConfig().projects });
       return send(res, 200, await attempt(async () => {
-        const item = work.create(org, { title: body.title, description: body.description ?? body.title, owner: bot.id, priority: body.priority, parent: body.parent, createdBy: "owner", review: true, project: project ?? null });
+        const item = work.create(org, { title: body.title, description: body.description ?? body.title, owner: bot.id, priority: body.priority, parent: body.parent, createdBy: "owner", review: true, project: project ?? null, goal: body.goal, projectId: body.projectId });
         await work.schedule();
         const now = work.get(org, item.id);
         const quest = now.quest ? questStore.get(now.quest) : null;

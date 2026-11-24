@@ -1717,3 +1717,32 @@ dialog.needs.legaldialog[open] { display: flex; }
 .aiadvanced { margin-top: 18px; }
 .aiadvanced summary { cursor: pointer; font-weight: 500; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 1000; max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: var(--r-m, 8px); background: var(--raised, var(--panel)); border: 1px solid var(--glass-line, var(--line2)); box-shadow: var(--shadow-l, 0 8px 24px rgba(0,0,0,.12)); }
+
+/* Goals and projects. */
+.tasks-mode button.on { background: var(--raised); }
+.taskplan { font-size: 12px; color: var(--accent-ink); }
+.goalmission { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; font-size: 15px; }
+.goalmission .label { margin: 0; }
+.goalsection { display: flex; flex-direction: column; gap: 10px; }
+.goalsection h3 { margin: 10px 0 0; font-size: 15px; }
+.goalgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.goalcard { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+.goalcard.st-achieved { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.goalcard.st-dropped { opacity: 0.7; }
+.goalmark { font-size: 16px; color: var(--accent-ink); }
+.goaltitle { font-size: 16px; line-height: 1.35; }
+.goalnumber { display: flex; flex-direction: column; gap: 6px; }
+.goalbar { display: block; height: 8px; border-radius: 999px; background: color-mix(in srgb, var(--text) 8%, transparent); overflow: hidden; }
+.goalbar i { display: block; height: 100%; border-radius: inherit; background: var(--grad-accent, var(--accent)); transition: width var(--t3, 0.3s) var(--ease, ease); }
+.goalbar.tasks { height: 4px; }
+.goalbar.tasks i { background: color-mix(in srgb, var(--accent) 55%, var(--line2)); }
+.goalupdate { display: flex; align-items: center; gap: 6px; }
+.goalnow { width: 90px; padding: 4px 8px; }
+.goalcard .note .bad { color: var(--bad-ink); }
+.goalprojects { display: flex; flex-direction: column; gap: 6px; }
+.goalproject { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: var(--r-m); background: color-mix(in srgb, var(--text) 4%, transparent); }
+.goalproject .grow { display: flex; flex-direction: column; gap: 2px; }
+.goalproject.st-done, .goalproject.st-paused { opacity: 0.7; }
+.goalactions { gap: 6px; }
+.goalempty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 20px; max-width: 620px; }
+.goalempty p { margin: 0; }

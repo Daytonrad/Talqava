@@ -2374,7 +2374,7 @@ function renderOrg() {
     const budget = h("input", { type: "number", min: "0", step: "5", value: g.budget ?? "", placeholder: "No limit", "aria-label": "Monthly budget in dollars" });
     const patch = (body, label) => orgChange(label, () => api("PATCH", `orgs/${org.id}/groups/${g.id}`, body));
     name.addEventListener("change", () => name.value.trim() && name.value.trim() !== g.name && patch({ name: name.value.trim() }, `Renamed ${g.name} to ${name.value.trim()}`));
-    goal.addEventListener("change", () => patch({ goal: goal.value.trim() }, `Changed ${g.name}'s goal`));
+    goal.addEventListener("change", () => patch({ goal: goal.value.trim() }, `Changed ${g.name}'s purpose`));
     budget.addEventListener("change", () => patch({ budget: budget.value === "" ? null : Number(budget.value) }, `Changed ${g.name}'s budget`));
     const others = groups.filter((x) => x.id !== g.id);
     const moveTo = h("select", { "aria-label": "Move its positions to" }, others.map((x) => h("option", { value: x.id }, x.name)));
@@ -2383,7 +2383,7 @@ function renderOrg() {
       h("label", {}, "Name", name),
       h("label", {}, "Lead", h("select", { onchange: (e) => patch({ lead: e.target.value || null }, e.target.value ? `${nameOf(e.target.value)} leads ${g.name}` : `${g.name} has no lead`) }, h("option", { value: "", selected: !g.lead }, "Nobody yet"), members.map((m) => h("option", { value: m.bot, selected: m.bot === g.lead }, `${m.title}${m.department !== g.name ? ` (moves here)` : ""}`)))),
       h("p", { class: "note small" }, g.leadChosen ? "You chose this lead." : "Picked from the chart: the position at the top of the group. Choose one to keep it."),
-      h("label", {}, "Goal", goal),
+      h("label", {}, "Purpose", goal),
       h("label", {}, "Monthly budget, all its positions together ($)", budget),
       h("p", { class: `note small ${groupState(g) === "stopped" ? "loudnote" : ""}` }, [
         `Spent this month: ${money(org.groupSpend?.[g.id] ?? 0)}.`,
@@ -2588,7 +2588,7 @@ function renderOrg() {
   async function newGroup() {
     const name = h("input", { placeholder: "e.g. Sales, Customer care, Product", maxlength: 30, "aria-label": "Group name" });
     const lead = h("select", { "aria-label": "Lead" }, h("option", { value: "" }, "Choose later"), members.map((m) => h("option", { value: m.bot }, m.title)));
-    const goal = h("input", { placeholder: "What it is for (optional)", maxlength: 300, "aria-label": "Goal" });
+    const goal = h("input", { placeholder: "What it is for (optional)", maxlength: 300, "aria-label": "Purpose" });
     const got = await libDialog("New group", h("div", { class: "composeform" }, h("label", {}, "Name", name), h("label", {}, "Lead", lead), goal, h("p", { class: "note small" }, "The lead moves into the group. Drag other positions in afterwards.")), [["Create", () => ({ name: name.value.trim(), lead: lead.value, goal: goal.value.trim() }), true]]);
     if (!got?.name) return;
     orgChange(`Made the group ${got.name}`, () => api("POST", `orgs/${org.id}/groups`, { name: got.name, lead: got.lead || undefined, goal: got.goal || undefined }));
@@ -4320,7 +4320,7 @@ function whyChain(q) {
       h(
         "li",
         { class: `why-${st.kind} ${st.id === q.id ? "here" : ""}` },
-        h("span", { class: "whykind" }, st.kind === "mission" ? "Mission" : st.kind === "goal" ? `${st.who} goal` : st.id === q.id ? (st.by ? `This task · ${st.who}` : `Your task · ${st.who}`) : st.by ? `Handed to ${st.who}` : `You asked ${st.who}`),
+        h("span", { class: "whykind" }, st.kind === "mission" ? "Mission" : st.kind === "goal" ? `${st.who} purpose` : st.kind === "objective" ? "Goal" : st.kind === "project" ? "Project" : st.id === q.id ? (st.by ? `This task · ${st.who}` : `Your task · ${st.who}`) : st.by ? `Handed to ${st.who}` : `You asked ${st.who}`),
         st.kind === "task" && st.id !== q.id ? h("a", { href: "#", onclick: (e) => (e.preventDefault(), go("quest", st.id)) }, st.text) : h("span", {}, st.text),
       ),
     ),
@@ -6222,6 +6222,19 @@ const TASK_STATUS_WORDS = { todo: "To do", working: "Working", waiting: "Needs y
 const columnOf = (t) => (t.status === "waiting" || t.status === "blocked" ? "needs" : t.status);
 const ordinal = (n) => (n === 1 ? "Next" : `${n}${n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th"} in queue`);
 
+/** The Tasks page's heading, with the Board / Goals switch. */
+function tasksHead() {
+  const mode = ui.tasksMode ?? "board";
+  const tab = (id, label) => h("button", { class: mode === id ? "on" : "", role: "tab", "aria-selected": String(mode === id), onclick: () => ((ui.tasksMode = id), id === "goals" ? drawGoals() : drawBoard()) }, label);
+  return h(
+    "div",
+    { class: "tasks-head" },
+    h("div", { class: "grow" }, h("h1", {}, "Tasks"), h("p", { class: "lead" }, mode === "goals" ? "What the work is for: measurable goals for your organization and each group, and the projects that move them forward. Agents are told the goal their task serves." : "Every task in your organization. Each agent works through its own queue, one task at a time, most important first. Finished work comes back to you to accept or send back.")),
+    h("div", { class: "segmented tasks-mode", role: "tablist", "aria-label": "View" }, tab("board", "Board"), tab("goals", "Goals")),
+    mode === "goals" ? h("button", { class: "primary", onclick: () => goalDialog() }, "+ Goal") : h("button", { class: "primary", onclick: () => newTaskDialog() }, "+ New task"),
+  );
+}
+
 /** Opens the board at one task. */
 function openTask(id) {
   ui.taskOpen = id;
@@ -6244,16 +6257,20 @@ async function tasksView() {
 /** Loads the tasks and draws the board; `full` also redraws an open task's panel. */
 async function refreshTasks(full = false) {
   let data;
+  let planned;
   try {
-    data = await api("GET", "work");
+    [data, planned] = await Promise.all([api("GET", "work"), api("GET", "goals")]);
   } catch (err) {
     return ui.tasksCol && fill(ui.tasksCol, h("div", { class: "banner error" }, err.message));
   }
   if (state.view !== "tasks" || !ui.tasksCol) return;
-  const signature = JSON.stringify(data.items.map((t) => [t.id, t.status, t.detail, t.queue, t.priority, t.title, t.comments, t.owner, t.subtasks.open]));
+  const signature = JSON.stringify([data.items.map((t) => [t.id, t.status, t.detail, t.queue, t.priority, t.title, t.comments, t.owner, t.subtasks.open, t.goal, t.projectId]), planned]);
   if (!full && signature === ui.tasksSignature) return;
   ui.tasksSignature = signature;
   ui.tasks = data.items;
+  ui.goals = planned.goals;
+  ui.projects = planned.projects;
+  if (ui.tasksMode === "goals") return drawGoals();
   drawBoard();
   // The open task's panel follows along, unless the owner is typing in it.
   if (ui.taskOpen && (full || !ui.taskPanel.contains(document.activeElement))) drawTaskPanel(ui.taskOpen);
@@ -6264,10 +6281,18 @@ function drawBoard() {
   const col = ui.tasksCol;
   const org = activeOrg();
   const crew = new Map((state.crew?.bots ?? []).map((b) => [b.id, b]));
-  ui.taskFilter ??= { who: "", q: "", cancelled: false };
+  ui.taskFilter ??= { who: "", q: "", cancelled: false, plan: "" };
   const f = ui.taskFilter;
   const twoWeeks = Date.now() - 14 * 86400_000;
-  const shown = ui.tasks.filter((t) => (!f.who || t.owner === f.who) && (!f.q || `${t.number} ${t.title} ${t.ownerName}`.toLowerCase().includes(f.q.toLowerCase())) && (t.status !== "done" || Date.parse(t.updatedAt) > twoWeeks));
+  const inPlan = (t) => !f.plan || (f.plan.startsWith("goal:") ? t.goal === f.plan.slice(5) : t.projectId === f.plan.slice(8));
+  const shown = ui.tasks.filter((t) => (!f.who || t.owner === f.who) && inPlan(t) && (!f.q || `${t.number} ${t.title} ${t.ownerName}`.toLowerCase().includes(f.q.toLowerCase())) && (t.status !== "done" || Date.parse(t.updatedAt) > twoWeeks));
+  const plan = h(
+    "select",
+    { "aria-label": "Goal or project", onchange: (e) => ((f.plan = e.target.value), drawBoard()) },
+    h("option", { value: "" }, "All goals and projects"),
+    (ui.goals ?? []).filter((g) => g.status === "active").map((g) => h("option", { value: `goal:${g.id}`, selected: f.plan === `goal:${g.id}` }, `Goal: ${g.title}`)),
+    (ui.projects ?? []).filter((p) => p.status !== "done").map((p) => h("option", { value: `project:${p.id}`, selected: f.plan === `project:${p.id}` }, `Project: ${p.title}`)),
+  );
   const search = h("input", { type: "search", value: f.q, placeholder: "Find a task", "aria-label": "Find a task" });
   search.addEventListener("input", () => ((f.q = search.value), drawBoard(), document.querySelector(".tasks input[type=search]")?.focus()));
   const who = h("select", { "aria-label": "Whose tasks", onchange: (e) => ((f.who = e.target.value), drawBoard()) }, h("option", { value: "" }, "Everyone"), org.members.map((m) => h("option", { value: m.bot, selected: f.who === m.bot }, m.title)));
@@ -6280,18 +6305,14 @@ function drawBoard() {
       h("div", { class: "taskcardtop" }, h("span", { class: "tasknum" }, `#${t.number}`), t.priority !== "normal" ? h("span", { class: `taskpri ${t.priority}` }, PRIORITY_WORDS[t.priority]) : null, t.status === "todo" && t.queue ? h("span", { class: "taskqueue" }, ordinal(t.queue)) : null),
       h("b", { class: "tasktitle" }, t.title),
       t.detail ? h("span", { class: `taskdetail ${t.status === "blocked" ? "bad" : ""}` }, t.detail) : null,
+      t.projectName || t.goalTitle ? h("span", { class: "taskplan", title: t.goalTitle ? `Serves the goal: ${t.goalTitle}` : "" }, t.projectName ? `◇ ${t.projectName}` : `◎ ${t.goalTitle}`) : null,
       h("div", { class: "taskmeta" }, bot ? keycap(bot.character, 18, t.status === "working" ? "working" : "", bot.type) : null, h("span", { class: "grow" }, t.ownerName), t.subtasks.total ? h("span", { title: "Sub-tasks still open" }, `◫ ${t.subtasks.open}/${t.subtasks.total}`) : null, t.comments ? h("span", { title: "Comments" }, `💬 ${t.comments}`) : null, t.cost >= 0.01 ? h("span", {}, money(t.cost)) : null),
     );
   };
   fill(
     col,
-    h(
-      "div",
-      { class: "tasks-head" },
-      h("div", { class: "grow" }, h("h1", {}, "Tasks"), h("p", { class: "lead" }, "Every task in your organization. Each agent works through its own queue, one task at a time, most important first. Finished work comes back to you to accept or send back.")),
-      h("button", { class: "primary", onclick: () => newTaskDialog() }, "+ New task"),
-    ),
-    h("div", { class: "row tasks-tools" }, search, who, h("label", { class: "power" }, h("input", { type: "checkbox", checked: f.cancelled, onchange: (e) => ((f.cancelled = e.target.checked), drawBoard()) }), "Show cancelled")),
+    tasksHead(),
+    h("div", { class: "row tasks-tools" }, search, who, plan, h("label", { class: "power" }, h("input", { type: "checkbox", checked: f.cancelled, onchange: (e) => ((f.cancelled = e.target.checked), drawBoard()) }), "Show cancelled")),
     h(
       "div",
       { class: "taskboard" },
@@ -6354,6 +6375,10 @@ async function drawTaskPanel(id) {
       h("dd", {}, t.status === "done" || t.status === "cancelled" ? PRIORITY_WORDS[t.priority] : priority),
       t.status === "todo" && t.queue ? [h("dt", {}, "Queue"), h("dd", {}, t.queue === 1 ? "Next, when the agent is free" : `${ordinal(t.queue)} for the ${t.ownerName}`)] : null,
       parent ? [h("dt", {}, "Part of"), h("dd", {}, h("button", { class: "plain link", onclick: () => openTask(parent.id) }, `#${parent.number} ${parent.title}`))] : null,
+      h("dt", {}, "Project"),
+      h("dd", {}, h("select", { "aria-label": "Project", onchange: (e) => patch({ projectId: e.target.value || null }) }, h("option", { value: "" }, "None"), (ui.projects ?? []).filter((p) => p.status !== "done" || p.id === t.projectId).map((p) => h("option", { value: p.id, selected: p.id === t.projectId }, p.title)))),
+      h("dt", {}, "Goal"),
+      h("dd", {}, t.projectId ? h("span", { class: "note" }, t.goalTitle ? `${t.goalTitle} (through its project)` : "Its project has no goal") : h("select", { "aria-label": "Goal", onchange: (e) => patch({ goal: e.target.value || null }) }, h("option", { value: "" }, "None"), (ui.goals ?? []).filter((g) => g.status === "active" || g.id === t.goal).map((g) => h("option", { value: g.id, selected: g.id === t.goal }, g.title)))),
       h("dt", {}, "Created"),
       h("dd", {}, `${shortWhen(t.createdAt)} by ${t.createdByName}`),
       t.cost >= 0.001 ? [h("dt", {}, "Cost so far"), h("dd", {}, money(t.cost))] : null,
@@ -6375,17 +6400,25 @@ async function drawTaskPanel(id) {
 }
 
 /** A new task: what is wanted, who does it, how important it is. Under `parent` when given. */
-async function newTaskDialog({ parent = null, owner = "", text = "" } = {}) {
+async function newTaskDialog({ parent = null, owner = "", text = "", goal = "", projectId = "" } = {}) {
   const org = activeOrg();
   if (!org.members.length) return go("team");
+  if (!ui.goals) await api("GET", "goals").then((p) => ((ui.goals = p.goals), (ui.projects = p.projects))).catch(() => {});
+  const serves = h(
+    "select",
+    { "aria-label": "Serves" },
+    h("option", { value: "" }, parent ? "The same as its parent task" : "No goal or project"),
+    (ui.projects ?? []).filter((p) => p.status === "active").map((p) => h("option", { value: `project:${p.id}`, selected: p.id === projectId }, `Project: ${p.title}`)),
+    (ui.goals ?? []).filter((g) => g.status === "active").map((g) => h("option", { value: `goal:${g.id}`, selected: g.id === goal && !projectId }, `Goal: ${g.title}`)),
+  );
   const title = h("input", { maxlength: 140, placeholder: "e.g. Find ten wholesale bakeries near us", "aria-label": "Task" });
   const details = h("textarea", { rows: 5, placeholder: "What should be done, what good looks like, anything they need to know (optional)", "aria-label": "Details" }, text);
   const who = h("select", { "aria-label": "Assign to" }, org.members.map((m) => h("option", { value: m.bot, selected: m.bot === (owner || parent?.owner) }, `${m.title} · ${m.department}`)));
   const priority = h("select", { "aria-label": "Priority" }, ["urgent", "high", "normal", "low"].map((p) => h("option", { value: p, selected: p === (parent?.priority ?? "normal") }, PRIORITY_WORDS[p])));
   const got = await libDialog(
     parent ? `New sub-task of #${parent.number}` : "New task",
-    h("div", { class: "composeform" }, h("label", {}, "Task", title), h("label", {}, "Details", details), h("div", { class: "row" }, h("label", { class: "grow" }, "Assign to", who), h("label", {}, "Priority", priority)), h("p", { class: "note small" }, "It goes into the agent's queue and starts when the agent is free, most important first. You'll review the result.")),
-    [["Create task", () => ({ title: title.value.trim(), description: details.value.trim(), owner: who.value, priority: priority.value }), true]],
+    h("div", { class: "composeform" }, h("label", {}, "Task", title), h("label", {}, "Details", details), h("div", { class: "row" }, h("label", { class: "grow" }, "Assign to", who), h("label", {}, "Priority", priority)), (ui.goals ?? []).length || (ui.projects ?? []).length ? h("label", {}, "Serves", serves) : null, h("p", { class: "note small" }, "It goes into the agent's queue and starts when the agent is free, most important first. You'll review the result.")),
+    [["Create task", () => ({ title: title.value.trim(), description: details.value.trim(), owner: who.value, priority: priority.value, ...(serves.value.startsWith("project:") ? { projectId: serves.value.slice(8) } : serves.value.startsWith("goal:") ? { goal: serves.value.slice(5) } : {}) }), true]],
   );
   if (!got || !(got.title || got.description)) return;
   await attempt(async () => {
@@ -6403,4 +6436,136 @@ async function createTask(payload) {
   if (choice.project) return createTask({ ...payload, project: choice.project });
   if (choice.anyway) return createTask({ ...payload, anyway: true });
   return null;
+}
+
+// ---------- tasks: goals and projects ----------
+/** "12 of 40 customers" for a goal with a target, or "" without one. */
+const goalProgress = (g) => (g.target != null ? `${g.current ?? 0} of ${g.target}${g.unit ? ` ${g.unit}` : ""}` : "");
+/** "Due in 12 days", "Due today", "3 days overdue", or "". */
+function dueWords(due) {
+  if (!due) return "";
+  const days = Math.round((Date.parse(`${due}T12:00:00`) - Date.now()) / 86400_000);
+  const day = new Date(`${due}T12:00:00`).toLocaleDateString([], { day: "numeric", month: "short", year: days > 300 ? "numeric" : undefined });
+  return days < 0 ? `${-days} day${days === -1 ? "" : "s"} overdue (${day})` : days === 0 ? "Due today" : `Due ${day}, in ${days} day${days === 1 ? "" : "s"}`;
+}
+
+function drawGoals() {
+  const col = ui.tasksCol;
+  if (!col) return;
+  const org = activeOrg();
+  const all = ui.goals ?? [];
+  const projects = ui.projects ?? [];
+  ui.goalsShowAll ??= false;
+  const shown = all.filter((g) => ui.goalsShowAll || g.status === "active");
+  const sections = [[null, "The whole organization"], ...(org.groups ?? []).map((g) => [g.id, g.name])];
+  const act = (fn) => attempt(async () => (await fn(), await refreshTasks(true)), col);
+  const bar = (value, max, cls = "") => h("span", { class: `goalbar ${cls}`, role: "progressbar", "aria-valuenow": String(value), "aria-valuemax": String(max) }, h("i", { style: `width:${max ? Math.min(100, Math.max(0, (value / max) * 100)) : 0}%` }));
+  const card = (g) => {
+    const mine = projects.filter((p) => p.goal === g.id);
+    const now = h("input", { type: "number", value: g.current ?? "", step: "any", "aria-label": `Where “${g.title}” stands now`, class: "goalnow" });
+    now.addEventListener("change", () => act(() => api("PATCH", `goals/${g.id}`, { current: now.value === "" ? null : Number(now.value) })));
+    const late = g.due && g.status === "active" && Date.parse(`${g.due}T23:59:59`) < Date.now();
+    return h(
+      "section",
+      { class: `card goalcard st-${g.status}` },
+      h("div", { class: "row" }, h("span", { class: "goalmark", "aria-hidden": "true" }, g.status === "achieved" ? "✓" : "◎"), h("b", { class: "grow goaltitle" }, g.title), g.status !== "active" ? h("span", { class: "pill" }, g.status === "achieved" ? "Achieved" : "Dropped") : null, h("button", { class: "plain small", onclick: () => goalDialog(g) }, "Edit")),
+      g.target != null
+        ? h("div", { class: "goalnumber" }, bar(g.current ?? 0, g.target, (g.current ?? 0) >= g.target ? "full" : ""), h("div", { class: "row" }, h("span", { class: "grow" }, h("b", {}, goalProgress(g))), g.status === "active" ? h("label", { class: "note small goalupdate" }, "Now at", now) : null))
+        : null,
+      h("div", { class: "row note small" }, g.due ? h("span", { class: late ? "bad" : "" }, dueWords(g.due)) : null, h("span", { class: "grow" }), h("span", {}, g.tasks.total ? `${g.tasks.done} of ${g.tasks.total} task${g.tasks.total === 1 ? "" : "s"} done` : "No tasks yet")),
+      g.tasks.total ? bar(g.tasks.done, g.tasks.total, "tasks") : null,
+      mine.length
+        ? h(
+            "div",
+            { class: "goalprojects" },
+            mine.map((p) =>
+              h(
+                "div",
+                { class: `goalproject st-${p.status}` },
+                h("span", { class: "grow" }, h("b", {}, `◇ ${p.title}`), h("span", { class: "note small" }, [p.leadName ? `Led by ${p.leadName}` : "No lead", p.tasks.total ? `${p.tasks.done} of ${p.tasks.total} tasks done` : "No tasks yet", p.status !== "active" ? (p.status === "done" ? "Done" : "Paused") : null].filter(Boolean).join(" · "))),
+                h("button", { class: "plain small", onclick: () => (((ui.taskFilter ??= { who: "", q: "", cancelled: false, plan: "" }).plan = `project:${p.id}`), (ui.tasksMode = "board"), drawBoard()) }, "Tasks"),
+                h("button", { class: "plain small", onclick: () => newTaskDialog({ projectId: p.id, owner: p.lead || "" }) }, "+ Task"),
+                h("button", { class: "plain small", onclick: () => projectDialog({ project: p }) }, "Edit"),
+              ),
+            ),
+          )
+        : null,
+      g.status === "active"
+        ? h(
+            "div",
+            { class: "row goalactions" },
+            h("button", { class: "small", onclick: () => projectDialog({ goal: g }) }, "+ Project"),
+            h("button", { class: "small", onclick: () => newTaskDialog({ goal: g.id }) }, "+ Task"),
+            g.tasks.total ? h("button", { class: "plain small", onclick: () => (((ui.taskFilter ??= { who: "", q: "", cancelled: false, plan: "" }).plan = `goal:${g.id}`), (ui.tasksMode = "board"), drawBoard()) }, "See its tasks") : null,
+            h("span", { class: "grow" }),
+            h("button", { class: "plain small", onclick: () => act(() => api("PATCH", `goals/${g.id}`, { status: "achieved" })) }, "Mark achieved"),
+          )
+        : h("div", { class: "row goalactions" }, h("button", { class: "plain small", onclick: () => act(() => api("PATCH", `goals/${g.id}`, { status: "active" })) }, "Make it active again")),
+    );
+  };
+  const loose = projects.filter((p) => !p.goal);
+  fill(
+    col,
+    tasksHead(),
+    org.mission ? h("div", { class: "card goalmission" }, h("span", { class: "label" }, "Mission"), h("div", {}, org.mission)) : h("div", { class: "banner" }, "Your organization has no mission yet. ", h("button", { class: "plain link", onclick: () => go("team") }, "Write one on the Organization page"), " so every goal and task can trace back to it."),
+    all.length
+      ? sections.map(([gid, name]) => {
+          const here = shown.filter((g) => (g.group ?? null) === gid);
+          return here.length ? h("div", { class: "goalsection" }, h("h3", {}, name), h("div", { class: "goalgrid" }, here.map(card))) : null;
+        })
+      : h(
+          "div",
+          { class: "card goalempty" },
+          h("b", {}, "Set your first goal"),
+          h("p", { class: "note" }, "A goal is something you can measure, with a date: “40 wholesale customers by March”, “$20,000 in December sales”, “Every order delivered on time this month”. Your agents are told the goal each task serves, and leads put what moves it forward first."),
+          h("button", { class: "primary", onclick: () => goalDialog() }, "+ Goal"),
+        ),
+    loose.length ? h("div", { class: "goalsection" }, h("h3", {}, "Projects without a goal"), h("div", { class: "goalprojects" }, loose.map((p) => h("div", { class: "goalproject" }, h("span", { class: "grow" }, h("b", {}, `◇ ${p.title}`), h("span", { class: "note small" }, p.leadName ? `Led by ${p.leadName}` : "No lead")), h("button", { class: "plain small", onclick: () => projectDialog({ project: p }) }, "Edit"))))) : null,
+    all.some((g) => g.status !== "active") ? h("label", { class: "power" }, h("input", { type: "checkbox", checked: ui.goalsShowAll, onchange: (e) => ((ui.goalsShowAll = e.target.checked), drawGoals()) }), "Show achieved and dropped goals") : null,
+  );
+}
+
+/** Adds a goal, or edits one (`g`). */
+async function goalDialog(g = null) {
+  const org = activeOrg();
+  const title = h("input", { value: g?.title ?? "", maxlength: 160, placeholder: "e.g. 40 wholesale customers", "aria-label": "Goal" });
+  const target = h("input", { type: "number", step: "any", value: g?.target ?? "", placeholder: "e.g. 40", "aria-label": "Target" });
+  const current = h("input", { type: "number", step: "any", value: g?.current ?? "", placeholder: "e.g. 12", "aria-label": "Now at" });
+  const unit = h("input", { value: g?.unit ?? "", maxlength: 30, placeholder: "e.g. customers", "aria-label": "Counted in" });
+  const due = h("input", { type: "date", value: g?.due ?? "", "aria-label": "By" });
+  const group = h("select", { "aria-label": "For" }, h("option", { value: "" }, "The whole organization"), (org.groups ?? []).map((x) => h("option", { value: x.id, selected: g?.group === x.id }, x.name)));
+  const extra = g ? h("div", { class: "row" }, h("button", { class: "small", type: "button", onclick: () => (dialogChoice = "drop") }, g.status === "dropped" ? "Make it active" : "Drop this goal"), h("button", { class: "small danger", type: "button", onclick: () => (dialogChoice = "remove") }, "Remove")) : null;
+  let dialogChoice = null;
+  const body = h("div", { class: "composeform" }, h("label", {}, "Goal", title), h("div", { class: "row" }, h("label", { class: "grow" }, "Target", target), h("label", { class: "grow" }, "Now at", current), h("label", { class: "grow" }, "Counted in", unit)), h("div", { class: "row" }, h("label", { class: "grow" }, "By", due), h("label", { class: "grow" }, "For", group)), h("p", { class: "note small" }, "Make it measurable if you can: a number to reach and a date. Agents are told the goal each task serves."), extra);
+  if (extra) extra.addEventListener("click", (e) => e.target.closest("button") && body.closest("dialog")?.querySelector(".row.end button.primary")?.click());
+  const got = await libDialog(g ? "Edit the goal" : "New goal", body, [[g ? "Save" : "Set the goal", () => ({ title: title.value.trim(), target: target.value === "" ? null : Number(target.value), current: current.value === "" ? null : Number(current.value), unit: unit.value.trim(), due: due.value || null, group: group.value || null }), true]]);
+  if (!got) return;
+  await attempt(async () => {
+    if (g && dialogChoice === "remove") {
+      if (!confirm(`Remove the goal “${g.title}”? Its projects and tasks stay, without it.`)) return;
+      await api("DELETE", `goals/${g.id}`);
+    } else if (g && dialogChoice === "drop") await api("PATCH", `goals/${g.id}`, { ...got, status: g.status === "dropped" ? "active" : "dropped" });
+    else if (g) await api("PATCH", `goals/${g.id}`, got);
+    else await api("POST", "goals", got);
+    ui.tasksMode = "goals";
+    await refreshTasks(true);
+  }, ui.tasksCol);
+}
+
+/** Adds a project under a goal, or edits one. */
+async function projectDialog({ project = null, goal = null } = {}) {
+  const org = activeOrg();
+  const title = h("input", { value: project?.title ?? "", maxlength: 160, placeholder: "e.g. Wholesale outreach in the north of town", "aria-label": "Project" });
+  const about = h("textarea", { rows: 3, placeholder: "What it covers (optional)", "aria-label": "About" }, project?.description ?? "");
+  const forGoal = h("select", { "aria-label": "Goal" }, h("option", { value: "" }, "No goal"), (ui.goals ?? []).filter((x) => x.status === "active" || x.id === project?.goal).map((x) => h("option", { value: x.id, selected: (project?.goal ?? goal?.id) === x.id }, x.title)));
+  const lead = h("select", { "aria-label": "Lead" }, h("option", { value: "" }, "No lead"), org.members.map((m) => h("option", { value: m.bot, selected: project?.lead === m.bot }, m.title)));
+  const status = project ? h("select", { "aria-label": "Status" }, ["active", "paused", "done"].map((s) => h("option", { value: s, selected: project.status === s }, { active: "Active", paused: "Paused", done: "Done" }[s]))) : null;
+  const got = await libDialog(project ? "Edit the project" : "New project", h("div", { class: "composeform" }, h("label", {}, "Project", title), h("label", {}, "About", about), h("div", { class: "row" }, h("label", { class: "grow" }, "Goal", forGoal), h("label", { class: "grow" }, "Led by", lead), status ? h("label", {}, "Status", status) : null), h("p", { class: "note small" }, "Tasks in a project serve its goal. Its lead is the natural owner of its tasks.")), [[project ? "Save" : "Start the project", () => ({ title: title.value.trim(), description: about.value.trim(), goal: forGoal.value || null, lead: lead.value || null, ...(status ? { status: status.value } : {}) }), true]]);
+  if (!got) return;
+  await attempt(async () => {
+    if (project) await api("PATCH", `projects/${project.id}`, got);
+    else await api("POST", "projects", got);
+    ui.tasksMode = "goals";
+    await refreshTasks(true);
+  }, ui.tasksCol);
 }

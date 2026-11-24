@@ -1460,7 +1460,7 @@ test("a group stops at its monthly budget: work is charged to the group its agen
     const q = await quests.quests.start({ bot: bookkeeper, text: "Reconcile November." });
     assert.deepEqual(q.charge, { org: org.id, group: finance.id });
     assert.deepEqual(quests.whyOf(q).map((s) => s.kind), ["mission", "goal", "task"]);
-    assert.match(quests.whyPrompt(q), /mission: Keep the books straight[\s\S]*Finance group's goal: Close every month within five days[\s\S]*Your task: Reconcile November/);
+    assert.match(quests.whyPrompt(q), /mission: Keep the books straight[\s\S]*Finance group's purpose: Close every month within five days[\s\S]*Your task: Reconcile November/);
     for (let i = 0; i < 100 && quests.questStore.get(q.id)!.status === "running"; i++) await new Promise((r) => setTimeout(r, 50));
   } finally {
     orgs.remove(org.id);
@@ -1934,4 +1934,89 @@ test("the gateway to AI models: connect any service with a key, list its models 
     delete process.env.TALQAVA_OPENROUTER_API;
     store.saveConfig({ model: before.model, providers: before.providers, backups: before.backups ?? [] });
   }
+});
+
+test("goals and projects: tasks serve them, sub-tasks inherit them, progress counts, and agents are told", { timeout: 40_000 }, async () => {
+  const { orgs } = await import("../../src/local/orgs.ts");
+  const market = await import("../../src/local/marketplace.ts");
+  const { work } = await import("../../src/local/work.ts");
+  const { goals, goalsPrompt, goalLine } = await import("../../src/local/goals.ts");
+  const quests = await import("../../src/local/quests.ts");
+  const org0 = orgs.create("Goal Co", "Sell more bread.", "custom");
+  const busyId = "d".repeat(16);
+  try {
+    market.addTeam("sales-team");
+    market.addTeam("finance-team");
+    const org = orgs.active();
+    const sales = org.groups.find((g) => g.name === "Sales")!;
+    const finance = org.groups.find((g) => g.name === "Finance")!;
+    const lead = org.members.find((m) => m.department === "Sales" && m.manager === null)!.bot;
+    // Goals: for the whole organization or one group; numbers and dates are checked.
+    const big = goals.create(org, { title: "40 wholesale customers", target: 40, current: 12, unit: "customers", due: "2027-03-01", group: sales.id });
+    const books = goals.create(org, { title: "Close every month in five days", group: finance.id });
+    const whole = goals.create(org, { title: "$20,000 in December sales", target: 20000, unit: "dollars" });
+    assert.throws(() => goals.create(org, { title: "" }), /Say what the goal is/);
+    assert.throws(() => goals.create(org, { title: "x", target: "lots" }), /target is a number/);
+    assert.throws(() => goals.create(org, { title: "x", due: "next week" }), /date is a day/);
+    assert.match(goalLine(big), /“40 wholesale customers” \(12 of 40 customers, by March 1, 2027\)/);
+    const outreach = goals.createProject(org, { title: "Outreach in the north", goal: big.id, lead });
+    assert.equal(outreach.leadName, org.members.find((m) => m.bot === lead)!.title);
+
+    // A task in the project serves its goal; its sub-task inherits both. Busy agents keep them in the queue.
+    const stamp = new Date().toISOString();
+    quests.questStore.save({ id: busyId, title: "Busy", bot: (await import("../../src/local/crew.ts")).findBot(lead), status: "running", steps: 0, createdAt: stamp, updatedAt: stamp });
+    const task = work.create(org, { title: "List 50 cafés", owner: lead, createdBy: "owner", projectId: outreach.id });
+    const sub = work.create(org, { title: "Find their buyers", owner: lead, createdBy: lead, parent: task.id, review: false });
+    assert.deepEqual([work.get(org, task.id).projectName, work.get(org, task.id).goalTitle], ["Outreach in the north", "40 wholesale customers"]);
+    assert.deepEqual([work.get(org, sub.id).projectId, work.get(org, sub.id).goal], [outreach.id, work.get(org, task.id).goal]);
+    assert.equal(work.get(org, sub.id).goalTitle, "40 wholesale customers");
+    const direct = work.create(org, { title: "Chase late invoices", owner: lead, createdBy: "owner", goal: whole.id });
+    assert.equal(work.get(org, direct.id).goalTitle, "$20,000 in December sales");
+
+    // Progress: tasks counted through the project; the number is updated by the owner.
+    assert.deepEqual(goals.get(org, big.id).tasks, { total: 2, done: 0 });
+    work.cancel(org, sub.id);
+    assert.deepEqual(goals.get(org, big.id).tasks, { total: 1, done: 0 });
+    assert.equal(goals.update(org, big.id, { current: 15 }).current, 15);
+    assert.equal(goals.get(org, big.id).projects, 1);
+
+    // Agents see the organization's goals and their own group's, not other groups'.
+    const salesPrompt = goalsPrompt(org, lead);
+    assert.match(salesPrompt, /40 wholesale customers/);
+    assert.match(salesPrompt, /\$20,000 in December sales/);
+    assert.doesNotMatch(salesPrompt, /Close every month/);
+    assert.match(goalsPrompt(org, org.members.find((m) => m.department === "Finance")!.bot), /Close every month/);
+    assert.equal(goalsPrompt(org, lead).includes("15 of 40"), true);
+
+    // The task's "why" names its goal and project.
+    quests.questStore.save({ ...quests.questStore.get(busyId)!, status: "done" });
+    script.length = 0;
+    script.push(say("Listed them."), say("Chased."));
+    await work.schedule();
+    const run = quests.questStore.get(work.get(org, task.id).quest!)!;
+    assert.deepEqual(quests.whyOf(run).map((s) => s.kind), ["mission", "objective", "project", "task"]);
+    assert.match(quests.whyPrompt(run), /The goal: 40 wholesale customers[\s\S]*The project: Outreach in the north/);
+    assert.match(JSON.stringify(store.conversations.get(run.id)?.messages), /serves the goal/);
+
+    // Removing a goal keeps its projects and tasks, without it; marking one achieved keeps it.
+    goals.update(org, books.id, { status: "achieved" });
+    assert.equal(goals.get(org, books.id).status, "achieved");
+    goals.remove(org, big.id);
+    assert.equal(goals.project(org, outreach.id).goal, null);
+    assert.equal(work.get(org, task.id).goalTitle, null);
+  } finally {
+    quests.questStore.remove(busyId);
+    orgs.remove(org0.id);
+  }
+});
+
+test("an organization's older task table gets the goal and project links", async () => {
+  const { openOrgDb } = await import("../../src/local/library.ts");
+  const { goalsDb } = await import("../../src/local/goals.ts");
+  const id = "e".repeat(16);
+  const d = openOrgDb(id);
+  d.exec("create table if not exists work_items (id text primary key, number integer not null, title text not null, owner text not null, created_by text not null, created_at text not null, updated_at text not null)");
+  goalsDb(id);
+  const cols = (d.prepare("pragma table_info(work_items)").all() as unknown as { name: string }[]).map((c) => c.name);
+  assert.ok(cols.includes("goal") && cols.includes("project_id"));
 });
